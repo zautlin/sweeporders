@@ -1,0 +1,4 @@
+size_category,order_id,quantity,totalmatchedquantity,price,leavesquantity,fill_ratio
+Tiny (1-100),2,180,180,3365.0,0.0,1.0
+Small (101-1K),11,6186,4701,3370.91,135.0,0.7599
+Medium (1K-10K),16,61902,52910,3382.5,562.0,0.8547

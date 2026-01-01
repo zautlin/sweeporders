@@ -1,0 +1,4 @@
+time_of_day,order_id,quantity,totalmatchedquantity,price,leavesquantity,fill_ratio
+Afternoon (15-18),6,19736,17136,3378.33,433.33,0.8683
+Midday (12-15),4,5438,261,3395.0,1294.25,0.048
+Morning (10-12),19,43094,40394,3372.63,142.11,0.9373
