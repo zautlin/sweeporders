@@ -1,4 +1,4 @@
 Scenario,OrderCount,TotalQuantity,TotalFilled,AvgFillRatio,AvgExecPrice
-A (Immediate Full),140,82436,376163.0,8.669350541954854,3393.7528100188865
-B (Eventual Full),27,139814,142928.0,1.2274886207117037,3392.4074074074074
-C (Partial/None),650,628386,80768.0,0.13283181189420742,1676.419519315104
+A (Immediate Full),0,0,0.0,,
+B (Eventual Full),0,0,0.0,,
+C (Partial/None),570,419779,0.0,0.0,0.0

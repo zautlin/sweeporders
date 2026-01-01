@@ -1,0 +1,59 @@
+{
+  "metrics": {
+    "total_jobs": 6,
+    "completed_jobs": 6,
+    "failed_jobs": 0,
+    "total_time_sec": 0.20887398719787598,
+    "success_rate": 100.0
+  },
+  "results": [
+    {
+      "job_id": "job_0_0",
+      "security_code": 101,
+      "date": "2024-01-01",
+      "status": "completed",
+      "duration_sec": 0.10268902778625488,
+      "error": null
+    },
+    {
+      "job_id": "job_0_1",
+      "security_code": 101,
+      "date": "2024-01-02",
+      "status": "completed",
+      "duration_sec": 0.10269689559936523,
+      "error": null
+    },
+    {
+      "job_id": "job_1_0",
+      "security_code": 102,
+      "date": "2024-01-01",
+      "status": "completed",
+      "duration_sec": 0.10444998741149902,
+      "error": null
+    },
+    {
+      "job_id": "job_2_1",
+      "security_code": 103,
+      "date": "2024-01-02",
+      "status": "completed",
+      "duration_sec": 0.10246801376342773,
+      "error": null
+    },
+    {
+      "job_id": "job_1_1",
+      "security_code": 102,
+      "date": "2024-01-02",
+      "status": "completed",
+      "duration_sec": 0.10502099990844727,
+      "error": null
+    },
+    {
+      "job_id": "job_2_0",
+      "security_code": 103,
+      "date": "2024-01-01",
+      "status": "completed",
+      "duration_sec": 0.10514593124389648,
+      "error": null
+    }
+  ]
+}

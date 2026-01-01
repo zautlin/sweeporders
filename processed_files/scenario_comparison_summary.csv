@@ -1,7 +1,0 @@
-Scenario,OrderCount,TotalQuantity,AvgFillRatio
-Real Execution (A),140,82436,8.669350541954854
-Real Execution (B),321,519928,0.26897407392908046
-Real Execution (C),329,108458,0.0
-Simulated Dark (A),140,290,1.0
-Simulated Dark (B),321,439160.0,1.0
-Simulated Dark (C),329,329.0,1.0

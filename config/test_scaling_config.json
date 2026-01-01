@@ -1,0 +1,53 @@
+{
+  "processing": {
+    "mode": "parallel",
+    "max_workers": 7,
+    "chunk_size_mb": 400,
+    "temp_dir": "temp_chunks/",
+    "cleanup_temp": true,
+    "verbose": true
+  },
+  "data_selection": {
+    "security_codes": [],
+    "date_range": {
+      "start": null,
+      "end": null,
+      "all_dates": false
+    },
+    "participant_ids": [],
+    "trading_hours": {
+      "start": 10,
+      "end": 16,
+      "enabled": false
+    }
+  },
+  "pipeline_steps": {
+    "step_1_ingest": true,
+    "step_2_classify": true,
+    "step_4_real_metrics": true,
+    "step_5_simulation": true,
+    "step_6_dark_pool": true,
+    "step_7_extended_analysis": false,
+    "step_8_statistics": false
+  },
+  "simulation": {
+    "dark_pool_scenarios": [
+      "A",
+      "B",
+      "C"
+    ],
+    "price_impact_percent": 0.05,
+    "execution_delay_ms": 100
+  },
+  "output": {
+    "format": "gzip",
+    "output_dir": "processed_files/",
+    "aggregate_by": [
+      "security_code",
+      "date",
+      "participant_id"
+    ],
+    "detailed_logs": true,
+    "save_intermediate": false
+  }
+}

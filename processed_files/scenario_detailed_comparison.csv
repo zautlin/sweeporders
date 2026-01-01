@@ -1,7 +1,0 @@
-Metric,Real_Execution,Simulated_A,Simulated_B,Simulated_C
-Total Orders,790.0,140.0,321.0,329.0
-Avg Fill Ratio,1.6456325994998915,1.0,1.0,1.0
-Median Fill Ratio,0.03721626868648224,1.0,1.0,1.0
-Std Dev Fill Ratio,7.78601056747107,0.0,0.0,0.0
-Orders with Full Fill (>=99%),140.0,140.0,321.0,329.0
-Avg Execution Price,3393.7528100188865,3391.8571428571427,0.0,3388.966565349544
