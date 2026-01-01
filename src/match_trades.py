@@ -115,3 +115,4 @@ if __name__ == '__main__':
     )
     
     print(f"\nMatched {len(trades):,} trades from {len(trades_agg):,} orders")
+    print(f"Total quantity filled: {trades_agg['total_quantity_filled'].sum():,}")

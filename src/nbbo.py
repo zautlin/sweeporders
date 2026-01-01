@@ -1,6 +1,6 @@
 """
-NBBO Midprice Extraction and Management
-Extracts NBBO midprices from trade execution data for use in dark book simulations
+Phase 1.3: NBBO Data Loading and Trade Enrichment
+Reads NBBO data from nbbo.csv and matches it with trades by security code and timestamp.
 """
 
 import pandas as pd
@@ -16,293 +16,169 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def extract_nbbo_midprices_from_trades(trades_df: pd.DataFrame) -> pd.DataFrame:
+def load_nbbo_data(nbbo_file: str) -> pd.DataFrame:
     """
-    Extract NBBO midprices from trade data.
+    Load NBBO data from CSV file.
     
-    Uses the nationalbidpricesnapshot and nationalofferpricesnapshot columns
-    that are recorded at time of execution.
+    NBBO file columns:
+    - orderbookid: Security identifier (matches security_code from orders/trades)
+    - bidprice: Bid price at snapshot time
+    - offerprice: Ask/offer price at snapshot time
+    - timestamp: Time of NBBO snapshot
     
     Args:
-        trades_df: DataFrame with trade records containing:
-            - tradetime: timestamp of execution
-            - nationalbidpricesnapshot: bid price at execution
-            - nationalofferpricesnapshot: ask price at execution
-            - securitycode: security identifier
+        nbbo_file: Path to NBBO CSV file
+        
+    Returns:
+        DataFrame with NBBO data
+    """
+    logger.info(f"Loading NBBO data from: {nbbo_file}")
+    
+    nbbo_df = pd.read_csv(nbbo_file)
+    logger.info(f"Total NBBO records read: {len(nbbo_df):,}")
+    
+    # Convert types
+    nbbo_df['orderbookid'] = nbbo_df['orderbookid'].astype('int64')
+    nbbo_df['timestamp'] = nbbo_df['timestamp'].astype('int64')
+    nbbo_df['bidprice'] = pd.to_numeric(nbbo_df['bidprice'], errors='coerce').astype('float32')
+    nbbo_df['offerprice'] = pd.to_numeric(nbbo_df['offerprice'], errors='coerce').astype('float32')
+    
+    # Remove invalid records (where bid or offer is negative or null)
+    nbbo_df = nbbo_df[(nbbo_df['bidprice'] > 0) & (nbbo_df['offerprice'] > 0)].copy()
+    logger.info(f"NBBO records after validation: {len(nbbo_df):,}")
+    
+    # Sort by orderbookid and timestamp for efficient lookup
+    nbbo_df = nbbo_df.sort_values(['orderbookid', 'timestamp']).reset_index(drop=True)
+    
+    logger.info(f"Unique order books (securities): {nbbo_df['orderbookid'].nunique()}")
+    
+    return nbbo_df
+
+
+def match_trades_with_nbbo(trades_df: pd.DataFrame, nbbo_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Enrich trades with NBBO data by matching on security code and finding closest NBBO before trade.
+    
+    For each trade, find the NBBO record where:
+    1. orderbookid (from NBBO) == securitycode (from trades)
+    2. NBBO timestamp is the largest timestamp <= trade timestamp
+    
+    Note: If no NBBO data matches the security code, the trade will still be included
+    but with NaN values for NBBO columns.
+    
+    Args:
+        trades_df: Trades DataFrame with columns:
+            - orderid, tradetime, securitycode, tradeprice, quantity, side, participantid
+        nbbo_df: NBBO DataFrame with columns:
+            - orderbookid, bidprice, offerprice, timestamp
             
     Returns:
-        DataFrame with columns:
-            - tradetime: timestamp
-            - security_code: security identifier
-            - bid_price: snapshot bid
-            - ask_price: snapshot ask
-            - midprice: (bid + ask) / 2
+        Trades DataFrame enriched with NBBO columns: nbbo_bidprice, nbbo_offerprice, nbbo_timestamp, nbbo_found
     """
-    logger.info("Extracting NBBO midprices from trade data...")
+    logger.info("Matching trades with NBBO data...")
     
-    nbbo_data = trades_df[[
-        'tradetime',
-        'securitycode',
-        'nationalbidpricesnapshot',
-        'nationalofferpricesnapshot'
-    ]].copy()
+    # Make copies to avoid modifying originals
+    trades = trades_df.copy()
+    nbbo = nbbo_df.copy()
     
-    # Rename to standard names
-    nbbo_data = nbbo_data.rename(columns={
-        'tradetime': 'timestamp',
-        'securitycode': 'security_code',
-        'nationalbidpricesnapshot': 'bid_price',
-        'nationalofferpricesnapshot': 'ask_price'
-    })
+    # Ensure security codes match field names
+    trades['orderbookid'] = trades['securitycode']
     
-    # Calculate midprice
-    nbbo_data['midprice'] = (nbbo_data['bid_price'] + nbbo_data['ask_price']) / 2.0
+    # For each trade, find the closest NBBO before the trade
+    enriched_trades = []
+    nbbo_matched_count = 0
     
-    # Remove duplicates and keep latest for each symbol
-    nbbo_data = nbbo_data.sort_values('timestamp').drop_duplicates(
-        subset=['security_code'],
-        keep='last'
-    )
+    for idx, trade_row in trades.iterrows():
+        trade_orderid = trade_row['orderid']
+        trade_securitycode = trade_row['securitycode']
+        trade_time = trade_row['tradetime']
+        
+        # Filter NBBO for this security code
+        nbbo_for_security = nbbo[nbbo['orderbookid'] == trade_securitycode]
+        
+        if len(nbbo_for_security) == 0:
+            # No NBBO data for this security code - add empty NBBO columns
+            enriched_trades.append({
+                **trade_row.to_dict(),
+                'nbbo_bidprice': np.nan,
+                'nbbo_offerprice': np.nan,
+                'nbbo_timestamp': np.nan,
+                'nbbo_found': False
+            })
+            continue
+        
+        # Find NBBO records with timestamp <= trade_time
+        nbbo_before_trade = nbbo_for_security[nbbo_for_security['timestamp'] <= trade_time]
+        
+        if len(nbbo_before_trade) == 0:
+            # No NBBO data before trade time - add empty NBBO columns
+            enriched_trades.append({
+                **trade_row.to_dict(),
+                'nbbo_bidprice': np.nan,
+                'nbbo_offerprice': np.nan,
+                'nbbo_timestamp': np.nan,
+                'nbbo_found': False
+            })
+            continue
+        
+        # Get the closest NBBO before trade (largest timestamp <= trade_time)
+        closest_nbbo = nbbo_before_trade.iloc[-1]  # Last one is the closest
+        
+        enriched_trades.append({
+            **trade_row.to_dict(),
+            'nbbo_bidprice': closest_nbbo['bidprice'],
+            'nbbo_offerprice': closest_nbbo['offerprice'],
+            'nbbo_timestamp': closest_nbbo['timestamp'],
+            'nbbo_found': True
+        })
+        nbbo_matched_count += 1
     
-    logger.info(f"Extracted {len(nbbo_data):,} NBBO snapshots")
-    logger.info(f"Symbols covered: {nbbo_data['security_code'].nunique()}")
+    enriched_df = pd.DataFrame(enriched_trades)
     
-    return nbbo_data
+    logger.info(f"Matched {nbbo_matched_count:,} / {len(enriched_df):,} trades with NBBO data ({100*nbbo_matched_count/len(enriched_df):.1f}%)")
+    logger.info(f"Note: {len(enriched_df) - nbbo_matched_count:,} trades have no matching NBBO (different securities)")
+    
+    return enriched_df
 
 
-def load_nbbo_midprices(trades_file: str = None, trades_df: pd.DataFrame = None) -> dict:
+def enrich_trades_with_nbbo(trades_file: str, nbbo_file: str, output_dir: str) -> pd.DataFrame:
     """
-    Load NBBO midprices as a lookup dictionary.
-    
-    Can accept either a trades file path or a trades DataFrame.
+    Load trades, load NBBO, and enrich trades with NBBO data.
     
     Args:
-        trades_file: Path to trades CSV file (optional)
-        trades_df: Pre-loaded trades DataFrame (optional)
+        trades_file: Path to trades CSV file
+        nbbo_file: Path to NBBO CSV file
+        output_dir: Directory to save enriched trades
         
     Returns:
-        Dictionary mapping security_code -> midprice
+        DataFrame with enriched trades
     """
-    if trades_df is None:
-        if trades_file is None:
-            trades_file = INPUT_FILES.get('trades', 'data/trades/drr_trades_segment_1.csv')
-        logger.info(f"Loading trades from: {trades_file}")
-        trades_df = pd.read_csv(trades_file)
+    logger.info("Starting trade enrichment with NBBO data...")
     
-    nbbo_data = extract_nbbo_midprices_from_trades(trades_df)
+    # Load data
+    trades_df = pd.read_csv(trades_file)
+    logger.info(f"Loaded {len(trades_df):,} trades")
     
-    # Create lookup dictionary
-    nbbo_lookup = {}
-    for _, row in nbbo_data.iterrows():
-        nbbo_lookup[row['security_code']] = {
-            'bid_price': row['bid_price'],
-            'ask_price': row['ask_price'],
-            'midprice': row['midprice'],
-            'timestamp': row['timestamp']
-        }
+    nbbo_df = load_nbbo_data(nbbo_file)
     
-    logger.info(f"Created NBBO lookup for {len(nbbo_lookup)} securities")
+    # Match and enrich
+    enriched_trades = match_trades_with_nbbo(trades_df, nbbo_df)
     
-    return nbbo_lookup
-
-
-def get_midprice_for_security(security_code: int, nbbo_lookup: dict) -> float:
-    """
-    Get midprice for a specific security.
+    # Save enriched trades
+    output_path = Path(output_dir) / 'centrepoint_trades_with_nbbo.csv.gz'
+    enriched_trades.to_csv(output_path, compression='gzip', index=False)
+    logger.info(f"Saved enriched trades to {output_path}")
     
-    Args:
-        security_code: Security identifier
-        nbbo_lookup: NBBO lookup dictionary
-        
-    Returns:
-        Midprice, or None if not found
-    """
-    if security_code in nbbo_lookup:
-        return nbbo_lookup[security_code]['midprice']
-    return None
-
-
-def classify_trade_location(trade_price: float, bid: float, ask: float) -> str:
-    """
-    Classify where a trade executed relative to the spread.
-    
-    Args:
-        trade_price: Actual execution price
-        bid: Bid price
-        ask: Ask price
-        
-    Returns:
-        Classification: 'at_bid', 'at_ask', 'inside_spread', 'outside_spread'
-    """
-    if trade_price <= bid:
-        return 'at_bid'
-    elif trade_price >= ask:
-        return 'at_ask'
-    elif bid < trade_price < ask:
-        return 'inside_spread'
-    else:
-        return 'outside_spread'
-
-
-def add_nbbo_metrics_to_orders(orders_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Attach NBBO metrics to order records.
-    
-    For each order, find the NBBO snapshot at time of execution and add:
-    - bid_price, ask_price, midprice
-    - execution_vs_bid, execution_vs_ask, execution_vs_mid
-    - trade_location classification
-    
-    Args:
-        orders_df: Orders DataFrame
-        trades_df: Trades DataFrame with NBBO snapshots
-        
-    Returns:
-        Orders DataFrame with added NBBO columns
-    """
-    logger.info("Adding NBBO metrics to orders...")
-    
-    # Group trades by order_id and security to get execution details
-    trades_summary = trades_df.groupby('orderid').agg({
-        'tradetime': 'first',
-        'tradeprice': 'mean',
-        'nationalbidpricesnapshot': 'mean',
-        'nationalofferpricesnapshot': 'mean'
-    }).reset_index()
-    
-    trades_summary = trades_summary.rename(columns={
-        'orderid': 'order_id',
-        'tradetime': 'execution_time',
-        'tradeprice': 'actual_execution_price',
-        'nationalbidpricesnapshot': 'bid_at_execution',
-        'nationalofferpricesnapshot': 'ask_at_execution'
-    })
-    
-    # Calculate midprice
-    trades_summary['midprice_at_execution'] = (
-        (trades_summary['bid_at_execution'] + trades_summary['ask_at_execution']) / 2.0
-    )
-    
-    # Calculate execution quality metrics
-    trades_summary['vs_bid'] = (
-        trades_summary['actual_execution_price'] - trades_summary['bid_at_execution']
-    )
-    trades_summary['vs_ask'] = (
-        trades_summary['actual_execution_price'] - trades_summary['ask_at_execution']
-    )
-    trades_summary['vs_midprice'] = (
-        trades_summary['actual_execution_price'] - trades_summary['midprice_at_execution']
-    )
-    
-    # Merge with orders
-    orders_with_nbbo = orders_df.merge(
-        trades_summary,
-        on='order_id',
-        how='left'
-    )
-    
-    logger.info(f"Added NBBO metrics to {orders_with_nbbo['midprice_at_execution'].notna().sum():,} orders")
-    
-    return orders_with_nbbo
-
-
-# ============================================================================
-# SIMULATION MATCHING LOGIC
-# ============================================================================
-
-def match_dark_book_at_midprice(
-    order_price: float,
-    order_quantity: int,
-    order_side: int,
-    midprice: float,
-    dark_book_prices: dict,
-    dark_book_orders: dict
-) -> dict:
-    """
-    Match incoming order against dark book using midprice as reference.
-    
-    Matching algorithm:
-    1. For BUY orders: Match against SELL orders at or better than midprice
-    2. For SELL orders: Match against BUY orders at or better than midprice
-    3. Within acceptable prices, match by price priority (best first) then FIFO
-    
-    Args:
-        order_price: Order's limit price
-        order_quantity: Quantity to match
-        order_side: 1=BUY, 2=SELL
-        midprice: Reference midprice for matching (typical execution price)
-        dark_book_prices: Dict of available prices in dark book (opposite side)
-        dark_book_orders: Dict mapping prices to order lists
-        
-    Returns:
-        Dictionary with matching results:
-            - matched_quantity: Total quantity matched
-            - matched_orders: List of matched order IDs
-            - execution_prices: List of matched prices
-            - average_price: Volume-weighted average execution price
-    """
-    matched_quantity = 0
-    matched_orders = []
-    execution_prices = []
-    remaining_qty = order_quantity
-    
-    if order_side == 1:  # BUY order - match against SELL orders
-        # Want best (lowest) SELL prices at or below order price
-        # Prefer prices at or below midprice (better than market)
-        acceptable_prices = sorted([
-            p for p in dark_book_prices.keys()
-            if p <= min(order_price, midprice * 1.05)  # Allow slight premium
-        ])
-    else:  # SELL order - match against BUY orders
-        # Want best (highest) BUY prices at or above order price
-        # Prefer prices at or above midprice (better than market)
-        acceptable_prices = sorted([
-            p for p in dark_book_prices.keys()
-            if p >= max(order_price, midprice * 0.95)  # Allow slight discount
-        ], reverse=True)
-    
-    # Match orders by price priority then FIFO
-    for price in acceptable_prices:
-        for order_data in dark_book_orders[price]:
-            if remaining_qty <= 0:
-                break
-            
-            match_qty = min(remaining_qty, order_data['quantity'])
-            matched_quantity += match_qty
-            matched_orders.append(order_data['order_id'])
-            execution_prices.extend([price] * match_qty)
-            remaining_qty -= match_qty
-        
-        if remaining_qty <= 0:
-            break
-    
-    # Calculate average execution price
-    avg_price = (
-        sum(execution_prices) / len(execution_prices)
-        if execution_prices else 0
-    )
-    
-    return {
-        'matched_quantity': matched_quantity,
-        'fill_ratio': matched_quantity / order_quantity if order_quantity > 0 else 0,
-        'matched_orders': matched_orders,
-        'execution_prices': execution_prices,
-        'average_price': avg_price,
-        'vs_midprice': avg_price - midprice if execution_prices else 0
-    }
+    return enriched_trades
 
 
 if __name__ == '__main__':
-    import sys
+    output_dir = 'processed_files'
+    Path(output_dir).mkdir(exist_ok=True)
     
-    # Example usage
-    trades_path = INPUT_FILES.get('trades', 'data/trades/drr_trades_segment_1.csv')
-    trades = pd.read_csv(trades_path)
+    # Load NBBO
+    nbbo_file = INPUT_FILES.get('nbbo', 'data/nbbo/nbbo.csv')
+    nbbo_data = load_nbbo_data(nbbo_file)
     
-    # Extract NBBO midprices
-    nbbo_lookup = load_nbbo_midprices(trades_df=trades)
-    
-    # Show results
-    print("\n=== NBBO Midprice Extraction ===")
-    for symbol, data in list(nbbo_lookup.items())[:5]:
-        print(f"Symbol {symbol}: bid={data['bid_price']}, ask={data['ask_price']}, mid={data['midprice']:.2f}")
+    print(f"\nLoaded {len(nbbo_data):,} NBBO records")
+    print(f"Covering {nbbo_data['orderbookid'].nunique()} unique securities")
