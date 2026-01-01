@@ -1,0 +1,6 @@
+Partition,Sequence,TradeDate,Action,ClearingHouseId,ExchangeId,ExchangeName,Id,OrganisationNumber,ParticipantLongName,ParticipantName,ParticipantType,Timestamp,isActive,timestamp_bucket
+ASX,1,1734786000000000000,NEW,1,1,ASX,1001,ORG1001,BrokerA Securities Pty Ltd,BrokerA,Broker,1734786000000000000,True,1734786000
+ASX,2,1734786000000000000,NEW,1,1,ASX,1002,ORG1002,BrokerB Securities Pty Ltd,BrokerB,Broker,1734786000000000000,True,1734786000
+ASX,3,1734786000000000000,NEW,1,1,ASX,1003,ORG1003,BrokerC Securities Pty Ltd,BrokerC,Market Maker,1734786000000000000,True,1734786000
+ASX,4,1734786000000000000,NEW,1,1,ASX,1004,ORG1004,BrokerD Securities Pty Ltd,BrokerD,Broker,1734786000000000000,True,1734786000
+ASX,5,1734786000000000000,NEW,1,1,ASX,1005,ORG1005,BrokerE Securities Pty Ltd,BrokerE,Broker,1734786000000000000,True,1734786000
