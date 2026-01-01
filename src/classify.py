@@ -7,6 +7,10 @@ Phase 2: Order Classification
 import pandas as pd
 from pathlib import Path
 import logging
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from nbbo import load_nbbo_midprices, add_nbbo_metrics_to_orders
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -48,6 +52,44 @@ def filter_sweep_orders(centrepoint_orders: pd.DataFrame, trades_agg: pd.DataFra
     # Calculate fill ratio
     sweep_with_trades['fill_ratio'] = sweep_with_trades['total_quantity_filled'] / sweep_with_trades['quantity']
     sweep_with_trades['fill_ratio'] = sweep_with_trades['fill_ratio'].fillna(0.0)
+    
+    # Ensure security_code column exists (handle merge duplicates)
+    if 'security_code_x' in sweep_with_trades.columns and 'security_code' not in sweep_with_trades.columns:
+        sweep_with_trades['security_code'] = sweep_with_trades['security_code_x']
+        sweep_with_trades = sweep_with_trades.drop(['security_code_x', 'security_code_y'], axis=1, errors='ignore')
+    
+    # Add NBBO midprice information for simulation
+    try:
+        logger.info("Adding NBBO midprice for dark book simulation...")
+        trades_df = pd.read_csv('data/trades/drr_trades_segment_1.csv')
+        nbbo_lookup = load_nbbo_midprices(trades_df=trades_df)
+        
+        # Get unique symbol
+        if sweep_with_trades['security_code'].nunique() == 1:
+            symbol = sweep_with_trades['security_code'].iloc[0]
+            # Try both int and float versions of the symbol
+            symbol_key = None
+            if symbol in nbbo_lookup:
+                symbol_key = symbol
+            elif float(symbol) in nbbo_lookup:
+                symbol_key = float(symbol)
+            elif int(symbol) in nbbo_lookup:
+                symbol_key = int(symbol)
+            
+            if symbol_key is not None:
+                midprice_data = nbbo_lookup[symbol_key]
+                sweep_with_trades['bid_at_execution'] = midprice_data['bid_price']
+                sweep_with_trades['ask_at_execution'] = midprice_data['ask_price']
+                sweep_with_trades['midprice_at_execution'] = midprice_data['midprice']
+                logger.info(f"  Symbol {symbol}: midprice={midprice_data['midprice']:.2f}")
+            else:
+                logger.warning(f"Symbol {symbol} not found in NBBO lookup. Available: {list(nbbo_lookup.keys())}")
+                sweep_with_trades['midprice_at_execution'] = sweep_with_trades['avg_execution_price']
+        
+    except Exception as e:
+        logger.warning(f"Could not load NBBO data for simulation: {e}")
+        # Set default midprices based on actual execution prices
+        sweep_with_trades['midprice_at_execution'] = sweep_with_trades['avg_execution_price']
     
     # Save
     output_path = Path(output_dir) / 'sweep_orders_with_trades.csv.gz'

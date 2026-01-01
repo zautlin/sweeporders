@@ -1,6 +1,7 @@
 """
 Phase 3: Dark Book Simulation Engine
 Simulates three scenarios for sweep orders resting in dark book
+Uses NBBO midprice for matching instead of order limit price
 """
 
 import pandas as pd
@@ -8,6 +9,10 @@ import pickle
 import numpy as np
 from pathlib import Path
 import logging
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from nbbo import load_nbbo_midprices
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -22,9 +27,9 @@ def load_dark_book(output_dir: str) -> dict:
 def simulate_scenario_a(scenario_a_orders: pd.DataFrame, dark_book: dict, all_orders: pd.DataFrame, output_dir: str) -> pd.DataFrame:
     """
     Scenario A: Immediately filled sweep orders stay in dark book.
-    Simulate matching against resting orders in dark book.
+    Simulate matching against resting orders in dark book using NBBO midprice.
     """
-    logger.info("Scenario A: Simulating immediately filled orders in dark book...")
+    logger.info("Scenario A: Simulating immediately filled orders in dark book using NBBO midprice...")
     
     results = []
     
@@ -34,6 +39,11 @@ def simulate_scenario_a(scenario_a_orders: pd.DataFrame, dark_book: dict, all_or
         side = order['side']  # 1=BUY, 2=SELL
         price = order['price']
         quantity = order['quantity']
+        
+        # Use NBBO midprice if available, otherwise fall back to order price
+        matching_price = order.get('midprice_at_execution', price)
+        if pd.isna(matching_price) or matching_price == 0:
+            matching_price = price
         
         real_fill_ratio = order['fill_ratio']
         real_execution_price = order['avg_execution_price']
@@ -47,6 +57,8 @@ def simulate_scenario_a(scenario_a_orders: pd.DataFrame, dark_book: dict, all_or
                     'order_id': order_id,
                     'symbol': symbol,
                     'side': side,
+                    'order_price': price,
+                    'matching_price': matching_price,
                     'real_fill_ratio': real_fill_ratio,
                     'real_execution_price': real_execution_price,
                     'simulated_fill_ratio': 0.0,
@@ -60,10 +72,11 @@ def simulate_scenario_a(scenario_a_orders: pd.DataFrame, dark_book: dict, all_or
             opposite_prices = dark_book[symbol][opposite_side]
             
             # Sort prices: if BUY, want lowest SELL prices; if SELL, want highest BUY prices
+            # Use midprice as reference instead of order price
             if side == 1:  # BUY side, match against SELL
-                matching_prices = sorted([p for p in opposite_prices.keys() if p <= price], reverse=True)
+                matching_prices = sorted([p for p in opposite_prices.keys() if p <= matching_price], reverse=True)
             else:  # SELL side, match against BUY
-                matching_prices = sorted([p for p in opposite_prices.keys() if p >= price])
+                matching_prices = sorted([p for p in opposite_prices.keys() if p >= matching_price])
             
             # Match against orders
             remaining_qty = quantity
@@ -96,6 +109,8 @@ def simulate_scenario_a(scenario_a_orders: pd.DataFrame, dark_book: dict, all_or
                 'order_id': order_id,
                 'symbol': symbol,
                 'side': side,
+                'order_price': price,
+                'matching_price': matching_price,
                 'real_fill_ratio': real_fill_ratio,
                 'real_execution_price': real_execution_price,
                 'simulated_fill_ratio': simulated_fill_ratio,
@@ -117,8 +132,8 @@ def simulate_scenario_a(scenario_a_orders: pd.DataFrame, dark_book: dict, all_or
 
 
 def simulate_scenario_b(scenario_c_orders: pd.DataFrame, dark_book: dict, all_orders: pd.DataFrame, output_dir: str) -> pd.DataFrame:
-    """Scenario B: Partially executed orders with residual in dark book."""
-    logger.info("Scenario B: Simulating residual orders in dark book...")
+    """Scenario B: Partially executed orders with residual in dark book using NBBO midprice."""
+    logger.info("Scenario B: Simulating residual orders in dark book using NBBO midprice...")
     
     # Filter for only partially filled orders (not completely unfilled)
     partial_orders = scenario_c_orders[scenario_c_orders['total_quantity_filled'] > 0].copy()
@@ -135,6 +150,11 @@ def simulate_scenario_b(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
         real_fill_qty = order['total_quantity_filled']
         residual_qty = quantity - real_fill_qty
         
+        # Use NBBO midprice if available, otherwise fall back to order price
+        matching_price = order.get('midprice_at_execution', price)
+        if pd.isna(matching_price) or matching_price == 0:
+            matching_price = price
+        
         # Opposite side
         opposite_side = 2 if side == 1 else 1
         
@@ -144,6 +164,8 @@ def simulate_scenario_b(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
                     'order_id': order_id,
                     'symbol': symbol,
                     'side': side,
+                    'order_price': price,
+                    'matching_price': matching_price,
                     'real_fill_qty': real_fill_qty,
                     'residual_qty': residual_qty,
                     'residual_fill_qty': 0,
@@ -156,9 +178,9 @@ def simulate_scenario_b(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
             opposite_prices = dark_book[symbol][opposite_side]
             
             if side == 1:  # BUY
-                matching_prices = sorted([p for p in opposite_prices.keys() if p <= price], reverse=True)
+                matching_prices = sorted([p for p in opposite_prices.keys() if p <= matching_price], reverse=True)
             else:  # SELL
-                matching_prices = sorted([p for p in opposite_prices.keys() if p >= price])
+                matching_prices = sorted([p for p in opposite_prices.keys() if p >= matching_price])
             
             # Match residual
             remaining_qty = residual_qty
@@ -188,6 +210,8 @@ def simulate_scenario_b(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
                 'order_id': order_id,
                 'symbol': symbol,
                 'side': side,
+                'order_price': price,
+                'matching_price': matching_price,
                 'real_fill_qty': real_fill_qty,
                 'residual_qty': residual_qty,
                 'residual_fill_qty': residual_fill_qty,
@@ -209,8 +233,8 @@ def simulate_scenario_b(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
 
 
 def simulate_scenario_c(scenario_c_orders: pd.DataFrame, dark_book: dict, all_orders: pd.DataFrame, output_dir: str) -> pd.DataFrame:
-    """Scenario C: Completely unfilled orders resting in dark book."""
-    logger.info("Scenario C: Simulating unfilled orders in dark book...")
+    """Scenario C: Completely unfilled orders resting in dark book using NBBO midprice."""
+    logger.info("Scenario C: Simulating unfilled orders in dark book using NBBO midprice...")
     
     # Filter for completely unfilled orders only
     unfilled_orders = scenario_c_orders[scenario_c_orders['total_quantity_filled'] == 0].copy()
@@ -225,6 +249,11 @@ def simulate_scenario_c(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
         price = order['price']
         quantity = order['quantity']
         
+        # Use NBBO midprice if available, otherwise fall back to order price
+        matching_price = order.get('midprice_at_execution', price)
+        if pd.isna(matching_price) or matching_price == 0:
+            matching_price = price
+        
         # Opposite side
         opposite_side = 2 if side == 1 else 1
         
@@ -234,6 +263,8 @@ def simulate_scenario_c(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
                     'order_id': order_id,
                     'symbol': symbol,
                     'side': side,
+                    'order_price': price,
+                    'matching_price': matching_price,
                     'real_fill_ratio': 0.0,
                     'simulated_fill_ratio': 0.0,
                     'simulated_execution_price': 0.0
@@ -243,9 +274,9 @@ def simulate_scenario_c(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
             opposite_prices = dark_book[symbol][opposite_side]
             
             if side == 1:  # BUY
-                matching_prices = sorted([p for p in opposite_prices.keys() if p <= price], reverse=True)
+                matching_prices = sorted([p for p in opposite_prices.keys() if p <= matching_price], reverse=True)
             else:  # SELL
-                matching_prices = sorted([p for p in opposite_prices.keys() if p >= price])
+                matching_prices = sorted([p for p in opposite_prices.keys() if p >= matching_price])
             
             # Match against all available orders
             remaining_qty = quantity
@@ -273,6 +304,8 @@ def simulate_scenario_c(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
                 'order_id': order_id,
                 'symbol': symbol,
                 'side': side,
+                'order_price': price,
+                'matching_price': matching_price,
                 'real_fill_ratio': 0.0,
                 'simulated_fill_ratio': simulated_fill_ratio,
                 'simulated_execution_price': simulated_execution_price
