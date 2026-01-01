@@ -1,0 +1,5 @@
+,num_full_fills,num_partial_fills,quantity_traded,total_order_quantity,avg_execution_cost,order_fill_ratio,order_count
+GROUP_1_FULLY_FILLED,24.0,0.0,57791.0,57791.0,3359.47,1.0,24.0
+GROUP_2_PARTIALLY_FILLED,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+GROUP_3_NOT_EXECUTED,0.0,0.0,0.0,10477.0,0.0,0.0,5.0
+OVERALL,24.0,0.0,57791.0,68268.0,3359.47,0.8465,29.0
