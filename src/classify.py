@@ -50,8 +50,8 @@ def filter_sweep_orders(centrepoint_orders: pd.DataFrame, trades_agg: pd.DataFra
     sweep_with_trades['fill_ratio'] = sweep_with_trades['fill_ratio'].fillna(0.0)
     
     # Save
-    output_path = Path(output_dir) / 'sweep_orders_with_trades.parquet'
-    sweep_with_trades.to_parquet(output_path, compression='snappy', index=False)
+    output_path = Path(output_dir) / 'sweep_orders_with_trades.csv.gz'
+    sweep_with_trades.to_csv(output_path, compression='gzip', index=False)
     logger.info(f"Saved sweep orders to {output_path}")
     
     logger.info(f"Sweep orders distribution by fill status:")
@@ -112,9 +112,9 @@ def classify_sweep_outcomes(sweep_orders: pd.DataFrame, output_dir: str) -> tupl
         scenario_c = scenario_c.drop(['security_code_x', 'security_code_y'], axis=1, errors='ignore')
     
     # Save separate files
-    scenario_a.to_parquet(Path(output_dir) / 'scenario_a_immediate_full.parquet', compression='snappy', index=False)
-    scenario_b.to_parquet(Path(output_dir) / 'scenario_b_eventual_full.parquet', compression='snappy', index=False)
-    scenario_c.to_parquet(Path(output_dir) / 'scenario_c_partial_none.parquet', compression='snappy', index=False)
+    scenario_a.to_csv(Path(output_dir) / 'scenario_a_immediate_full.csv.gz', compression='gzip', index=False)
+    scenario_b.to_csv(Path(output_dir) / 'scenario_b_eventual_full.csv.gz', compression='gzip', index=False)
+    scenario_c.to_csv(Path(output_dir) / 'scenario_c_partial_none.csv.gz', compression='gzip', index=False)
     logger.info("Saved scenario files")
     
     # Create summary
@@ -154,8 +154,8 @@ if __name__ == '__main__':
     Path(output_dir).mkdir(exist_ok=True)
     
     # Load data
-    cp_orders = pd.read_parquet(Path(output_dir) / 'centrepoint_orders_raw.parquet')
-    trades_agg = pd.read_parquet(Path(output_dir) / 'centrepoint_trades_agg.parquet')
+    cp_orders = pd.read_csv(Path(output_dir) / 'centrepoint_orders_raw.csv.gz')
+    trades_agg = pd.read_csv(Path(output_dir) / 'centrepoint_trades_agg.csv.gz')
     
     # Phase 2.1
     sweep_orders = filter_sweep_orders(cp_orders, trades_agg, output_dir)

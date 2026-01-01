@@ -61,9 +61,9 @@ def extract_centrepoint_orders(input_file: str, output_dir: str) -> pd.DataFrame
         count = (cp_orders_filtered['exchangeordertype'] == ot).sum()
         logger.info(f"  Type {ot}: {count:,}")
     
-    # Save to parquet
-    output_path = Path(output_dir) / 'centrepoint_orders_raw.parquet'
-    cp_orders_filtered.to_parquet(output_path, compression='snappy')
+    # Save to compressed CSV
+    output_path = Path(output_dir) / 'centrepoint_orders_raw.csv.gz'
+    cp_orders_filtered.to_csv(output_path, compression='gzip', index=False)
     logger.info(f"Saved to {output_path}")
     
     # Metadata

@@ -58,8 +58,8 @@ def match_trades(trades_file: str, centrepoint_order_ids: list, output_dir: str)
     logger.info(f"Cleaned trades: {len(matched_trades):,}")
     
     # Save raw trades
-    output_path = Path(output_dir) / 'centrepoint_trades_raw.parquet'
-    matched_trades.to_parquet(output_path, compression='snappy')
+    output_path = Path(output_dir) / 'centrepoint_trades_raw.csv.gz'
+    matched_trades.to_csv(output_path, compression='gzip', index=False)
     logger.info(f"Saved raw trades to {output_path}")
     
     # Aggregate trades by order
@@ -86,14 +86,13 @@ def match_trades(trades_file: str, centrepoint_order_ids: list, output_dir: str)
         })
     
     trades_agg = pd.DataFrame(agg_data)
-    trades_agg = trades_agg.set_index('order_id')
     
     logger.info(f"Aggregated trades: {len(trades_agg):,} unique orders")
     logger.info(f"Total quantity filled: {trades_agg['total_quantity_filled'].sum():,}")
     
     # Save aggregated trades
-    output_path = Path(output_dir) / 'centrepoint_trades_agg.parquet'
-    trades_agg.to_parquet(output_path, compression='snappy')
+    output_path = Path(output_dir) / 'centrepoint_trades_agg.csv.gz'
+    trades_agg.to_csv(output_path, compression='gzip', index=False)
     logger.info(f"Saved aggregated trades to {output_path}")
     
     return matched_trades, trades_agg

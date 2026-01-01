@@ -109,8 +109,8 @@ def simulate_scenario_a(scenario_a_orders: pd.DataFrame, dark_book: dict, all_or
             continue
     
     results_df = pd.DataFrame(results)
-    output_path = Path(output_dir) / 'scenario_a_simulation_results.parquet'
-    results_df.to_parquet(output_path, compression='snappy', index=False)
+    output_path = Path(output_dir) / 'scenario_a_simulation_results.csv.gz'
+    results_df.to_csv(output_path, compression='gzip', index=False)
     logger.info(f"Saved Scenario A results: {len(results_df):,} orders")
     
     return results_df
@@ -201,8 +201,8 @@ def simulate_scenario_b(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
             continue
     
     results_df = pd.DataFrame(results)
-    output_path = Path(output_dir) / 'scenario_b_simulation_results.parquet'
-    results_df.to_parquet(output_path, compression='snappy', index=False)
+    output_path = Path(output_dir) / 'scenario_b_simulation_results.csv.gz'
+    results_df.to_csv(output_path, compression='gzip', index=False)
     logger.info(f"Saved Scenario B results: {len(results_df):,} orders")
     
     return results_df
@@ -283,8 +283,8 @@ def simulate_scenario_c(scenario_c_orders: pd.DataFrame, dark_book: dict, all_or
             continue
     
     results_df = pd.DataFrame(results)
-    output_path = Path(output_dir) / 'scenario_c_simulation_results.parquet'
-    results_df.to_parquet(output_path, compression='snappy', index=False)
+    output_path = Path(output_dir) / 'scenario_c_simulation_results.csv.gz'
+    results_df.to_csv(output_path, compression='gzip', index=False)
     logger.info(f"Saved Scenario C results: {len(results_df):,} orders")
     
     return results_df
@@ -294,9 +294,9 @@ if __name__ == '__main__':
     output_dir = 'processed_files'
     
     # Load data
-    scenario_a = pd.read_parquet(Path(output_dir) / 'scenario_a_immediate_full.parquet')
-    scenario_b_c = pd.read_parquet(Path(output_dir) / 'scenario_c_partial_none.parquet')
-    all_orders = pd.read_parquet(Path(output_dir) / 'centrepoint_orders_raw.parquet')
+    scenario_a = pd.read_csv(Path(output_dir) / 'scenario_a_immediate_full.csv.gz')
+    scenario_b_c = pd.read_csv(Path(output_dir) / 'scenario_c_partial_none.csv.gz')
+    all_orders = pd.read_csv(Path(output_dir) / 'centrepoint_orders_raw.csv.gz')
     
     dark_book = load_dark_book(output_dir)
     

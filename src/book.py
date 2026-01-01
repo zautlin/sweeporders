@@ -113,8 +113,8 @@ if __name__ == '__main__':
     output_dir = 'processed_files'
     
     # Load Centre Point orders
-    orders_path = Path(output_dir) / 'centrepoint_orders_raw.parquet'
-    cp_orders = pd.read_parquet(orders_path)
+    orders_path = Path(output_dir) / 'centrepoint_orders_raw.csv.gz'
+    cp_orders = pd.read_csv(orders_path)
     
     # Build dark book
     dark_book, order_index = build_dark_book(cp_orders, output_dir)
