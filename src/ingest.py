@@ -7,6 +7,11 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
+import sys
+
+# Add parent directory to path for config imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config.columns import CENTRE_POINT_ORDER_TYPES
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -16,7 +21,7 @@ def extract_centrepoint_orders(input_file: str, output_dir: str) -> pd.DataFrame
     """
     Extract Centre Point orders from orders file.
     
-    Centre Point order types: 64, 256, 2048, 4096, 4098
+    Centre Point order types are defined in config.columns.CENTRE_POINT_ORDER_TYPES
     
     Args:
         input_file: Path to orders CSV file
@@ -25,16 +30,14 @@ def extract_centrepoint_orders(input_file: str, output_dir: str) -> pd.DataFrame
     Returns:
         DataFrame with Centre Point orders
     """
-    CENTREPOINT_TYPES = [64, 256, 2048, 4096, 4098]
-    
     logger.info(f"Reading orders file: {input_file}")
     
     # Read full orders file
     orders_df = pd.read_csv(input_file)
     logger.info(f"Total orders read: {len(orders_df):,}")
     
-    # Filter for Centre Point order types
-    cp_orders = orders_df[orders_df['exchangeordertype'].isin(CENTREPOINT_TYPES)].copy()
+    # Filter for Centre Point order types (from config)
+    cp_orders = orders_df[orders_df['exchangeordertype'].isin(CENTRE_POINT_ORDER_TYPES)].copy()
     logger.info(f"Centre Point orders found: {len(cp_orders):,}")
     
     # Optimize data types
@@ -57,7 +60,7 @@ def extract_centrepoint_orders(input_file: str, output_dir: str) -> pd.DataFrame
     cp_orders_filtered = cp_orders[columns_to_keep].copy()
     
     logger.info(f"Centre Point order types distribution:")
-    for ot in sorted(CENTREPOINT_TYPES):
+    for ot in sorted(CENTRE_POINT_ORDER_TYPES):
         count = (cp_orders_filtered['exchangeordertype'] == ot).sum()
         logger.info(f"  Type {ot}: {count:,}")
     
