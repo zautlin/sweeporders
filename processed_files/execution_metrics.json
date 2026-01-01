@@ -1,0 +1,50 @@
+{
+  "total_jobs": 5,
+  "completed_jobs": 5,
+  "failed_jobs": 0,
+  "total_rows_processed": 6000,
+  "total_rows_output": 4800,
+  "start_time": "2026-01-02T00:19:37.766795",
+  "end_time": "2026-01-02T00:19:40.283926",
+  "total_duration_sec": 2.5171310901641846,
+  "peak_memory_mb": 4777.296875,
+  "average_memory_mb": 4763.26171875,
+  "average_cpu_percent": 45.3,
+  "job_metrics": {
+    "job_1": {
+      "status": "completed",
+      "rows_processed": 1000,
+      "rows_output": 800,
+      "duration_sec": 0.5005249977111816,
+      "throughput_rows_sec": 1997.902211823256
+    },
+    "job_2": {
+      "status": "completed",
+      "rows_processed": 1100,
+      "rows_output": 880,
+      "duration_sec": 0.5050239562988281,
+      "throughput_rows_sec": 2178.1144959173344
+    },
+    "job_3": {
+      "status": "completed",
+      "rows_processed": 1200,
+      "rows_output": 960,
+      "duration_sec": 0.5027251243591309,
+      "throughput_rows_sec": 2386.9903091271763
+    },
+    "job_4": {
+      "status": "completed",
+      "rows_processed": 1300,
+      "rows_output": 1040,
+      "duration_sec": 0.5028460025787354,
+      "throughput_rows_sec": 2585.2845470248053
+    },
+    "job_5": {
+      "status": "completed",
+      "rows_processed": 1400,
+      "rows_output": 1120,
+      "duration_sec": 0.5043950080871582,
+      "throughput_rows_sec": 2775.6024099233027
+    }
+  }
+}
