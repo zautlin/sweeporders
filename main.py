@@ -35,7 +35,7 @@ OUTPUTS_DIR = 'data/outputs'      # Final outputs: simulation results, compariso
 # Order types
 CENTRE_POINT_ORDER_TYPES = [64, 256, 2048, 4096, 4098]
 SWEEP_ORDER_TYPE = 2048
-INCOMING_ORDER_TYPES = [64, 256, 4096, 4098]
+ELIGIBLE_MATCHING_ORDER_TYPES = [64, 256, 2048, 4096, 4098]  # ALL CP types, including sweep-to-sweep
 CHUNK_SIZE = 100000
 
 # Column name mapping for schema independence
@@ -142,16 +142,16 @@ def calculate_simulated_metrics_step(orders_by_partition, simulation_results_by_
     orders_with_sim_metrics_by_partition = {}
     
     for partition_key, sim_results in simulation_results_by_partition.items():
-        # Load orders after LOB (contains real execution results)
-        orders_after_lob_file = Path(PROCESSED_DIR) / partition_key / 'orders_after_lob.csv'
-        if not orders_after_lob_file.exists():
+        # Load orders after matching (contains real execution results)
+        orders_after_matching_file = Path(PROCESSED_DIR) / partition_key / 'orders_after_matching.csv'
+        if not orders_after_matching_file.exists():
             continue
         
-        orders_after_lob = pd.read_csv(orders_after_lob_file)
+        orders_after_matching = pd.read_csv(orders_after_matching_file)
         
         # Calculate simulated metrics
         orders_with_metrics = mg.calculate_simulated_metrics(
-            orders_after_lob,
+            orders_after_matching,
             sim_results['order_summary'],
             sim_results['match_details']
         )
@@ -167,37 +167,56 @@ def calculate_simulated_metrics_step(orders_by_partition, simulation_results_by_
     return orders_with_sim_metrics_by_partition
 
 
-def classify_order_groups(orders_with_sim_metrics_by_partition):
-    """Step 10: Classify orders into groups based on real execution."""
+def classify_order_groups(orders_by_partition):
+    """Step 10: Classify sweep orders (type 2048 only) into groups based on real execution."""
     groups_by_partition = dp.classify_order_groups(
-        orders_with_sim_metrics_by_partition, 
+        orders_by_partition,
         PROCESSED_DIR, 
         COLUMN_MAPPING
     )
     return groups_by_partition
 
 
-def compare_real_vs_simulated(orders_with_sim_metrics_by_partition, groups_by_partition, output_dir):
-    """Step 11: Compare real vs simulated execution for all partitions."""
-    print("\n[11/11] Comparing real vs simulated execution...")
+def compare_real_vs_simulated(simulation_results_by_partition, groups_by_partition, orders_by_partition, output_dir):
+    """Step 11: Compare real vs simulated execution for sweep orders with statistical analysis."""
+    print("\n[11/11] Comparing real vs simulated execution (sweep orders)...")
     
-    for partition_key, orders_df in orders_with_sim_metrics_by_partition.items():
+    for partition_key, sim_results in simulation_results_by_partition.items():
         groups = groups_by_partition.get(partition_key)
         if not groups:
             continue
         
-        # Compare by group
-        comparison_data = mg.compare_by_group(orders_df, groups)
+        # Load orders_after_matching for real execution data
+        date, security_code = partition_key.split('/')
+        orders_after_file = Path(PROCESSED_DIR) / date / security_code / 'orders_after_matching.csv'
+        if not orders_after_file.exists():
+            continue
         
-        # Generate comparison reports
+        orders_after = pd.read_csv(orders_after_file)
+        
+        # Load aggregated trades for price comparison
+        trades_agg_file = Path(PROCESSED_DIR) / date / security_code / 'cp_trades_aggregated.csv.gz'
+        trades_agg = None
+        if trades_agg_file.exists():
+            trades_agg = pd.read_csv(trades_agg_file)
+        
+        # Run comprehensive sweep comparison
+        comparison_results = mg.compare_sweep_execution(
+            sweep_order_summary=sim_results['order_summary'],
+            orders_after_matching=orders_after,
+            trades_agg=trades_agg,
+            groups=groups
+        )
+        
+        # Generate reports
         partition_output_dir = Path(output_dir) / partition_key
-        report_files = mg.generate_comparison_reports(
+        report_files = mg.generate_sweep_comparison_reports(
             partition_key,
-            comparison_data,
+            comparison_results,
             partition_output_dir
         )
     
-    print(f"   Generated comparison reports for {len(orders_with_sim_metrics_by_partition)} partitions")
+    print(f"   Generated sweep comparison reports for {len(simulation_results_by_partition)} partitions")
 
 
 def print_summary(orders_by_partition, trades_by_partition, execution_time):
@@ -294,8 +313,8 @@ def main():
         PROCESSED_DIR
     )
     
-    # Step 6: Extract LOB states (before/after)
-    dp.extract_lob_states(
+    # Step 6: Extract order states (before/after matching)
+    dp.get_orders_state(
         orders_by_partition, 
         PROCESSED_DIR, 
         COLUMN_MAPPING
@@ -323,13 +342,14 @@ def main():
         OUTPUTS_DIR
     )
     
-    # Step 10: Classify order groups
-    groups_by_partition = classify_order_groups(orders_with_sim_metrics_by_partition)
+    # Step 10: Classify order groups (sweep orders only, type 2048)
+    groups_by_partition = classify_order_groups(orders_by_partition)
     
     # Step 11: Compare real vs simulated (outputs to OUTPUTS_DIR)
     compare_real_vs_simulated(
-        orders_with_sim_metrics_by_partition,
+        simulation_results_by_partition,
         groups_by_partition,
+        orders_by_partition,
         OUTPUTS_DIR
     )
     

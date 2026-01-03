@@ -452,3 +452,456 @@ def _generate_statistical_summary(comparison_data, output_dir):
     stats_df.to_csv(stats_file, index=False)
     
     return stats_file
+
+
+# ============================================================================
+# NEW: SWEEP ORDER COMPARISON FUNCTIONS
+# ============================================================================
+
+def compare_sweep_execution(sweep_order_summary, orders_after_matching, trades_agg, groups):
+    """
+    Compare simulated vs real execution for SWEEP ORDERS ONLY.
+    
+    Args:
+        sweep_order_summary: DataFrame from simulation (per sweep order)
+        orders_after_matching: DataFrame with real final state of orders
+        trades_agg: DataFrame with aggregated trade data
+        groups: Dictionary mapping group names to sweep order DataFrames
+    
+    Returns:
+        Dictionary containing:
+            - 'sweep_comparison': Per-order comparison (sweep orders only)
+            - 'group_summary': Summary statistics by group
+            - 'statistical_tests': T-test results
+            - 'size_analysis': Analysis segmented by order size
+    """
+    
+    # Standardize column names in groups dictionary
+    standardized_groups = {}
+    for group_name, group_df in groups.items():
+        group_df_copy = group_df.copy()
+        if 'order_id' in group_df_copy.columns and 'orderid' not in group_df_copy.columns:
+            group_df_copy = group_df_copy.rename(columns={'order_id': 'orderid'})
+        # Ensure orderid is int64
+        if 'orderid' in group_df_copy.columns:
+            group_df_copy['orderid'] = group_df_copy['orderid'].astype('int64')
+        standardized_groups[group_name] = group_df_copy
+    groups = standardized_groups
+    
+    # Filter orders_after_matching for sweep orders only (type 2048)
+    sweep_orders_real = orders_after_matching[
+        orders_after_matching['exchangeordertype'] == 2048
+    ].copy()
+    
+    # Standardize column names
+    if 'order_id' in sweep_orders_real.columns and 'orderid' not in sweep_orders_real.columns:
+        sweep_orders_real = sweep_orders_real.rename(columns={'order_id': 'orderid'})
+    
+    # Merge simulation with real execution data
+    comparison = sweep_order_summary.merge(
+        sweep_orders_real[['orderid', 'quantity', 'leavesquantity', 'totalmatchedquantity']],
+        on='orderid',
+        how='left',
+        suffixes=('_sim', '_real')
+    )
+    
+    # Merge with trade aggregates for price information
+    if trades_agg is not None and len(trades_agg) > 0:
+        comparison = comparison.merge(
+            trades_agg[['orderid', 'avg_execution_price', 'num_trades', 'first_trade_time', 'last_trade_time']],
+            on='orderid',
+            how='left'
+        )
+        comparison['real_num_matches'] = comparison['num_trades'].fillna(0)
+        comparison['real_avg_price'] = comparison['avg_execution_price'].fillna(0)
+    else:
+        comparison['real_num_matches'] = 0
+        comparison['real_avg_price'] = 0.0
+    
+    # Calculate real execution metrics
+    comparison['real_matched_quantity'] = comparison['totalmatchedquantity'].fillna(0)
+    comparison['real_fill_ratio'] = comparison['real_matched_quantity'] / comparison['quantity_real']
+    comparison['real_fill_status'] = comparison.apply(
+        lambda row: _determine_fill_status(row['real_matched_quantity'], row['quantity_real']),
+        axis=1
+    )
+    
+    # Calculate simulated execution metrics (rename for clarity)
+    comparison = comparison.rename(columns={
+        'matched_quantity': 'simulated_matched_quantity',
+        'fill_ratio': 'simulated_fill_ratio',
+        'num_matches': 'simulated_num_matches',
+        'quantity_sim': 'available_quantity'
+    })
+    
+    comparison['simulated_fill_status'] = comparison.apply(
+        lambda row: _determine_fill_status(row['simulated_matched_quantity'], row['available_quantity']),
+        axis=1
+    )
+    
+    # Calculate differences
+    comparison['matched_quantity_diff'] = comparison['simulated_matched_quantity'] - comparison['real_matched_quantity']
+    comparison['fill_ratio_diff'] = comparison['simulated_fill_ratio'] - comparison['real_fill_ratio']
+    comparison['num_matches_diff'] = comparison['simulated_num_matches'] - comparison['real_num_matches']
+    comparison['price_diff'] = 0.0  # Placeholder - would need simulated prices
+    
+    # Add order size category
+    comparison['size_category'] = comparison['available_quantity'].apply(_categorize_order_size)
+    
+    # Add group membership
+    comparison['group'] = comparison['orderid'].apply(lambda x: _find_order_group(x, groups))
+    
+    # Generate comprehensive analyses
+    sweep_comparison = comparison[[
+        'orderid', 'available_quantity', 'size_category', 'group',
+        'real_matched_quantity', 'simulated_matched_quantity', 'matched_quantity_diff',
+        'real_fill_ratio', 'simulated_fill_ratio', 'fill_ratio_diff',
+        'real_num_matches', 'simulated_num_matches', 'num_matches_diff',
+        'real_fill_status', 'simulated_fill_status'
+    ]]
+    
+    # Calculate group-level summaries
+    group_summary = _calculate_sweep_group_summary(comparison)
+    
+    # Calculate statistical tests
+    statistical_tests = _calculate_statistical_tests(comparison)
+    
+    # Analysis by order size
+    size_analysis = _calculate_size_analysis(comparison)
+    
+    return {
+        'sweep_comparison': sweep_comparison,
+        'group_summary': group_summary,
+        'statistical_tests': statistical_tests,
+        'size_analysis': size_analysis
+    }
+
+
+def _categorize_order_size(quantity):
+    """Categorize order by size."""
+    if quantity <= 500:
+        return 'Small'
+    elif quantity <= 2000:
+        return 'Medium'
+    else:
+        return 'Large'
+
+
+def _find_order_group(orderid, groups):
+    """Find which group an order belongs to."""
+    for group_name, group_df in groups.items():
+        # Handle both 'orderid' and 'order_id' column names
+        if 'orderid' in group_df.columns:
+            orderid_col = 'orderid'
+        elif 'order_id' in group_df.columns:
+            orderid_col = 'order_id'
+        else:
+            continue
+        
+        # Ensure orderid is int64 for comparison
+        try:
+            if int(orderid) in group_df[orderid_col].astype('int64').values:
+                return group_name
+        except (ValueError, TypeError, KeyError):
+            continue
+    return 'Unknown'
+
+
+def _calculate_sweep_group_summary(comparison_df):
+    """Calculate summary statistics by group for sweep orders."""
+    
+    summaries = []
+    
+    for group_name in comparison_df['group'].unique():
+        if group_name == 'Unknown':
+            continue
+            
+        group_data = comparison_df[comparison_df['group'] == group_name]
+        
+        summary = {
+            'group': group_name,
+            'num_orders': len(group_data),
+            
+            # Real execution
+            'real_total_matched': group_data['real_matched_quantity'].sum(),
+            'real_mean_matched': group_data['real_matched_quantity'].mean(),
+            'real_mean_fill_ratio': group_data['real_fill_ratio'].mean(),
+            'real_mean_num_matches': group_data['real_num_matches'].mean(),
+            
+            # Simulated execution
+            'simulated_total_matched': group_data['simulated_matched_quantity'].sum(),
+            'simulated_mean_matched': group_data['simulated_matched_quantity'].mean(),
+            'simulated_mean_fill_ratio': group_data['simulated_fill_ratio'].mean(),
+            'simulated_mean_num_matches': group_data['simulated_num_matches'].mean(),
+            
+            # Differences
+            'total_quantity_diff': group_data['matched_quantity_diff'].sum(),
+            'mean_quantity_diff': group_data['matched_quantity_diff'].mean(),
+            'mean_fill_ratio_diff': group_data['fill_ratio_diff'].mean(),
+            'mean_num_matches_diff': group_data['num_matches_diff'].mean(),
+            
+            # Percentages
+            'pct_sim_better': ((group_data['matched_quantity_diff'] > 0).sum() / len(group_data) * 100) if len(group_data) > 0 else 0,
+            'pct_sim_worse': ((group_data['matched_quantity_diff'] < 0).sum() / len(group_data) * 100) if len(group_data) > 0 else 0,
+            'pct_sim_same': ((group_data['matched_quantity_diff'] == 0).sum() / len(group_data) * 100) if len(group_data) > 0 else 0,
+        }
+        
+        summaries.append(summary)
+    
+    return pd.DataFrame(summaries)
+
+
+def _calculate_statistical_tests(comparison_df):
+    """
+    Calculate paired t-tests comparing simulated vs real execution.
+    
+    Tests are performed on:
+    - Matched quantity
+    - Fill ratio
+    - Number of matches
+    
+    Segmented by:
+    - Overall
+    - By group
+    - By size category
+    """
+    from scipy import stats
+    
+    results = []
+    
+    # Overall tests
+    results.extend(_run_ttests(comparison_df, 'Overall', 'All'))
+    
+    # Tests by group
+    for group_name in comparison_df['group'].unique():
+        if group_name == 'Unknown':
+            continue
+        group_data = comparison_df[comparison_df['group'] == group_name]
+        if len(group_data) >= 2:  # Need at least 2 samples for t-test
+            results.extend(_run_ttests(group_data, 'Group', group_name))
+    
+    # Tests by size category
+    for size_cat in comparison_df['size_category'].unique():
+        size_data = comparison_df[comparison_df['size_category'] == size_cat]
+        if len(size_data) >= 2:
+            results.extend(_run_ttests(size_data, 'Size', size_cat))
+    
+    # Tests by group AND size
+    for group_name in comparison_df['group'].unique():
+        if group_name == 'Unknown':
+            continue
+        for size_cat in comparison_df['size_category'].unique():
+            segment_data = comparison_df[
+                (comparison_df['group'] == group_name) & 
+                (comparison_df['size_category'] == size_cat)
+            ]
+            if len(segment_data) >= 2:
+                results.extend(_run_ttests(segment_data, f'Group-Size', f'{group_name}_{size_cat}'))
+    
+    return pd.DataFrame(results)
+
+
+def _run_ttests(data, segment_type, segment_name):
+    """Run paired t-tests on a data segment."""
+    from scipy import stats
+    
+    results = []
+    
+    # Only run tests if we have enough data
+    if len(data) < 2:
+        return results
+    
+    # Test 1: Matched Quantity
+    real_matched = data['real_matched_quantity'].values
+    sim_matched = data['simulated_matched_quantity'].values
+    
+    if len(real_matched) >= 2:
+        t_stat, p_value = stats.ttest_rel(sim_matched, real_matched)
+        mean_diff = (sim_matched - real_matched).mean()
+        std_diff = (sim_matched - real_matched).std()
+        ci_lower, ci_upper = stats.t.interval(
+            0.95, 
+            len(real_matched) - 1,
+            loc=mean_diff,
+            scale=stats.sem(sim_matched - real_matched)
+        )
+        
+        results.append({
+            'segment_type': segment_type,
+            'segment_name': segment_name,
+            'metric': 'Matched Quantity',
+            'n_samples': len(data),
+            'mean_real': real_matched.mean(),
+            'mean_simulated': sim_matched.mean(),
+            'mean_difference': mean_diff,
+            'std_difference': std_diff,
+            't_statistic': t_stat,
+            'p_value': p_value,
+            'significant_5pct': p_value < 0.05,
+            'significant_1pct': p_value < 0.01,
+            'ci_95_lower': ci_lower,
+            'ci_95_upper': ci_upper
+        })
+    
+    # Test 2: Fill Ratio
+    real_fill = data['real_fill_ratio'].values
+    sim_fill = data['simulated_fill_ratio'].values
+    
+    if len(real_fill) >= 2:
+        t_stat, p_value = stats.ttest_rel(sim_fill, real_fill)
+        mean_diff = (sim_fill - real_fill).mean()
+        std_diff = (sim_fill - real_fill).std()
+        ci_lower, ci_upper = stats.t.interval(
+            0.95, 
+            len(real_fill) - 1,
+            loc=mean_diff,
+            scale=stats.sem(sim_fill - real_fill)
+        )
+        
+        results.append({
+            'segment_type': segment_type,
+            'segment_name': segment_name,
+            'metric': 'Fill Ratio',
+            'n_samples': len(data),
+            'mean_real': real_fill.mean(),
+            'mean_simulated': sim_fill.mean(),
+            'mean_difference': mean_diff,
+            'std_difference': std_diff,
+            't_statistic': t_stat,
+            'p_value': p_value,
+            'significant_5pct': p_value < 0.05,
+            'significant_1pct': p_value < 0.01,
+            'ci_95_lower': ci_lower,
+            'ci_95_upper': ci_upper
+        })
+    
+    # Test 3: Number of Matches
+    real_num = data['real_num_matches'].values
+    sim_num = data['simulated_num_matches'].values
+    
+    if len(real_num) >= 2:
+        t_stat, p_value = stats.ttest_rel(sim_num, real_num)
+        mean_diff = (sim_num - real_num).mean()
+        std_diff = (sim_num - real_num).std()
+        ci_lower, ci_upper = stats.t.interval(
+            0.95, 
+            len(real_num) - 1,
+            loc=mean_diff,
+            scale=stats.sem(sim_num - real_num)
+        )
+        
+        results.append({
+            'segment_type': segment_type,
+            'segment_name': segment_name,
+            'metric': 'Number of Matches',
+            'n_samples': len(data),
+            'mean_real': real_num.mean(),
+            'mean_simulated': sim_num.mean(),
+            'mean_difference': mean_diff,
+            'std_difference': std_diff,
+            't_statistic': t_stat,
+            'p_value': p_value,
+            'significant_5pct': p_value < 0.05,
+            'significant_1pct': p_value < 0.01,
+            'ci_95_lower': ci_lower,
+            'ci_95_upper': ci_upper
+        })
+    
+    return results
+
+
+def _calculate_size_analysis(comparison_df):
+    """Calculate detailed analysis by order size category."""
+    
+    analyses = []
+    
+    for size_cat in ['Small', 'Medium', 'Large']:
+        size_data = comparison_df[comparison_df['size_category'] == size_cat]
+        
+        if len(size_data) == 0:
+            continue
+        
+        analysis = {
+            'size_category': size_cat,
+            'num_orders': len(size_data),
+            'quantity_range': f"{size_data['available_quantity'].min():.0f} - {size_data['available_quantity'].max():.0f}",
+            
+            # Real execution
+            'real_total_matched': size_data['real_matched_quantity'].sum(),
+            'real_mean_matched': size_data['real_matched_quantity'].mean(),
+            'real_std_matched': size_data['real_matched_quantity'].std(),
+            'real_mean_fill_ratio': size_data['real_fill_ratio'].mean(),
+            'real_std_fill_ratio': size_data['real_fill_ratio'].std(),
+            
+            # Simulated execution
+            'simulated_total_matched': size_data['simulated_matched_quantity'].sum(),
+            'simulated_mean_matched': size_data['simulated_matched_quantity'].mean(),
+            'simulated_std_matched': size_data['simulated_matched_quantity'].std(),
+            'simulated_mean_fill_ratio': size_data['simulated_fill_ratio'].mean(),
+            'simulated_std_fill_ratio': size_data['simulated_fill_ratio'].std(),
+            
+            # Differences
+            'mean_quantity_diff': size_data['matched_quantity_diff'].mean(),
+            'median_quantity_diff': size_data['matched_quantity_diff'].median(),
+            'std_quantity_diff': size_data['matched_quantity_diff'].std(),
+            'mean_fill_ratio_diff': size_data['fill_ratio_diff'].mean(),
+            'median_fill_ratio_diff': size_data['fill_ratio_diff'].median(),
+            
+            # Distribution
+            'pct_sim_better': ((size_data['matched_quantity_diff'] > 0).sum() / len(size_data) * 100),
+            'pct_sim_worse': ((size_data['matched_quantity_diff'] < 0).sum() / len(size_data) * 100),
+            'pct_sim_same': ((size_data['matched_quantity_diff'] == 0).sum() / len(size_data) * 100),
+        }
+        
+        analyses.append(analysis)
+    
+    return pd.DataFrame(analyses)
+
+
+def generate_sweep_comparison_reports(partition_key, comparison_results, output_dir):
+    """
+    Generate comprehensive comparison reports for sweep orders.
+    
+    Args:
+        partition_key: Partition identifier
+        comparison_results: Dictionary from compare_sweep_execution()
+        output_dir: Directory to save reports
+    
+    Returns:
+        Dictionary mapping report type to file path
+    """
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    report_files = {}
+    
+    # Report 1: Per-order sweep comparison
+    if 'sweep_comparison' in comparison_results:
+        file_path = output_dir / 'sweep_order_comparison.csv'
+        comparison_results['sweep_comparison'].to_csv(file_path, index=False)
+        report_files['sweep_comparison'] = file_path
+        print(f"    Generated: sweep_order_comparison.csv ({len(comparison_results['sweep_comparison']):,} orders)")
+    
+    # Report 2: Group summary
+    if 'group_summary' in comparison_results:
+        file_path = output_dir / 'sweep_group_summary.csv'
+        comparison_results['group_summary'].to_csv(file_path, index=False)
+        report_files['group_summary'] = file_path
+        print(f"    Generated: sweep_group_summary.csv")
+    
+    # Report 3: Statistical tests
+    if 'statistical_tests' in comparison_results:
+        file_path = output_dir / 'sweep_statistical_tests.csv'
+        comparison_results['statistical_tests'].to_csv(file_path, index=False)
+        report_files['statistical_tests'] = file_path
+        print(f"    Generated: sweep_statistical_tests.csv ({len(comparison_results['statistical_tests'])} tests)")
+    
+    # Report 4: Size analysis
+    if 'size_analysis' in comparison_results:
+        file_path = output_dir / 'sweep_size_analysis.csv'
+        comparison_results['size_analysis'].to_csv(file_path, index=False)
+        report_files['size_analysis'] = file_path
+        print(f"    Generated: sweep_size_analysis.csv")
+    
+    return report_files

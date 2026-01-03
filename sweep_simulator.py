@@ -14,7 +14,7 @@ import numpy as np
 
 # Constants
 SWEEP_ORDER_TYPE = 2048
-INCOMING_ORDER_TYPES = {64, 256, 4096, 4098}
+ELIGIBLE_MATCHING_ORDER_TYPES = {64, 256, 2048, 4096, 4098}  # ALL CP types, including sweep-to-sweep
 ORDER_TYPE_COLUMN = 'exchangeordertype'
 
 
@@ -86,46 +86,76 @@ def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
 
 def load_and_prepare_orders(partition_data):
     """
-    Load and prepare sweep and incoming orders for simulation.
+    Load and prepare sweep orders and all matching-eligible orders for simulation.
     
     Args:
         partition_data: Dictionary containing:
-            - 'orders_before': DataFrame from orders_before_lob.csv
-            - 'orders_after': DataFrame from orders_after_lob.csv
+            - 'orders_before': DataFrame from orders_before_matching.csv
+            - 'orders_after': DataFrame from orders_after_matching.csv
             - 'last_execution': DataFrame from last_execution_time.csv
     
     Returns:
-        Tuple of (sweep_orders, incoming_orders)
+        Tuple of (sweep_orders, all_orders)
     """
     
     sweep_orders = _prepare_sweep_orders(partition_data)
-    incoming_orders = _prepare_incoming_orders(partition_data)
+    all_orders = _prepare_all_orders_for_matching(partition_data)
     
-    return sweep_orders, incoming_orders
+    return sweep_orders, all_orders
 
 
 def _prepare_sweep_orders(partition_data):
     """
-    Prepare sweep orders (type 2048) from orders_after_lob.csv.
+    Prepare sweep orders (type 2048) from orders_before_matching.csv.
+    
+    Uses orders_before to get FIRST timestamp and sequence for correct sorting.
+    Merges with orders_after to get final leavesquantity.
+    
+    NOTE: orders_before may have multiple rows per order (different states).
+    We take the FIRST occurrence (earliest timestamp/sequence) per order.
     
     Returns:
         DataFrame with columns:
             - orderid
+            - timestamp (original placement time - FIRST occurrence)
+            - sequence (original placement sequence - FIRST occurrence)
             - side (1=BUY, 2=SELL)
-            - leavesquantity (available quantity)
+            - leavesquantity (available quantity from orders_after)
             - first_execution_time
             - last_execution_time
             - orderbookid
     """
+    orders_before = partition_data['orders_before']
     orders_after = partition_data['orders_after']
     last_execution = partition_data['last_execution']
     
-    # Filter for sweep orders
-    sweep_orders = orders_after[orders_after[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE].copy()
+    # Standardize column names first
+    if 'order_id' in orders_before.columns and 'orderid' not in orders_before.columns:
+        orders_before = orders_before.rename(columns={'order_id': 'orderid'})
+    if 'order_id' in orders_after.columns and 'orderid' not in orders_after.columns:
+        orders_after = orders_after.rename(columns={'order_id': 'orderid'})
     
-    # Rename order_id to orderid for consistency
-    if 'order_id' in sweep_orders.columns:
-        sweep_orders = sweep_orders.rename(columns={'order_id': 'orderid'})
+    # Get sweep orders from orders_before (for timestamp/sequence)
+    # IMPORTANT: Take only FIRST occurrence per order (earliest timestamp/sequence)
+    sweep_orders_before = orders_before[orders_before[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE].copy()
+    sweep_orders_before = sweep_orders_before.sort_values(['orderid', 'timestamp', 'sequence'])
+    sweep_orders_before = sweep_orders_before.groupby('orderid', as_index=False).first()
+    
+    # Get leavesquantity from orders_after (final state)
+    sweep_orders_after = orders_after[orders_after[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE][['orderid', 'leavesquantity']].copy()
+    
+    # Merge to get both timestamp/sequence AND leavesquantity
+    sweep_orders = sweep_orders_before.merge(
+        sweep_orders_after[['orderid', 'leavesquantity']],
+        on='orderid',
+        how='left',
+        suffixes=('', '_after')
+    )
+    
+    # Use leavesquantity from orders_after if available
+    if 'leavesquantity_after' in sweep_orders.columns:
+        sweep_orders['leavesquantity'] = sweep_orders['leavesquantity_after'].fillna(sweep_orders['leavesquantity'])
+        sweep_orders = sweep_orders.drop(columns=['leavesquantity_after'])
     
     # Rename security_code to orderbookid for consistency
     if 'security_code' in sweep_orders.columns:
@@ -146,24 +176,31 @@ def _prepare_sweep_orders(partition_data):
     
     # Select required columns
     sweep_orders = sweep_orders[[
-        'orderid', 'side', 'leavesquantity', 
+        'orderid', 'timestamp', 'sequence', 'side', 'leavesquantity', 
         'first_execution_time', 'last_execution_time', 'orderbookid'
     ]].copy()
     
-    # Sort by first_execution_time for time priority
-    sweep_orders = sweep_orders.sort_values('first_execution_time').reset_index(drop=True)
+    # Ensure orderid is int64
+    sweep_orders['orderid'] = sweep_orders['orderid'].astype('int64')
+    
+    # Sort by timestamp, then sequence (time priority based on PLACEMENT, not execution)
+    sweep_orders = sweep_orders.sort_values(['timestamp', 'sequence']).reset_index(drop=True)
     
     return sweep_orders
 
 
-def _prepare_incoming_orders(partition_data):
+def _prepare_all_orders_for_matching(partition_data):
     """
-    Prepare incoming orders (types 64, 256, 4096, 4098) from orders_before_lob.csv.
+    Prepare ALL Centre Point orders for matching (including sweeps).
+    
+    This represents the pool of orders that can match with sweeps.
+    Uses orders_before_matching.csv to get original timestamp/sequence.
     
     Returns:
         DataFrame with columns:
             - orderid
             - timestamp
+            - sequence
             - side (1=BUY, 2=SELL)
             - quantity
             - orderbookid
@@ -172,30 +209,33 @@ def _prepare_incoming_orders(partition_data):
     """
     orders_before = partition_data['orders_before']
     
-    # Filter for incoming order types
-    incoming_orders = orders_before[
-        orders_before[ORDER_TYPE_COLUMN].isin(INCOMING_ORDER_TYPES)
+    # Standardize column names first
+    if 'order_id' in orders_before.columns and 'orderid' not in orders_before.columns:
+        orders_before = orders_before.rename(columns={'order_id': 'orderid'})
+    
+    # Get ALL Centre Point orders (including type 2048)
+    all_orders = orders_before[
+        orders_before[ORDER_TYPE_COLUMN].isin(ELIGIBLE_MATCHING_ORDER_TYPES)
     ].copy()
     
-    # Rename order_id to orderid for consistency
-    if 'order_id' in incoming_orders.columns:
-        incoming_orders = incoming_orders.rename(columns={'order_id': 'orderid'})
-    
     # Rename security_code to orderbookid for consistency
-    if 'security_code' in incoming_orders.columns:
-        incoming_orders = incoming_orders.rename(columns={'security_code': 'orderbookid'})
-    elif 'securitycode' in incoming_orders.columns:
-        incoming_orders = incoming_orders.rename(columns={'securitycode': 'orderbookid'})
+    if 'security_code' in all_orders.columns:
+        all_orders = all_orders.rename(columns={'security_code': 'orderbookid'})
+    elif 'securitycode' in all_orders.columns:
+        all_orders = all_orders.rename(columns={'securitycode': 'orderbookid'})
     
     # Select required columns
-    incoming_orders = incoming_orders[[
-        'orderid', 'timestamp', 'side', 'quantity', 'orderbookid', 'bid', 'offer'
+    all_orders = all_orders[[
+        'orderid', 'timestamp', 'sequence', 'side', 'quantity', 'orderbookid', 'bid', 'offer'
     ]].copy()
     
-    # Sort by timestamp for chronological processing
-    incoming_orders = incoming_orders.sort_values('timestamp').reset_index(drop=True)
+    # Ensure orderid is int64
+    all_orders['orderid'] = all_orders['orderid'].astype('int64')
     
-    return incoming_orders
+    # Sort by timestamp, then sequence for chronological processing
+    all_orders = all_orders.sort_values(['timestamp', 'sequence']).reset_index(drop=True)
+    
+    return all_orders
 
 
 def simulate_partition(partition_key, partition_data):
@@ -218,14 +258,14 @@ def simulate_partition(partition_key, partition_data):
     """
     
     # Load and prepare orders
-    sweep_orders, incoming_orders = load_and_prepare_orders(partition_data)
+    sweep_orders, all_orders = load_and_prepare_orders(partition_data)
     
     if len(sweep_orders) == 0:
         print(f"  {partition_key}: No sweep orders, skipping")
         return None
     
-    if len(incoming_orders) == 0:
-        print(f"  {partition_key}: No incoming orders, skipping")
+    if len(all_orders) == 0:
+        print(f"  {partition_key}: No matching orders, skipping")
         return None
     
     # Get NBBO data
@@ -236,70 +276,163 @@ def simulate_partition(partition_key, partition_data):
         nbbo_data = nbbo_data.sort_values('timestamp').reset_index(drop=True)
     
     # Run simulation
-    results = simulate_sweep_matching(sweep_orders, incoming_orders, nbbo_data)
+    results = simulate_sweep_matching(sweep_orders, all_orders, nbbo_data)
     
-    print(f"  {partition_key}: {len(results['match_details']):,} matches, {len(incoming_orders):,} incoming orders")
+    print(f"  {partition_key}: {len(results['match_details']):,} matches, {len(sweep_orders):,} sweep orders")
     
     return results
 
 
-def simulate_sweep_matching(sweep_orders, incoming_orders, nbbo_data):
+def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
     """
-    Simulate sweep matching with time-priority algorithm.
+    Simulate sweep matching with CORRECT sweep-centric algorithm.
     
-    Algorithm:
-        1. Process incoming orders chronologically by timestamp
-        2. For each incoming order:
-            a. Find sweep orders active at that timestamp
-            b. Filter for opposite side
-            c. Sort by time priority (first_execution_time)
-            d. Match sequentially until filled or no more sweeps
-            e. Record matches at midpoint price
+    CORRECT Algorithm:
+        1. Process SWEEP orders chronologically by timestamp+sequence (placement time)
+        2. For each sweep order:
+            a. Get execution time window [first_execution_time, last_execution_time]
+            b. Find ALL orders that arrived in that time window
+            c. Exclude the sweep itself from matching candidates
+            d. Filter for opposite side and same orderbookid
+            e. Sort eligible orders by timestamp+sequence (time priority)
+            f. Match sequentially until sweep is filled or no more eligible orders
+            g. Record matches at midpoint price
     
     Args:
-        sweep_orders: DataFrame of sweep orders
-        incoming_orders: DataFrame of incoming orders
+        sweep_orders: DataFrame of sweep orders (sorted by timestamp, sequence)
+        all_orders: DataFrame of ALL Centre Point orders (including sweeps)
         nbbo_data: DataFrame with NBBO data (or None)
     
     Returns:
         Dictionary containing:
             - 'match_details': All individual matches
-            - 'order_summary': Per incoming order summary
+            - 'order_summary': Per sweep order summary
             - 'sweep_utilization': Per sweep order utilization
     """
     
     # Initialize tracking structures
     all_matches = []
-    order_summaries = []
-    sweep_usage = {orderid: {'matched_quantity': 0, 'num_matches': 0} 
+    sweep_summaries = []
+    
+    # Track sweep usage
+    sweep_usage = {int(orderid): {'matched_quantity': 0, 'num_matches': 0} 
                    for orderid in sweep_orders['orderid'].values}
     
-    # Track remaining quantities for sweep orders
-    sweep_remaining = {orderid: qty for orderid, qty in 
-                      zip(sweep_orders['orderid'].values, sweep_orders['leavesquantity'].values)}
+    # Track remaining quantities for ALL orders (for matching)
+    order_remaining = {int(orderid): qty for orderid, qty in 
+                      zip(all_orders['orderid'].values, all_orders['quantity'].values)}
     
-    # Process each incoming order chronologically
-    for idx, incoming in incoming_orders.iterrows():
-        matches, summary = _match_incoming_order(
-            incoming, 
-            sweep_orders, 
-            sweep_remaining,
-            nbbo_data
-        )
+    # Pre-index all_orders by orderid for fast lookup
+    all_orders_indexed = all_orders.set_index('orderid')
+    
+    # Process each SWEEP order chronologically (by placement time)
+    for idx in range(len(sweep_orders)):
+        sweep = sweep_orders.iloc[idx]
+        # CRITICAL: Use .loc with column name and explicit astype to preserve int64
+        # When using .iterrows(), pandas converts to float64 causing precision loss
+        sweep_id = int(sweep_orders['orderid'].iloc[idx])
+        sweep_side = int(sweep['side'])
+        sweep_qty_available = sweep['leavesquantity']
+        sweep_orderbookid = sweep['orderbookid']
+        first_exec_time = sweep['first_execution_time']
+        last_exec_time = sweep['last_execution_time']
         
-        # Record matches
-        all_matches.extend(matches)
-        order_summaries.append(summary)
+        if sweep_qty_available <= 0:
+            # No quantity to match
+            sweep_summaries.append({
+                'orderid': sweep_id,
+                'timestamp': sweep['timestamp'],
+                'side': sweep_side,
+                'quantity': sweep_qty_available,
+                'matched_quantity': 0,
+                'remaining_quantity': 0,
+                'fill_ratio': 0,
+                'num_matches': 0,
+                'orderbookid': sweep_orderbookid
+            })
+            continue
         
-        # Update sweep usage tracking
-        for match in matches:
-            sweep_id = match['sweep_orderid']
-            sweep_usage[sweep_id]['matched_quantity'] += match['matched_quantity']
-            sweep_usage[sweep_id]['num_matches'] += 1
+        # Find eligible orders in execution time window
+        eligible_orders = all_orders[
+            (all_orders['timestamp'] >= first_exec_time) &
+            (all_orders['timestamp'] <= last_exec_time) &
+            (all_orders['orderid'] != sweep_id) &  # CRITICAL: Exclude self
+            (all_orders['orderbookid'] == sweep_orderbookid) &
+            (all_orders['side'] != sweep_side)  # Opposite side
+        ].copy()
+        
+        # Sort by time priority (timestamp, then sequence)
+        eligible_orders = eligible_orders.sort_values(['timestamp', 'sequence'])
+        
+        # Match sequentially
+        sweep_remaining_qty = sweep_qty_available
+        sweep_matched_qty = 0
+        sweep_num_matches = 0
+        
+        for _, order in eligible_orders.iterrows():
+            if sweep_remaining_qty <= 0:
+                break
+            
+            order_id = int(order['orderid'])  # Convert to int
+            order_available = order_remaining.get(order_id, 0)
+            
+            if order_available <= 0:
+                continue
+            
+            # Calculate match quantity
+            match_qty = min(sweep_remaining_qty, order_available)
+            
+            # Get midpoint price
+            midpoint = get_midpoint(
+                nbbo_data=nbbo_data,
+                timestamp=order['timestamp'],
+                orderbookid=sweep_orderbookid,
+                fallback_bid=order['bid'],
+                fallback_offer=order['offer']
+            )
+            
+            if midpoint is None:
+                continue
+            
+            # Record match
+            all_matches.append({
+                'incoming_orderid': order_id,  # Keep this name for backward compat with metrics generator
+                'sweep_orderid': sweep_id,
+                'timestamp': order['timestamp'],
+                'matched_quantity': match_qty,
+                'price': midpoint,
+                'orderbookid': sweep_orderbookid
+            })
+            
+            # Update quantities
+            sweep_remaining_qty -= match_qty
+            order_remaining[order_id] -= match_qty
+            sweep_matched_qty += match_qty
+            sweep_num_matches += 1
+        
+        # Update sweep usage (ensure key exists)
+        if sweep_id not in sweep_usage:
+            sweep_usage[sweep_id] = {'matched_quantity': 0, 'num_matches': 0}
+        
+        sweep_usage[sweep_id]['matched_quantity'] = sweep_matched_qty
+        sweep_usage[sweep_id]['num_matches'] = sweep_num_matches
+        
+        # Generate summary for this sweep
+        sweep_summaries.append({
+            'orderid': sweep_id,
+            'timestamp': sweep['timestamp'],
+            'side': sweep_side,
+            'quantity': sweep_qty_available,
+            'matched_quantity': sweep_matched_qty,
+            'remaining_quantity': sweep_remaining_qty,
+            'fill_ratio': sweep_matched_qty / sweep_qty_available if sweep_qty_available > 0 else 0,
+            'num_matches': sweep_num_matches,
+            'orderbookid': sweep_orderbookid
+        })
     
     # Convert to DataFrames
     match_details_df = pd.DataFrame(all_matches) if all_matches else pd.DataFrame()
-    order_summary_df = pd.DataFrame(order_summaries)
+    order_summary_df = pd.DataFrame(sweep_summaries)
     sweep_utilization_df = _generate_sweep_utilization(sweep_orders, sweep_usage)
     
     return {
@@ -307,108 +440,6 @@ def simulate_sweep_matching(sweep_orders, incoming_orders, nbbo_data):
         'order_summary': order_summary_df,
         'sweep_utilization': sweep_utilization_df
     }
-
-
-def _match_incoming_order(incoming, sweep_orders, sweep_remaining, nbbo_data):
-    """
-    Match a single incoming order with active sweep orders.
-    
-    Args:
-        incoming: Series representing incoming order
-        sweep_orders: DataFrame of all sweep orders
-        sweep_remaining: Dict tracking remaining quantity per sweep order
-        nbbo_data: DataFrame with NBBO data (or None)
-    
-    Returns:
-        Tuple of (matches, summary)
-            matches: List of match dictionaries
-            summary: Summary dict for this incoming order
-    """
-    incoming_id = incoming['orderid']
-    incoming_ts = incoming['timestamp']
-    incoming_side = incoming['side']
-    incoming_qty = incoming['quantity']
-    orderbookid = incoming['orderbookid']
-    
-    # Find active sweep orders at this timestamp
-    active_sweeps = sweep_orders[
-        (sweep_orders['first_execution_time'] <= incoming_ts) &
-        (sweep_orders['last_execution_time'] >= incoming_ts)
-    ]
-    
-    # Filter for opposite side (BUY incoming matches SELL sweeps, vice versa)
-    opposite_side = 2 if incoming_side == 1 else 1
-    matching_sweeps = active_sweeps[active_sweeps['side'] == opposite_side]
-    
-    # Sort by time priority (earliest first_execution_time)
-    matching_sweeps = matching_sweeps.sort_values('first_execution_time')
-    
-    # Match sequentially
-    matches = []
-    remaining_qty = incoming_qty
-    total_matched_qty = 0
-    num_matches = 0
-    
-    # Access columns as arrays to avoid dtype conversion
-    sweep_orderids = matching_sweeps['orderid'].values
-    sweep_sides = matching_sweeps['side'].values
-    sweep_orderbookids = matching_sweeps['orderbookid'].values
-    
-    for idx in range(len(matching_sweeps)):
-        if remaining_qty <= 0:
-            break
-        
-        sweep_id = sweep_orderids[idx]  # Direct array access, preserves int64
-        sweep_available = sweep_remaining.get(sweep_id, 0)
-        
-        if sweep_available <= 0:
-            continue
-        
-        # Calculate match quantity
-        match_qty = min(remaining_qty, sweep_available)
-        
-        # Get midpoint price
-        midpoint = get_midpoint(
-            nbbo_data=nbbo_data,
-            timestamp=incoming_ts,
-            orderbookid=orderbookid,
-            fallback_bid=incoming['bid'],
-            fallback_offer=incoming['offer']
-        )
-        
-        if midpoint is None:
-            continue
-        
-        # Record match
-        matches.append({
-            'incoming_orderid': incoming_id,
-            'sweep_orderid': sweep_id,
-            'timestamp': incoming_ts,
-            'matched_quantity': match_qty,
-            'price': midpoint,
-            'orderbookid': orderbookid
-        })
-        
-        # Update quantities
-        remaining_qty -= match_qty
-        sweep_remaining[sweep_id] -= match_qty
-        total_matched_qty += match_qty
-        num_matches += 1
-    
-    # Generate summary for this incoming order
-    summary = {
-        'orderid': incoming_id,
-        'timestamp': incoming_ts,
-        'side': incoming_side,
-        'quantity': incoming_qty,
-        'matched_quantity': total_matched_qty,
-        'remaining_quantity': remaining_qty,
-        'fill_ratio': total_matched_qty / incoming_qty if incoming_qty > 0 else 0,
-        'num_matches': num_matches,
-        'orderbookid': orderbookid
-    }
-    
-    return matches, summary
 
 
 def _generate_sweep_utilization(sweep_orders, sweep_usage):

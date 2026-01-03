@@ -18,8 +18,11 @@ from pathlib import Path
 
 
 def add_date_column(df, timestamp_col):
-    """Add date column from timestamp."""
-    df['date'] = pd.to_datetime(df[timestamp_col], unit='ns').dt.strftime('%Y-%m-%d')
+    """Add date column from timestamp (convert UTC to AEST)."""
+    df['date'] = (pd.to_datetime(df[timestamp_col], unit='ns')
+                    .dt.tz_localize('UTC')
+                    .dt.tz_convert('Australia/Sydney')
+                    .dt.strftime('%Y-%m-%d'))
     return df
 
 
@@ -79,7 +82,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
         partition_dir = Path(processed_dir) / date / str(security_code)
         partition_dir.mkdir(parents=True, exist_ok=True)
         
-        partition_file = partition_dir / "centrepoint_orders_raw.csv.gz"
+        partition_file = partition_dir / "cp_orders_filtered.csv.gz"
         group_df.to_csv(partition_file, index=False, compression='gzip')
         
         size_mb = partition_file.stat().st_size / (1024 * 1024)
@@ -152,7 +155,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
             partition_dir = Path(processed_dir) / date / security_code
             partition_dir.mkdir(parents=True, exist_ok=True)
             
-            partition_file = partition_dir / "centrepoint_trades_raw.csv.gz"
+            partition_file = partition_dir / "cp_trades_matched.csv.gz"
             partition_trades.to_csv(partition_file, index=False, compression='gzip')
             
             size_mb = partition_file.stat().st_size / (1024 * 1024)
@@ -219,7 +222,7 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
         partition_dir = Path(processed_dir) / date / security_code
         partition_dir.mkdir(parents=True, exist_ok=True)
         
-        partition_file = partition_dir / "centrepoint_trades_agg.csv.gz"
+        partition_file = partition_dir / "cp_trades_aggregated.csv.gz"
         trades_agg.to_csv(partition_file, index=False, compression='gzip')
         
         size_mb = partition_file.stat().st_size / (1024 * 1024)
@@ -358,28 +361,28 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
                 print(f"  {date}/participants.csv.gz: {len(date_par):,} records")
 
 
-def extract_lob_states(orders_by_partition, processed_dir, column_mapping):
+def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     """
-    Extract before/after LOB states per partition.
+    Extract before/after order states per partition.
     
-    - orders_before_lob: Initial state (min timestamp+sequence per order)
-    - orders_after_lob: Final state (max timestamp+sequence per order)
+    - orders_before_matching: Initial state (min timestamp+sequence per order)
+    - orders_after_matching: Final state (max timestamp+sequence per order)
     
     Args:
         orders_by_partition: Dictionary of orders DataFrames
-        processed_dir: Directory to save LOB states
+        processed_dir: Directory to save order states
         column_mapping: Column name mapping dictionary
     
     Returns:
         Dictionary mapping partition_key to {'before': DataFrame, 'after': DataFrame}
     """
-    print(f"\n[6/11] Extracting LOB states...")
+    print(f"\n[6/11] Extracting order states...")
     
     order_id_col = col('orders', 'order_id', column_mapping)
     timestamp_col = col('orders', 'timestamp', column_mapping)
     sequence_col = col('orders', 'sequence', column_mapping)
     
-    lob_states_by_partition = {}
+    order_states_by_partition = {}
     
     for partition_key, orders_df in orders_by_partition.items():
         if len(orders_df) == 0:
@@ -388,13 +391,13 @@ def extract_lob_states(orders_by_partition, processed_dir, column_mapping):
         # Sort by timestamp, then sequence
         orders_sorted = orders_df.sort_values([timestamp_col, sequence_col])
         
-        # Get first state per order (orders_before_lob)
+        # Get first state per order (orders_before_matching)
         orders_before = orders_sorted.groupby(order_id_col).first().reset_index()
         
-        # Get last state per order (orders_after_lob)
+        # Get last state per order (orders_after_matching)
         orders_after = orders_sorted.groupby(order_id_col).last().reset_index()
         
-        lob_states_by_partition[partition_key] = {
+        order_states_by_partition[partition_key] = {
             'before': orders_before,
             'after': orders_after
         }
@@ -404,15 +407,15 @@ def extract_lob_states(orders_by_partition, processed_dir, column_mapping):
         partition_dir = Path(processed_dir) / date / security_code
         partition_dir.mkdir(parents=True, exist_ok=True)
         
-        before_file = partition_dir / "orders_before_lob.csv"
-        after_file = partition_dir / "orders_after_lob.csv"
+        before_file = partition_dir / "orders_before_matching.csv"
+        after_file = partition_dir / "orders_after_matching.csv"
         
         orders_before.to_csv(before_file, index=False)
         orders_after.to_csv(after_file, index=False)
         
         print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after")
     
-    return lob_states_by_partition
+    return order_states_by_partition
 
 
 def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
@@ -472,8 +475,8 @@ def load_partition_data(partition_key, processed_dir):
     
     Returns:
         Dictionary containing:
-            - 'orders_before': DataFrame from orders_before_lob.csv
-            - 'orders_after': DataFrame from orders_after_lob.csv
+            - 'orders_before': DataFrame from orders_before_matching.csv
+            - 'orders_after': DataFrame from orders_after_matching.csv
             - 'last_execution': DataFrame from last_execution_time.csv
     """
     date, security_code = partition_key.split('/')
@@ -481,13 +484,13 @@ def load_partition_data(partition_key, processed_dir):
     
     partition_data = {}
     
-    # Load orders_before_lob
-    before_file = partition_dir / "orders_before_lob.csv"
+    # Load orders_before_matching
+    before_file = partition_dir / "orders_before_matching.csv"
     if before_file.exists():
         partition_data['orders_before'] = pd.read_csv(before_file)
     
-    # Load orders_after_lob
-    after_file = partition_dir / "orders_after_lob.csv"
+    # Load orders_after_matching
+    after_file = partition_dir / "orders_after_matching.csv"
     if after_file.exists():
         partition_data['orders_after'] = pd.read_csv(after_file)
     
@@ -502,39 +505,57 @@ def load_partition_data(partition_key, processed_dir):
     return partition_data
 
 
-def classify_order_groups(orders_with_sim_metrics_by_partition, processed_dir, column_mapping):
+def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
     """
-    Classify orders into groups based on REAL execution (from final state).
+    Classify SWEEP ORDERS ONLY (type 2048) into groups based on REAL execution (from final state).
     
     Group 1: Fully Filled (leavesquantity == 0)
     Group 2: Partially Filled (leavesquantity > 0 AND totalmatchedquantity > 0)
     Group 3: Unfilled (leavesquantity > 0 AND totalmatchedquantity == 0)
     
     Args:
-        orders_with_sim_metrics_by_partition: Dictionary of orders with simulated metrics
-        processed_dir: Unused, kept for compatibility
+        orders_by_partition: Dictionary of orders (partition keys only, NOT USED for data)
+        processed_dir: Directory containing orders_after_matching.csv
         column_mapping: Column name mapping dictionary
     
     Returns:
         Dictionary mapping partition_key to groups dictionary
     """
-    print(f"\n[10/11] Classifying order groups...")
+    print(f"\n[10/11] Classifying sweep order groups (type 2048 only)...")
     
+    order_type_col = col('orders', 'order_type', column_mapping)
     leaves_qty_col = col('orders', 'leaves_quantity', column_mapping)
     matched_qty_col = col('orders', 'matched_quantity', column_mapping)
     
     groups_by_partition = {}
     
-    for partition_key, orders_df in orders_with_sim_metrics_by_partition.items():
-        # Classify based on final state
-        group1 = orders_df[orders_df[leaves_qty_col] == 0].copy()
-        group2 = orders_df[
-            (orders_df[leaves_qty_col] > 0) & 
-            (orders_df[matched_qty_col] > 0)
+    for partition_key in orders_by_partition.keys():
+        # Load orders_after_matching.csv to get REAL execution results
+        date, security_code = partition_key.split('/')
+        partition_dir = Path(processed_dir) / date / security_code
+        after_file = partition_dir / "orders_after_matching.csv"
+        
+        if not after_file.exists():
+            continue
+        
+        orders_after = pd.read_csv(after_file)
+        
+        # Filter for sweep orders ONLY (type 2048)
+        sweep_orders = orders_after[orders_after[order_type_col] == 2048].copy()
+        
+        if len(sweep_orders) == 0:
+            print(f"  {partition_key}: No sweep orders found")
+            continue
+        
+        # Classify based on real execution
+        group1 = sweep_orders[sweep_orders[leaves_qty_col] == 0].copy()
+        group2 = sweep_orders[
+            (sweep_orders[leaves_qty_col] > 0) & 
+            (sweep_orders[matched_qty_col] > 0)
         ].copy()
-        group3 = orders_df[
-            (orders_df[leaves_qty_col] > 0) & 
-            (orders_df[matched_qty_col] == 0)
+        group3 = sweep_orders[
+            (sweep_orders[leaves_qty_col] > 0) & 
+            (sweep_orders[matched_qty_col] == 0)
         ].copy()
         
         groups_by_partition[partition_key] = {
@@ -543,6 +564,6 @@ def classify_order_groups(orders_with_sim_metrics_by_partition, processed_dir, c
             'Group 3 (Unfilled)': group3
         }
         
-        print(f"  {partition_key}: G1={len(group1):,}, G2={len(group2):,}, G3={len(group3):,}")
+        print(f"  {partition_key}: G1={len(group1):,}, G2={len(group2):,}, G3={len(group3):,} (sweep orders only)")
     
     return groups_by_partition
