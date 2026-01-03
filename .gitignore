@@ -1,5 +1,6 @@
 # Python environment
 swp_env/
+swpenv/
 venv/
 env/
 .venv/

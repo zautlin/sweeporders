@@ -91,7 +91,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
     return partitions
 
 
-def extract_trades(input_file, orders_by_partition, processed_dir, column_mapping):
+def extract_trades(input_file, orders_by_partition, processed_dir, column_mapping, chunk_size=100000):
     """
     Extract trades matching order_ids from partitions.
     
@@ -100,6 +100,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
         orders_by_partition: Dictionary of orders DataFrames by partition
         processed_dir: Directory to save processed trades
         column_mapping: Column name mapping dictionary
+        chunk_size: Chunk size for reading CSV (default: 100000)
     
     Returns:
         Dictionary mapping partition_key to trades DataFrame
@@ -109,7 +110,6 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     order_id_col_orders = col('orders', 'order_id', column_mapping)
     order_id_col_trades = col('trades', 'order_id', column_mapping)
     trade_time_col = col('trades', 'trade_time', column_mapping)
-    chunk_size = 100000
     
     # Collect all order IDs
     all_order_ids = set()

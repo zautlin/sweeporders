@@ -1,13 +1,120 @@
 """
-Column Names Configuration
-Centralized mapping for column names used throughout the pipeline.
-This ensures consistent column naming across all modules.
+Configuration Module
+
+Centralized configuration for the Centre Point Sweep Order Matching Pipeline.
+Includes column mappings, order types, file paths, and system configuration.
 """
 
 import pandas as pd
+import system_config as sc
+from pathlib import Path
+
 
 # ============================================================================
-# INPUT DATA COLUMNS (Raw data from source files)
+# PROJECT ROOT DIRECTORY
+# ============================================================================
+
+# Get the project root directory (parent of src/)
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+
+# ============================================================================
+# SYSTEM CONFIGURATION (Auto-detected based on CPU/memory)
+# ============================================================================
+
+SYSTEM_CONFIG = sc.get_config_with_overrides()
+CHUNK_SIZE = SYSTEM_CONFIG.chunk_size
+NUM_WORKERS = SYSTEM_CONFIG.num_workers
+
+
+# ============================================================================
+# INPUT FILES
+# ============================================================================
+
+INPUT_FILES = {
+    'orders': str(PROJECT_ROOT / 'data/raw/orders/drr_orders.csv'),
+    'trades': str(PROJECT_ROOT / 'data/raw/trades/drr_trades_segment_1.csv'),
+    'nbbo': str(PROJECT_ROOT / 'data/raw/nbbo/nbbo.csv'),
+    'session': str(PROJECT_ROOT / 'data/raw/session/session.csv'),
+    'reference': str(PROJECT_ROOT / 'data/raw/reference/ob.csv'),
+    'participants': str(PROJECT_ROOT / 'data/raw/participants/par.csv'),
+}
+
+
+# ============================================================================
+# DIRECTORY STRUCTURE
+# ============================================================================
+
+PROCESSED_DIR = str(PROJECT_ROOT / 'data/processed')  # Intermediate files: raw data, LOB states
+OUTPUTS_DIR = str(PROJECT_ROOT / 'data/outputs')      # Final outputs: simulation results, comparisons
+
+
+# ============================================================================
+# ORDER TYPES
+# ============================================================================
+
+CENTRE_POINT_ORDER_TYPES = [64, 256, 2048, 4096, 4098]
+SWEEP_ORDER_TYPE = 2048
+ELIGIBLE_MATCHING_ORDER_TYPES = [64, 256, 2048, 4096, 4098]  # ALL CP types, including sweep-to-sweep
+
+# Order side values
+ORDER_SIDE = {
+    'BUY': 1,
+    'SELL': 2,
+}
+
+
+# ============================================================================
+# COLUMN NAME MAPPING (for schema independence)
+# ============================================================================
+
+COLUMN_MAPPING = {
+    # Orders file columns
+    'orders': {
+        'order_id': 'order_id',
+        'timestamp': 'timestamp',
+        'sequence': 'sequence',
+        'order_type': 'exchangeordertype',
+        'security_code': 'securitycode',
+        'side': 'side',
+        'quantity': 'quantity',
+        'price': 'price',
+        'bid': 'bid',
+        'offer': 'offer',
+        'leaves_quantity': 'leavesquantity',
+        'matched_quantity': 'totalmatchedquantity',
+    },
+    # Trades file columns
+    'trades': {
+        'order_id': 'orderid',
+        'trade_time': 'tradetime',
+        'trade_price': 'tradeprice',
+        'quantity': 'quantity',
+    },
+    # NBBO file columns
+    'nbbo': {
+        'timestamp': 'tradedate',
+        'security_code': 'orderbookid',
+        'bid': 'bidprice',
+        'offer': 'offerprice',
+    },
+    # Session file columns
+    'session': {
+        'timestamp': 'TradeDate',
+    },
+    # Reference file columns
+    'reference': {
+        'timestamp': 'TradeDate',
+    },
+    # Participants file columns
+    'participants': {
+        'timestamp': 'TradeDate',
+    },
+}
+
+
+# ============================================================================
+# LEGACY COLUMN DEFINITIONS (for backward compatibility)
 # ============================================================================
 
 INPUT_COLUMNS = {
@@ -32,10 +139,6 @@ INPUT_COLUMNS = {
         'trade_quantity': 'quantity',
     }
 }
-
-# ============================================================================
-# STANDARD COLUMN NAMES (Normalized names used in code)
-# ============================================================================
 
 STANDARD_COLUMNS = {
     # Order identifiers and metadata
@@ -73,28 +176,16 @@ STANDARD_COLUMNS = {
     'residual_fill_qty': 'residual_fill_qty',
 }
 
+
 # ============================================================================
-# ORDER TYPES
+# SCENARIO TYPES AND THRESHOLDS
 # ============================================================================
 
-CENTRE_POINT_ORDER_TYPES = [64, 256, 2048, 4096, 4098]
-
-# Order side values
-ORDER_SIDE = {
-    'BUY': 1,
-    'SELL': 2,
-}
-
-# Scenario types
 SCENARIO_TYPES = {
     'A': 'A_Immediate_Full',
     'B': 'B_Eventual_Full',
     'C': 'C_Partial_None',
 }
-
-# ============================================================================
-# SCENARIO CLASSIFICATION THRESHOLDS
-# ============================================================================
 
 SCENARIO_THRESHOLDS = {
     'immediate_fill_threshold_ratio': 0.99,  # >= 99% fill = "immediate full"
@@ -102,6 +193,7 @@ SCENARIO_THRESHOLDS = {
     'eventual_fill_threshold_seconds': 1.0,  # >= 1 second = "eventual"
     'eventual_fill_threshold_ratio': 0.99,  # >= 99% fill = "full"
 }
+
 
 # ============================================================================
 # OUTPUT FILE NAMES
@@ -141,21 +233,9 @@ OUTPUT_FILES = {
     'by_participant': 'by_participant.csv.gz',
 }
 
-# ============================================================================
-# INPUT DATA FILE PATHS
-# ============================================================================
-
-INPUT_FILES = {
-    'orders': 'data/orders/drr_orders.csv',
-    'trades': 'data/trades/drr_trades_segment_1.csv',
-    'nbbo': 'data/nbbo/nbbo.csv',
-    'participants': 'data/participants/par.csv',
-    'reference': 'data/reference/ob.csv',
-    'session': 'data/session/session.csv',
-}
 
 # ============================================================================
-# COLUMN SELECTION HELPERS
+# HELPER FUNCTIONS
 # ============================================================================
 
 def get_input_column_name(data_type: str, standard_name: str) -> str:
@@ -194,10 +274,6 @@ def get_standard_column_name(column: str) -> str:
     return column
 
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
 def rename_columns_to_standard(df: pd.DataFrame, data_type: str) -> pd.DataFrame:
     """
     Rename input columns to standard column names.
@@ -209,8 +285,6 @@ def rename_columns_to_standard(df: pd.DataFrame, data_type: str) -> pd.DataFrame
     Returns:
         DataFrame with standard column names
     """
-    import pandas as pd
-    
     if data_type not in INPUT_COLUMNS:
         raise ValueError(f"Unknown data type: {data_type}")
     
@@ -221,10 +295,6 @@ def rename_columns_to_standard(df: pd.DataFrame, data_type: str) -> pd.DataFrame
     
     return df.rename(columns=rename_map)
 
-
-# ============================================================================
-# VALIDATION HELPERS
-# ============================================================================
 
 def validate_columns(df: pd.DataFrame, required_columns: list, context: str = "") -> bool:
     """
@@ -245,3 +315,31 @@ def validate_columns(df: pd.DataFrame, required_columns: list, context: str = ""
     if missing:
         raise ValueError(f"Missing columns in {context}: {missing}")
     return True
+
+
+# ============================================================================
+# CONFIGURATION SUMMARY
+# ============================================================================
+
+def print_config():
+    """Print current configuration summary."""
+    print("="*80)
+    print("PIPELINE CONFIGURATION")
+    print("="*80)
+    print("\nSystem Configuration:")
+    print(SYSTEM_CONFIG)
+    print(f"\nInput Files:")
+    for key, path in INPUT_FILES.items():
+        print(f"  {key:15} -> {path}")
+    print(f"\nDirectories:")
+    print(f"  Processed:  {PROCESSED_DIR}")
+    print(f"  Outputs:    {OUTPUTS_DIR}")
+    print(f"\nOrder Types:")
+    print(f"  Centre Point: {CENTRE_POINT_ORDER_TYPES}")
+    print(f"  Sweep:        {SWEEP_ORDER_TYPE}")
+    print("="*80)
+
+
+if __name__ == '__main__':
+    # Test configuration
+    print_config()
