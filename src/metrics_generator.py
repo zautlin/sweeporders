@@ -702,8 +702,10 @@ def _calculate_statistical_tests(comparison_df):
 
 
 def _run_ttests(data, segment_type, segment_name):
-    """Run paired t-tests on a data segment."""
+    """Run paired t-tests on a data segment with proper NaN/Inf handling."""
     from scipy import stats
+    import numpy as np
+    import warnings
     
     results = []
     
@@ -715,103 +717,137 @@ def _run_ttests(data, segment_type, segment_name):
     real_matched = data['real_matched_quantity'].values
     sim_matched = data['simulated_matched_quantity'].values
     
-    if len(real_matched) >= 2:
-        t_stat, p_value = stats.ttest_rel(sim_matched, real_matched)
-        mean_diff = (sim_matched - real_matched).mean()
-        std_diff = (sim_matched - real_matched).std()
-        ci_lower, ci_upper = stats.t.interval(
-            0.95, 
-            len(real_matched) - 1,
-            loc=mean_diff,
-            scale=stats.sem(sim_matched - real_matched)
-        )
-        
-        results.append({
-            'segment_type': segment_type,
-            'segment_name': segment_name,
-            'metric': 'Matched Quantity',
-            'n_samples': len(data),
-            'mean_real': real_matched.mean(),
-            'mean_simulated': sim_matched.mean(),
-            'mean_difference': mean_diff,
-            'std_difference': std_diff,
-            't_statistic': t_stat,
-            'p_value': p_value,
-            'significant_5pct': p_value < 0.05,
-            'significant_1pct': p_value < 0.01,
-            'ci_95_lower': ci_lower,
-            'ci_95_upper': ci_upper
-        })
+    # Filter out NaN/Inf values
+    valid_mask = np.isfinite(real_matched) & np.isfinite(sim_matched)
+    real_matched_valid = real_matched[valid_mask]
+    sim_matched_valid = sim_matched[valid_mask]
+    
+    # Check for sufficient valid samples and non-zero variance
+    if len(real_matched_valid) >= 2 and real_matched_valid.std() > 0 and sim_matched_valid.std() > 0:
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=RuntimeWarning)
+                t_stat, p_value = stats.ttest_rel(sim_matched_valid, real_matched_valid)
+                mean_diff = (sim_matched_valid - real_matched_valid).mean()
+                std_diff = (sim_matched_valid - real_matched_valid).std()
+                ci_lower, ci_upper = stats.t.interval(
+                    0.95, 
+                    len(real_matched_valid) - 1,
+                    loc=mean_diff,
+                    scale=stats.sem(sim_matched_valid - real_matched_valid)
+                )
+            
+            results.append({
+                'segment_type': segment_type,
+                'segment_name': segment_name,
+                'metric': 'Matched Quantity',
+                'n_samples': len(real_matched_valid),
+                'mean_real': real_matched_valid.mean(),
+                'mean_simulated': sim_matched_valid.mean(),
+                'mean_difference': mean_diff,
+                'std_difference': std_diff,
+                't_statistic': t_stat,
+                'p_value': p_value,
+                'significant_5pct': p_value < 0.05,
+                'significant_1pct': p_value < 0.01,
+                'ci_95_lower': ci_lower,
+                'ci_95_upper': ci_upper
+            })
+        except Exception:
+            # Skip test if calculation fails
+            pass
     
     # Test 2: Fill Ratio
     real_fill = data['real_fill_ratio'].values
     sim_fill = data['simulated_fill_ratio'].values
     
-    if len(real_fill) >= 2:
-        t_stat, p_value = stats.ttest_rel(sim_fill, real_fill)
-        mean_diff = (sim_fill - real_fill).mean()
-        std_diff = (sim_fill - real_fill).std()
-        ci_lower, ci_upper = stats.t.interval(
-            0.95, 
-            len(real_fill) - 1,
-            loc=mean_diff,
-            scale=stats.sem(sim_fill - real_fill)
-        )
-        
-        results.append({
-            'segment_type': segment_type,
-            'segment_name': segment_name,
-            'metric': 'Fill Ratio',
-            'n_samples': len(data),
-            'mean_real': real_fill.mean(),
-            'mean_simulated': sim_fill.mean(),
-            'mean_difference': mean_diff,
-            'std_difference': std_diff,
-            't_statistic': t_stat,
-            'p_value': p_value,
-            'significant_5pct': p_value < 0.05,
-            'significant_1pct': p_value < 0.01,
-            'ci_95_lower': ci_lower,
-            'ci_95_upper': ci_upper
-        })
+    # Filter out NaN/Inf values
+    valid_mask = np.isfinite(real_fill) & np.isfinite(sim_fill)
+    real_fill_valid = real_fill[valid_mask]
+    sim_fill_valid = sim_fill[valid_mask]
+    
+    if len(real_fill_valid) >= 2 and real_fill_valid.std() > 0 and sim_fill_valid.std() > 0:
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=RuntimeWarning)
+                t_stat, p_value = stats.ttest_rel(sim_fill_valid, real_fill_valid)
+                mean_diff = (sim_fill_valid - real_fill_valid).mean()
+                std_diff = (sim_fill_valid - real_fill_valid).std()
+                ci_lower, ci_upper = stats.t.interval(
+                    0.95, 
+                    len(real_fill_valid) - 1,
+                    loc=mean_diff,
+                    scale=stats.sem(sim_fill_valid - real_fill_valid)
+                )
+            
+            results.append({
+                'segment_type': segment_type,
+                'segment_name': segment_name,
+                'metric': 'Fill Ratio',
+                'n_samples': len(real_fill_valid),
+                'mean_real': real_fill_valid.mean(),
+                'mean_simulated': sim_fill_valid.mean(),
+                'mean_difference': mean_diff,
+                'std_difference': std_diff,
+                't_statistic': t_stat,
+                'p_value': p_value,
+                'significant_5pct': p_value < 0.05,
+                'significant_1pct': p_value < 0.01,
+                'ci_95_lower': ci_lower,
+                'ci_95_upper': ci_upper
+            })
+        except Exception:
+            pass
     
     # Test 3: Number of Matches
     real_num = data['real_num_matches'].values
     sim_num = data['simulated_num_matches'].values
     
-    if len(real_num) >= 2:
-        t_stat, p_value = stats.ttest_rel(sim_num, real_num)
-        mean_diff = (sim_num - real_num).mean()
-        std_diff = (sim_num - real_num).std()
-        ci_lower, ci_upper = stats.t.interval(
-            0.95, 
-            len(real_num) - 1,
-            loc=mean_diff,
-            scale=stats.sem(sim_num - real_num)
-        )
-        
-        results.append({
-            'segment_type': segment_type,
-            'segment_name': segment_name,
-            'metric': 'Number of Matches',
-            'n_samples': len(data),
-            'mean_real': real_num.mean(),
-            'mean_simulated': sim_num.mean(),
-            'mean_difference': mean_diff,
-            'std_difference': std_diff,
-            't_statistic': t_stat,
-            'p_value': p_value,
-            'significant_5pct': p_value < 0.05,
-            'significant_1pct': p_value < 0.01,
-            'ci_95_lower': ci_lower,
-            'ci_95_upper': ci_upper
-        })
+    # Filter out NaN/Inf values
+    valid_mask = np.isfinite(real_num) & np.isfinite(sim_num)
+    real_num_valid = real_num[valid_mask]
+    sim_num_valid = sim_num[valid_mask]
+    
+    if len(real_num_valid) >= 2 and real_num_valid.std() > 0 and sim_num_valid.std() > 0:
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=RuntimeWarning)
+                t_stat, p_value = stats.ttest_rel(sim_num_valid, real_num_valid)
+                mean_diff = (sim_num_valid - real_num_valid).mean()
+                std_diff = (sim_num_valid - real_num_valid).std()
+                ci_lower, ci_upper = stats.t.interval(
+                    0.95, 
+                    len(real_num_valid) - 1,
+                    loc=mean_diff,
+                    scale=stats.sem(sim_num_valid - real_num_valid)
+                )
+            
+            results.append({
+                'segment_type': segment_type,
+                'segment_name': segment_name,
+                'metric': 'Number of Matches',
+                'n_samples': len(real_num_valid),
+                'mean_real': real_num_valid.mean(),
+                'mean_simulated': sim_num_valid.mean(),
+                'mean_difference': mean_diff,
+                'std_difference': std_diff,
+                't_statistic': t_stat,
+                'p_value': p_value,
+                'significant_5pct': p_value < 0.05,
+                'significant_1pct': p_value < 0.01,
+                'ci_95_lower': ci_lower,
+                'ci_95_upper': ci_upper
+            })
+        except Exception:
+            pass
     
     return results
 
 
 def _calculate_size_analysis(comparison_df):
     """Calculate detailed analysis by order size category."""
+    import warnings
+    import numpy as np
     
     analyses = []
     
@@ -821,37 +857,41 @@ def _calculate_size_analysis(comparison_df):
         if len(size_data) == 0:
             continue
         
-        analysis = {
-            'size_category': size_cat,
-            'num_orders': len(size_data),
-            'quantity_range': f"{size_data['available_quantity'].min():.0f} - {size_data['available_quantity'].max():.0f}",
+        # Suppress pandas RuntimeWarnings for NaN operations
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=RuntimeWarning)
             
-            # Real execution
-            'real_total_matched': size_data['real_matched_quantity'].sum(),
-            'real_mean_matched': size_data['real_matched_quantity'].mean(),
-            'real_std_matched': size_data['real_matched_quantity'].std(),
-            'real_mean_fill_ratio': size_data['real_fill_ratio'].mean(),
-            'real_std_fill_ratio': size_data['real_fill_ratio'].std(),
-            
-            # Simulated execution
-            'simulated_total_matched': size_data['simulated_matched_quantity'].sum(),
-            'simulated_mean_matched': size_data['simulated_matched_quantity'].mean(),
-            'simulated_std_matched': size_data['simulated_matched_quantity'].std(),
-            'simulated_mean_fill_ratio': size_data['simulated_fill_ratio'].mean(),
-            'simulated_std_fill_ratio': size_data['simulated_fill_ratio'].std(),
-            
-            # Differences
-            'mean_quantity_diff': size_data['matched_quantity_diff'].mean(),
-            'median_quantity_diff': size_data['matched_quantity_diff'].median(),
-            'std_quantity_diff': size_data['matched_quantity_diff'].std(),
-            'mean_fill_ratio_diff': size_data['fill_ratio_diff'].mean(),
-            'median_fill_ratio_diff': size_data['fill_ratio_diff'].median(),
-            
-            # Distribution
-            'pct_sim_better': ((size_data['matched_quantity_diff'] > 0).sum() / len(size_data) * 100),
-            'pct_sim_worse': ((size_data['matched_quantity_diff'] < 0).sum() / len(size_data) * 100),
-            'pct_sim_same': ((size_data['matched_quantity_diff'] == 0).sum() / len(size_data) * 100),
-        }
+            analysis = {
+                'size_category': size_cat,
+                'num_orders': len(size_data),
+                'quantity_range': f"{size_data['available_quantity'].min():.0f} - {size_data['available_quantity'].max():.0f}",
+                
+                # Real execution
+                'real_total_matched': size_data['real_matched_quantity'].sum(),
+                'real_mean_matched': size_data['real_matched_quantity'].mean(),
+                'real_std_matched': size_data['real_matched_quantity'].std(),
+                'real_mean_fill_ratio': size_data['real_fill_ratio'].mean(),
+                'real_std_fill_ratio': size_data['real_fill_ratio'].std(),
+                
+                # Simulated execution
+                'simulated_total_matched': size_data['simulated_matched_quantity'].sum(),
+                'simulated_mean_matched': size_data['simulated_matched_quantity'].mean(),
+                'simulated_std_matched': size_data['simulated_matched_quantity'].std(),
+                'simulated_mean_fill_ratio': size_data['simulated_fill_ratio'].mean(),
+                'simulated_std_fill_ratio': size_data['simulated_fill_ratio'].std(),
+                
+                # Differences
+                'mean_quantity_diff': size_data['matched_quantity_diff'].mean(),
+                'median_quantity_diff': size_data['matched_quantity_diff'].median(),
+                'std_quantity_diff': size_data['matched_quantity_diff'].std(),
+                'mean_fill_ratio_diff': size_data['fill_ratio_diff'].mean(),
+                'median_fill_ratio_diff': size_data['fill_ratio_diff'].median(),
+                
+                # Distribution
+                'pct_sim_better': ((size_data['matched_quantity_diff'] > 0).sum() / len(size_data) * 100),
+                'pct_sim_worse': ((size_data['matched_quantity_diff'] < 0).sum() / len(size_data) * 100),
+                'pct_sim_same': ((size_data['matched_quantity_diff'] == 0).sum() / len(size_data) * 100),
+            }
         
         analyses.append(analysis)
     

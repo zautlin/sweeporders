@@ -91,7 +91,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
     return partitions
 
 
-def extract_trades(input_file, orders_by_partition, processed_dir, column_mapping, chunk_size=100000):
+def extract_trades(input_file, orders_by_partition, processed_dir, column_mapping, chunk_size):
     """
     Extract trades matching order_ids from partitions.
     
@@ -100,7 +100,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
         orders_by_partition: Dictionary of orders DataFrames by partition
         processed_dir: Directory to save processed trades
         column_mapping: Column name mapping dictionary
-        chunk_size: Chunk size for reading CSV (default: 100000)
+        chunk_size: Chunk size for reading CSV (from config.CHUNK_SIZE)
     
     Returns:
         Dictionary mapping partition_key to trades DataFrame
@@ -191,10 +191,15 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
         if len(trades_df) == 0:
             continue
         
+        # Calculate price*quantity for VWAP
+        trades_df = trades_df.copy()
+        trades_df['price_qty_product'] = trades_df[trade_price_col] * trades_df[quantity_col]
+        
         # Aggregate by order ID
         agg_dict = {
             quantity_col: 'sum',
             trade_price_col: 'mean',
+            'price_qty_product': 'sum',  # For VWAP calculation
             trade_time_col: ['min', 'max', 'count']
         }
         
@@ -205,10 +210,17 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
             'orderid',
             'total_quantity_filled',
             'avg_execution_price',
+            'price_qty_product_sum',
             'first_trade_time',
             'last_trade_time',
             'num_trades'
         ]
+        
+        # Calculate VWAP: sum(price * quantity) / sum(quantity)
+        trades_agg['vwap'] = trades_agg['price_qty_product_sum'] / trades_agg['total_quantity_filled']
+        
+        # Drop intermediate calculation column
+        trades_agg = trades_agg.drop('price_qty_product_sum', axis=1)
         
         # Calculate execution duration
         trades_agg['execution_duration_sec'] = (
