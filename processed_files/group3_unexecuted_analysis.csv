@@ -1,6 +1,0 @@
-order_id,quantity,price,side,totalmatchedquantity,time_of_day,size_category
-7904794000132040569,2000,3380.0,2,0,Afternoon (15-18),Medium (1K-10K)
-7904794000132004033,600,3340.0,2,0,Afternoon (15-18),Small (101-1K)
-7904794000130403804,885,3390.0,1,0,Midday (12-15),Small (101-1K)
-7904794000130395177,4292,3390.0,1,0,Midday (12-15),Medium (1K-10K)
-7904794000125811836,2700,3320.0,2,0,Morning (10-12),Medium (1K-10K)

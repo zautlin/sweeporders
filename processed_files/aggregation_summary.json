@@ -1,9 +1,0 @@
-{
-  "aggregation_time_sec": 0.03634786605834961,
-  "total_rows_input": 1000,
-  "total_rows_output": 62,
-  "groups_by_security": 3,
-  "groups_by_date": 2,
-  "groups_by_participant": 3,
-  "generated_at": "2026-01-02T00:08:09.173462"
-}

@@ -1,4 +1,0 @@
-Scenario,OrderCount,TotalQuantity,TotalFilled,AvgFillRatio,AvgExecPrice
-A (Immediate Full),0,0,0.0,,
-B (Eventual Full),0,0,0.0,,
-C (Partial/None),570,419779,0.0,0.0,0.0

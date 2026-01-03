@@ -1,0 +1,1933 @@
+Genium INET®
+Direct Drop (DD) Protocol Specification
+ASX
+Version: 3.0.0121
+Document Revision: GENIUM_Product_a2520
+Publish Date: 07 January 2019
+Draft
+© 2019 Nasdaq, Inc. All Rights Reserved. Private and Confidential
+All content in this document is owned, or licensed, by Nasdaq, Inc. or its affiliates (‘Nasdaq’).
+Unauthorized use is prohibited without written permission of Nasdaq. While reasonable efforts
+have been made to ensure that the contents of this document are accurate, the document is provided
+strictly “as is”, and no warranties of accuracy are given concerning the contents of the information
+contained in this document, including any warranty that the document will be kept up to date.
+Nasdaq reserves the right to change details in this document without notice. To the extent permitted
+by law no liability (including liability to any person by reason of negligence) will be accepted by
+Nasdaq or its employees for any direct or indirect loss or damage caused by omissions from or
+inaccuracies in this document.
+Copyright © 2018 Nasdaq, Inc. All rights reserved.
+07 January 2019 Document Revision a2520 / Draft page 2 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Table of Contents
+1 About the Manual ........................................................... 6
+1.1 References . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+2 Overview ..................................................................... 7
+2.1 Message Flow Basics . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+2.2 Transport Protocol and Message Recovery . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 7
+2.3 Field Lengths . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+2.4 Message Group and Message ID . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+3 Messages ..................................................................... 10
+3.1 Transactional Data . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+3.1.1 Version Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+3.1.2 Start Of Transaction Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+3.1.3 Commit Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+3.2 Reference Data . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+3.2.1 EndOfReferenceData Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+3.2.2 Participant Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+3.2.3 User Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 12
+3.2.4 Order Book Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+3.2.5 Account Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+3.2.6 Session Change Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+3.2.7 Quoting Responsibility Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20
+3.2.8 Market Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+3.3 Order and Trade Messages . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+3.3.1 Order Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+3.3.2 Rejected Order Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+3.3.3 Trade Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+3.3.4 Circuit Breaker Informational Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+3.3.5 Quote Request Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+3.4 Price Information Messages . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+3.4.1 Price Information Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+3.4.2 Equilibrium Price Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34
+3.4.3 Index Price Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34
+3.4.4 Price Limits Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+3.4.5 Reference Price Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+3.4.6 Open Balance Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 36
+3.5 Miscellaneous Messages . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 36
+3.5.1 News Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 36
+3.5.2 Clearing Trade Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 38
+Appendices
+A Scenarios ..................................................................... 41
+A.1 Order entered and added to the order book . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 41
+07 January 2019 Document Revision a2520 / Draft page 3 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+A.2 Order entered but not added to the order book . . . . . . . . . . . . . . . . . . . . . . . . . . 41
+A.3 Order entered and partly trades before added to the order book . . . . . . . . . 41
+A.4 Order entered and fully traded . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 42
+A.5 Trigger order entered without triggering . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 42
+A.6 Trigger order entered and triggered immediately . . . . . . . . . . . . . . . . . . . . . . . . . 42
+A.7 Order updated and added to the order book . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 42
+A.8 Order updated, traded and added to the order book . . . . . . . . . . . . . . . . . . . . . 43
+A.9 Order updated and fully traded . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 43
+A.10 Order canceled by user . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 44
+A.11 Reserve order refreshed . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 44
+A.12 Combination order entered generating baits . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 44
+A.13 Order entered and Circuit Breaker triggered . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 44
+A.14 Uncrossing auction of multiple instruments . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 45
+A.15 Session change that result in bait generation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 45
+A.16 Session change that result in bait removal . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 46
+A.17 Matching combination vs leg . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 46
+A.18 Session state order triggered . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 47
+A.19 FaK-Order entered and partially traded . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 47
+A.20 Combo vs combo matching . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 48
+A.21 FoK-Order entered and not traded . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 48
+A.22 Incoming order rejected . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 48
+A.23 Circuit Breaker triggered and reference price updated . . . . . . . . . . . . . . . . . . . . 49
+List of Tables
+Table 1: Field Lengths . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+Table 2: Array Types . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9
+Table 3: Version Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+Table 3: versionInfo Record . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+Table 5: Start Of Transaction Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+Table 6: Commit Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10
+Table 7: Participant Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+Table 8: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11
+Table 9: User Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 12
+Table 10: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+Table 11: Order Book Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13
+Table 11: TickSizeItem Record . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 14
+Table 12: combinationLeg Record . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15
+Table 14: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 16
+Table 15: Account Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+Table 16: Session Change Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+Table 17: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20
+Table 18: Quoting Responsibility Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20
+Table 18: MaxSpreadItem Record . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+Table 20: Market Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+Table 21: Order Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22
+Table 22: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+Table 23: Rejected Order Message Additional Fields . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+Table 24: Trade Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+Table 24: MatchIdItem Record . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+Table 26: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 30
+07 January 2019 Document Revision a2520 / Draft page 4 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Table 27: Circuit Breaker Info Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 31
+Table 27: incomingOrder Structure . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+Table 28: hitOrder Structure . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+Table 29: Circuit Breaker Trigger Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+Table 30: Triggering Condition Structure . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+Table 32: Quote Request Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+Table 33: Price Information Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+Table 34: Equilibrium Price Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34
+Table 35: Index Price Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34
+Table 36: Price Limits Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+Table 37: Reference Price Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+Table 38: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 36
+Table 39: Open Balance Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 36
+Table 40: News Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 37
+Table 41: Detailed Field Description . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 38
+Table 42: Clearing Trade Message . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 38
+Table 42: MatchIdItem Record . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 39
+Table 44: Detailed Field Description Cont. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 40
+List of Figures
+Figure 1: A SoupBinTCP packet . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8
+07 January 2019 Document Revision a2520 / Draft page 5 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+1 About the Manual
+The purpose of this document is to explain the Direct Drop (DD) protocol.
+1.1 References
+For more information, refer to the following documents:
+• OMnet Message Reference
+• System Error Messages Reference
+07 January 2019 Document Revision a2520 / Draft page 6 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+2 Overview
+The Direct Drop is a protocol that provides a consolidated view of all orders and trades
+processed by a matching engine (ME). The protocol is based on a schema that is compiled
+into message parsing code. The transport protocol SoupBinTCP is shared with OUCH
+and ITCH for Genium INET.
+The Direct Drop mimics the output of the ME.
+The Direct Drop contains:
+• Order updates (including combination orders and overnight orders)
+• Trades and trade cancels (including information from clearing)
+• Session changes (including initial session state)
+• Reference data for instruments, participants and users.
+Note
+A drop session covers a single back-end partition. In a multi-partition set-up,
+one Direct drop feed is needed per partition.
+2.1 Message Flow Basics
+Each morning, the Direct Drop starts by providing static Reference Data. The Reference
+Data load is guaranteed to finish before any real-time messages are published, but
+intraday updates to reference data may occur at any time.
+The real-time data includes a mix of orders, trades state change and intra-day reference
+data messages. Orders and trades are grouped into matching rounds, also called
+commits. Special messages mark the start and end of a matching round.
+2.2 Transport Protocol and Message Recovery
+The Direct Drop messages are transported over the SoupBinTCP protocol. SoupBinTCP
+is a lightweight point-to-point protocol, built on top of TCP/IP sockets that allow delivery
+of a set of sequenced messages from a server to a client in real-time. SoupBinTCP
+guarantees that the client receives each message generated by the server in sequence,
+even across underlying TCP/IP socket connection failures.
+The sequence numbers are implicit, meaning that the client maintains a counter that
+is increased every time a message is received. At reconnect after a connection loss, the
+client submits the last seen sequence number in its Logon message, and the server
+resends every message starting from that sequence number.
+07 January 2019 Document Revision a2520 / Draft page 7 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Figure 1: A SoupBinTCP packet
+Note that the payload contains the messages as defined in this spec.
+Refer to the SoupBinTCP specification for further details.
+Note
+The SoupBinTCP header contains a packet length field. The client is required
+to handle larger messages than defined in this spec. This ensures that an “old”
+client will still be able to parse messages that have new information added to
+the end of the message.
+The client must also drop any messages with an unknown message type.
+2.3 Field Lengths
+The following applies to field lengths in the messages:
+Table 1: Field Lengths
+Field type Description
+Boolean A single byte indicating a boolean value (0 - false; 1 - true)
+Byte One byte indicating a byte (8-bit signed integer)
+Short Two bytes indicating a short (16-bit signed integer)
+Integer Four bytes indicating an integer (32-bit signed integer)
+Long Eight bytes indicating a long (64-bit signed integer)
+The first two bytes (a short) specifies the number of bytes
+in the string. The contents of strings in Direct Drop are 1
+byte ANSI characters.
+String
+Char Indicates a one-byte ANSI character.
+Indicates a record. These fields are preceded by a boolean
+indicating if the record contains data or not.
+Ref (reference)
+07 January 2019 Document Revision a2520 / Draft page 8 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Table 2: Array Types
+Array type Description
+The first two bytes (a short) specifies the number of elements
+in the array.
+Single array
+The first two bytes (a short) specifies the number of single
+arrays in the array. The length of the single arrays are
+specified according to the above.
+Double array
+Note
+References to records (ref) may as both arrays and single fields in Direct Drop
+messages. Arrays of references are not preceded by a boolean indicating if
+the record contains data or not. This prefix is only used in record references
+that are not arrays.
+Note
+All fields in Direct Drop are written with little-endian byte order.
+2.4 Message Group and Message ID
+All messages are prefixed by a message group (short) and a message ID (short) indicating
+the message type.
+07 January 2019 Document Revision a2520 / Draft page 9 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+3 Messages
+3.1 Transactional Data
+3.1.1 Version Message
+The first message sent by a Direct Drop server shall be a version message. This message
+contains the required information for a client to see that it has connected to a compatible
+server.
+• Message Group = 10
+• Message ID = 23
+Table 3: Version Message
+Field Type Description
+Table 4: versionInfo Record
+Field Type Description
+Protocol version reference
+number.
+serialVersionUID
+geniumVersion String Genium version number.
+geniumBuild String Genium build number.
+versionInfo
+3.1.2 Start Of Transaction Message
+The Start Of Transaction message is sent when a new transaction has started.
+• Message Group = 10
+• Message ID = 9
+Table 5: Start Of Transaction Message
+Field Type Description
+orderId Long Identification of the new transaction.
+3.1.3 Commit Message
+The Commit message is sent when all messages for the ongoing transaction has been
+sent.
+• Message Group = 10
+• Message ID = 10
+Table 6: Commit Message
+Field Type Description
+startTimeStamp Long The timestamp indicating transaction.
+duration Long The time (ns) spent processing the message.
+07 January 2019 Document Revision a2520 / Draft page 10 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+3.2 Reference Data
+3.2.1 EndOfReferenceData Message
+The EndOfReferenceData message is sent at start-up after all reference data has been
+sent. It signals when the client should start processing reference data.
+This message contains no fields.
+• Message Group = 10
+• Message ID = 11
+3.2.2 Participant Message
+The Participant message is sent for all participants defined in the Genium INET system.
+• Message Group = 10
+• Message ID = 2
+Table 7: Participant Message
+Field Type Description
+timestamp Long Time when the message was sent.
+Numeric identification of the participant. The id is unique and unchanged
+as long as the participant exists in the reference data. If
+the participant is deleted and then re-inserted the id may be different.
+id Integer
+Name of the participant. The participantName is unique and
+unchanged as long as the participant exists in the reference data.
+The participantName remains the same if the participant is
+deleted and re-inserted.
+participantName String
+Numeric identification of the exchange the participant is connected
+to.
+exchangeId Short
+exchangeName String Name of the exchange.
+active Boolean Specifies if the participant is active or suspended.
+The type, such as General Clearing Member or Non Clearing
+Member.
+participantType Byte
+action Byte New/Update/Delete
+clearingHouseId String Clearing House ID for the participant.
+organisationNumber String Participant’s organization number.
+clearingParticipantIds[ ] Char[] List of valid clearing customers.
+Table 8: Detailed Field Description
+Value Description
+participantType
+1 Direct Clearing Participant
+07 January 2019 Document Revision a2520 / Draft page 11 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+2 General Clearing Participant
+3 Non Clearing Participant
+4 Clearing House
+5 Custody Service
+6 CSD
+7 NPCH
+action
+1 New
+2 Update
+3 Delete
+3.2.3 User Message
+The User message is sent for all users defined in the Genium INET system.
+• Message Group = 10
+• Message ID = 3
+Table 9: User Message
+Field Type Description
+timestamp Long Time when the message was sent.
+Numeric identification of the user. The id is unique and unchanged
+as long as the user exists in the reference data. If the user is
+deleted and then re-inserted the id may be different.
+id Integer
+exchangeName String Name of the exchange (Country in the Trading Code).
+Name of the participant (for example Customer in the Trading
+Code).
+participantName String
+Name of the user (User Id in the Trading Code). The userName
+is unique and unchanged as long as the user exists in the reference
+data. The userName remains the same if the user is deleted and
+re-inserted.
+userName String
+userFullName String Full name of the user.
+paricipantId Integer Numeric identification of the participant the user is connected to.
+preTradeRiskCheckEnabled Boolean Specifies if risk checks are enabled for the user.
+active Boolean Specifies if the user is active or suspended.
+action Byte New/Update/Delete
+Specifies if the user is locked, for example after submitting incorrect
+password.
+locked Boolean
+07 January 2019 Document Revision a2520 / Draft page 12 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Table 10: Detailed Field Description
+Value Description
+action
+1 New
+2 Update
+3 Delete
+3.2.4 Order Book Message
+The Order Book message is sent for all order books defined in the Genium INET system.
+• Message Group = 10
+• Message ID = 1
+Table 11: Order Book Message
+Field Type Description
+timestamp Long The time when the message was sent.
+id Integer The numeric identification of the order book.
+name String The name of the security.
+The numeric identification of the exchange this order book belongs
+to.
+exchangeId Short
+The numeric identification of the market this order book belongs
+to.
+marketId Short
+The numeric identification of the instrument group this order book
+belongs to.
+instrumentGroupId Short
+Expiration date modifier. This value is set to zero when the instrument
+is new. The value is incremented by one each time the instrument
+is involved in an issue, split, etc.
+modifier Short
+Note that the modifier value can be different for bid and ask options
+in the same Series.
+The numeric identification of the underlying this order book belongs
+to. This is identical to the commodity code in the series structure
+and will always be set, that is, even for cash instruments that do
+not have an underlying instrument.
+underlyingId Integer
+strikePrice Integer The strike price for this order book. 0 if not an option.
+expirationDate Integer The expiration date for this order book. 0 if not a derivative.
+A bit pattern is used. The seven most significant bits are used for
+year, the next four for month and the five least significant bits for
+day. All these bits make up an unsigned word.
+The year-field starts counting from 1990. Thus, 1990=1, 1991=2 ...
+2001=12.
+Example 1:
+January 1, 1990: Binary: 0000001 0001 00001 year
+month day 7 bits 4 bits 5 bits
+Decimal: 545
+07 January 2019 Document Revision a2520 / Draft page 13 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+firstTradingDate Long The first trading date for the instrument.
+lastTradingDate Long The last trading date for the instrument.
+groupType Byte For instance Cash, Forward, Option, or Future.
+optionType Byte Call or Put. 0 if not an option.
+optionStyle Byte American, European, and so on. 0 if not an option.
+The industry sector of the security on string format, that is, not
+GICS format.
+sector String
+currency String The ISO currency the order book is traded in, such as USD.
+Specifies if the order book is traded in the first unit, such as USD,
+or in the second unit, such as CENT.
+currencyUnit Byte
+Specifies the relation between the second and the first unit. For
+instance, if the currency is USD and the currencyUnit is second,
+this field will be set to 100, indicating that there are 100 cents on
+a US dollar.
+currencyRelation Integer
+contractSize Integer The contract size. Set to 1 for a cash product.
+The price quotation factor used to calculate the trade price from
+the order.
+priceQuotationfactor Integer
+priceUnit Byte For instance Price or Yield.
+Array of TickSizeItem records, which consist of the following
+fields:
+tickSizes[ ]
+Table 12: TickSizeItem Record
+Field Type Description
+The lower limit for which the tick
+size applies
+lowerLimit Long
+The upper limit for which the tick
+size applies
+upperLimit Long
+tickSize Long The tick size
+The number of implicit decimals in the price used for trading in
+this order book.
+decimalsInPrice Integer
+The number of implicit decimals in the strike price of the order
+book.
+decimalsInStrikePrice Integer
+The number of implicit decimals in the quantity used for trading
+in this order book.
+decimalsInQuantity Integer
+The name of the underlying instrument, that is, the symbol. For
+an instrument that does not have an underlying instrument, such
+as a cash instrument, the underlyingName will be the same as
+the symbol for the instrument.
+underlyingName String
+IssuerId Integer The numeric identification of the issuer, that is, participant.
+settlementDate Long The standard settlement date for the order book.
+active Boolean Specifies if the order book is active or suspended.
+07 January 2019 Document Revision a2520 / Draft page 14 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+Specifies if this order book belongs to an index market, true, or
+not.
+indexMarket Boolean
+The face value or amount that will be repaid when the bond matures.
+nominalValue Long
+decimalsInNominalValue Integer The number of implicit decimals in the nominal value.
+fixedIncomeType Byte Bill, bond etc.
+couponInterest Long The interest rate of the bond with 6 implicit decimals.
+Specifies the frequency that a fixed income security pays interest.
+Expressed as the number of coupons per year.
+couponFrequency Integer
+nextCouponDate Long N/A
+This is to define a day count fraction to be used when calculating
+accrued interest and present value of future cash flows.
+dayCountConvention Byte
+datedDate Long Date on which the coupon interest will begin to accrue for a bond.
+Array of combinationLeg records, which consist of the following
+fields:
+combinationLegs[ ]
+Table 13: combinationLeg Record
+Field Type Description
+The ID of the single order
+book
+singleOrderBookId Integer
+A boolean indicating if
+this is the buy leg
+buyLeg Boolean
+The ratio between
+legs, for example buy
+1A sell 3B.
+ratio Integer
+This field is only used
+if the legs constitute
+both a derivative and
+the underlying instrument,
+such as a
+BUY/WRITE.
+priceQuotationFactor Integer
+Example 2:
+A combination order book to buy 1 id=1 and sell 2 id=2
+would be sent as follows:
+Item1: 1 true 1 1
+Item2: 2 false 2 1
+Note
+This field is null for a single order book.
+tradingAtSettlement Boolean If the order book is configured for trading at settlement.
+action Byte New/Update/Delete
+participantDefined Boolean If the orderbook is participant defined.
+07 January 2019 Document Revision a2520 / Draft page 15 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+contractName String Contract Name
+tradedInGenium Boolean Indicates if the instrument is OTC or traded in Genium.
+businessDate Long The current business date.
+isinCode String The ISIN code of the instrument.
+upperLevelOrderBookId Integer The numeric identification of the upper level OrderBook.
+instrumentClassId String N/A
+derivativeLevel Integer The derivative level of the order book.
+decimalsInContractSize Integer The number of decimals in the contract size.
+The Order Attributes configured in the CDB in relation to Order
+Types, Center Point, Undisclosed Quantity, Hidden Volume.
+orderTypeAttributes Short
+The Order Attributes configured in the CDB in relation to Order
+Validity.
+orderValidityAttributes Short
+warrant Boolean If the message is a warrant.
+corporateActionCodes String The Corporate Action Code.
+Table 14: Detailed Field Description
+Value Description
+groupType
+Undefined. Combination order books do not have a group type and group type 0 shall
+be used in this case.
+0
+1 Option
+2 Forward
+3 Future
+4 FRA
+5 Cash
+6 Payment
+7 Exchange Rate
+8 Interest Rate Swap
+9 REPO
+10 Synthetic Box Leg Or Reference
+11 Standard Combination
+12 Guarantee
+13 OTC General
+14 Equity Warrant
+15 Security Lending
+07 January 2019 Document Revision a2520 / Draft page 16 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+optionType
+0 Undefined
+1 Call
+2 Put
+optionStyle
+0 Undefined
+1 American
+2 European
+3 Asian
+4 Bermudan
+5 Knock In
+6 Knock Out
+7 Binary
+8 Ratchet
+currencyUnit
+0 Undefined
+1 First
+2 Second
+priceUnit
+0 Undefined
+1 Yield
+2 Price
+3 Point
+4 Yield Diff
+5 IMM Index
+6 Inverted Yield
+7 Basis Point
+8 Percentage Of Nominal
+9 Dirty Price
+fixedIncomeType
+0 Undefined.
+1 Bill.
+2 Bond.
+07 January 2019 Document Revision a2520 / Draft page 17 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+3 Index Linked Bond.
+4 Floating Bond.
+5 Lottery Bond.
+6 Convertible Bond.
+7 Structured Bond.
+8 Fixing.
+9 Credit certificates.
+dayCountConvention
+0 Undefined
+1 ACTACT
+2 ACTAFB
+3 EU30360
+4 US30360
+5 ACT365
+6 ACT360
+action
+1 New
+2 Update
+3 Delete
+OrderTypeAttributes
+0 Undefined
+1 LimitAllowed
+2 MarketAllowed
+4 MarketToLimitAllowed
+8 AllOrNoneAllowed
+16 BestLimitAllowed
+32 CenterPointMarketAllowed
+64 CenterPointLimitAllowed
+128 CenterPointBlockMarketAllowed
+256 CenterPointBlockLimitAllowed
+512 CenterPointSweepMarketToLimitAllowed
+1024 CenterPointSweepLimitAllowed
+OrderValidityAttributes
+07 January 2019 Document Revision a2520 / Draft page 18 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+0 Undefined
+1 FillOrKillAllowed
+2 FillAndKillAllowed
+4 FillAndStoreAllowed
+3.2.5 Account Message
+The Account message is sent for all accounts defined in the Genium INET system.
+• Message Group = 10
+• Message ID = 21
+Table 15: Account Message
+Field Description
+timestamp Long The time when the message was sent.
+participantId Integer The participant owning the account.
+The account number defined as a character array of length 10. The
+field can contain both letters and digits.
+accountId Char[]
+3.2.6 Session Change Message
+The Session Change message is sent when an order book changes session, for instance
+from a pre-open session to an open session.
+• Message Group = 10
+• Message ID = 4
+Table 16: Session Change Message
+Field Type Description
+timestamp Long The time when the message was sent.
+id Integer The ID of the session.
+The type number for the session used, for example, when
+entering a trigger on session order.
+type Short
+name String The name of the session, such as OPEN.
+Note
+It is up to the customer to define these
+names, which means that it may be variants
+of the “OPEN” session.
+The type of matching, such as No Matching or Continuous
+Matching.
+matchingType Byte
+orderBookId Integer The order book, which has changed session.
+07 January 2019 Document Revision a2520 / Draft page 19 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+Specifies on which level the session change was made, for
+instance market level or instrument type level. For details
+on the values of this field, see the configuration in CDB.
+level Integer
+endofTrading Boolean Specifies if no more trades will occur in the system.
+Table 17: Detailed Field Description
+Value Description
+level
+1 Market, that is, the session applies for all order books belonging to this market.
+Instrument Type, that is, the session applies for all order books belonging to this instrument
+type (exchangeId, marketId, and instrumentGroupId).
+2
+Instrument Class, that is, the session applies for all order books belonging to this instrument
+class (exchangeId, marketId, instrumentGroupId, and underlyingId).
+3
+4 Order Book, that is, the session only applies for this order book.
+Underlying (commodity), the session applies for all order books belonging to this underlying.
+5
+matchingType
+0 Undefined
+1 Continuous matching
+2 Fast Market matching
+3 No matching
+4 Auction matching
+3.2.7 Quoting Responsibility Message
+The Quoting Responsibility message is sent for all quoting responsibilities defined in
+the reference data.
+• Message Group = 10
+• Message ID = 12
+Table 18: Quoting Responsibility Message
+Field Type Description
+timestamp Long The time when the message was sent.
+id Integer The ID of the quoting responsibility.
+The identification of the order book the quoting responsibility is
+for.
+orderBookId Integer
+The identification of the participant (market maker), which is responsible
+for quoting in the order book.
+ParticipantId Integer
+minimumQuantity Long The minimum quantity for the quotes.
+07 January 2019 Document Revision a2520 / Draft page 20 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+Array of MaxSpreadItem records describing the maximum allowed
+spread for one or more price intervals. For each interval
+there is one record, which consists of the following fields:
+maxSpreads[ ]
+Table 19: MaxSpreadItem Record
+Item Type Description
+lowerLimit Long
+upperLimit Long
+maxSpread Long
+Set to 1 for percent and 2 for absolute.
+spreadUnit Byte
+decimalsInPrice Integer
+Example 3:
+Item1: 0.00 4.99 0.20 2 2 (Abs)
+Item2: 5.00 99.99 0.50 2 2 (Abs)
+3.2.8 Market Message
+The market message is sent for all defined markets in the Genium INET system
+• Message Group = 10
+• Message ID = 19
+Table 20: Market Message
+Field Type Description
+timestamp Long Time at which the message was sent.
+marketId Short Identifier of the market.
+Business date of the market (expressed in unix time, nano seconds
+since epoch).
+date Long
+closedForTrading Boolean If the market is closed for trading.
+closedForClearing Boolean If the markeet is closed for clearing.
+closedForSettlement Boolean If the market is closed for settlement.
+3.3 Order and Trade Messages
+3.3.1 Order Message
+• Message Group = 10
+• Message ID = 5
+07 January 2019 Document Revision a2520 / Draft page 21 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Table 21: Order Message
+Field Description
+The time when the order was entered into the system, which may
+be many days ago.
+timeCreated Long
+timeChanged Long The time when the order was changed, for instance matched.
+rankingTime Long Ranking time of the order.
+orderBookId Integer The order book the order is for.
+The order book the order will trigger on. Only applicable for trigger
+on price orders. For instance it is possible to enter a trigger order
+that triggers on prices from one orderbook, triggerOrderBookId,
+but when it is triggered it will be stored in another order book,
+orderBookId. For instance you may want to trigger on prices in
+the most liquid future order book (closest expiration), but want to
+match in another future order book.
+triggerOrderBookId Integer
+participantId Integer The participant the trader belongs to.
+userId Integer The trader owning the order.
+Identifies the user submitting the order if not the same as the
+owner.
+onBehalfOfSubmitterId Integer
+orderId Long The order identification, which will be global unique for ever.
+The previous order identification. This is only applicable for quotes
+and will be populated with the orderId of the replaced quote
+when re-quoting. An updated single order will always keep its
+orderId.
+previousOrderId Long
+side Byte Buy or sell.
+Price Long The price of the order. Set to 0 for a market order.
+The initial quantity of the order if the order has not been amended,
+that is, when an order is executed only the leavesQuantity is
+updated. However if the order is amended the orderQuantity
+may be changed.
+orderQuantity Long
+leavesQuantity Long The remaining/open quantity of the order.
+The display quantity of a reserve order. Set to Long.MIN_VALUE if
+not a reserve order.
+displayQuantity Long
+The minimum quantity that the order can trade. Currently only
+AoN is supported meaning that the Minimum Quantity is equal to
+the Quantity.
+minimumQuantity Long
+Specifies if the wanted price is a half tick better than the given
+price and if dark execution of order shall be allowed. Dark execution
+only valid for limit orders.
+midTick Short
+Whether centre point matching should be done only against own
+orders.
+preferenceOnly Short
+1 = yes
+2 = No
+Whether centre point orders minimum quantity must be satisfied
+in a single fill.
+singleFillMinimumQuantity Short
+1 = yes
+2 = No
+07 January 2019 Document Revision a2520 / Draft page 22 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Description
+Defines the validity period for an order transaction, that is, the
+amount of time an order will remain in the order book if not fully
+matched.
+timeValidity Integer
+Of the two bytes in the field, the most significant byte (MSB) is
+used to define the unit of the time validity. If applicable, the least
+significant byte (LSB) specifies the value of the time validity, expressed
+in the unit defined in the most significant byte.
+Example 4:
+To enter an order, which is to be valid for the rest of
+the day, use MSB=1 and LSB=0. In binary representation
+this is MSB=00000001 and LSB=00000000, yielding that
+the Validity Time field should be set to 00000001
+00000000 in binary representation, or 256 in decimal
+representation.
+There is an alternative way to enter a time validity when the value
+exceeds 255. If the top bit of the 2 bytes is set, the 3 next bits are
+used to define an alternative unit while the remaining 12 bits
+specify the value expressed in the alternative unit.
+Example 4:
+To enter an order, which is to be valid for 365 days.
+Enter in binary representation 1 001 000101101101 (1
+= to indicate that the field has an alternative unit, 001
+= alternative unit to specify number of days,
+000101101101 = 365 to indicate number of days).
+orderType Short The order type, such as Limit or Market.
+exchangeOrderType Integer The exchange order type, such as Short Sell or Session State Order.
+orderCategory Byte The order category, such as Order, Quote, Bait.
+The account to use for this order (called exClient in the external
+API).
+accountId Char[]
+This field contains exchange specific information that can be entered
+with the order. See OMnet Message Reference for details
+about the field.
+exchangeInfo Char[]
+This field is a free text field filled in by the client entering the
+transaction.
+customerInfo Char[]
+changeReason Short The reason for sending this message.
+Specifies what price to compare the trigger price with as well as
+the trigger direction.
+triggerCondition Byte
+triggerPrice Long The trigger price of the order.
+The trigger session type is used to specify which session type to
+trigger on.
+triggerSessionType Short
+Note
+This field is only populated for trigger on session orders.
+07 January 2019 Document Revision a2520 / Draft page 23 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Description
+The status of the order, such as if it is placed on the order book or
+not.
+orderStatus Byte
+The status of the order before the event that caused this message
+to be sent.
+orderStatusBefore Byte
+The ranking position when the order first was added to the order
+book. This field will also be populated if the order has been
+amended and as a result of this loose priority. The field will be 0
+(zero) if the order is updated in a way that it does not loose priority,
+such as when the order trades.
+orderBookPosition Integer
+Indicates if the order was reloaded at start of the system at a new
+business date.
+reloaded Boolean
+giveUpParticipant Char[] This field is populated if the trade is given up to another participant.
+Specifies the code of the trade report configuration parameters
+for the reported trade. Note that this field is only applicable for
+trade reports.
+tradeReportCode Byte
+Specifies the requested position handling, such as closing or
+opening position.
+requestedPosition Byte
+The message ID with which the order was submitted. For example,
+if entered with MO31 will be 31.
+messageName Integer
+The key to be used for booking of crossed trades. If enabled any
+2 orders from the same participant and with the same key (non
+zero) which match will be marked as a crossed trade and not publish
+to the market as a trade.
+crossingKey Integer
+The regulatory data required to be submitted with orders and trade
+reports.
+regulatoryData Char[]
+shortSellQuantity Long The short sell quantity of the order.
+participantOrderAttribute Long The participant order attribute of an order.
+The counter order attributes with which an order with crossed
+participant order attributes may trade.
+counterOrderAttributes Long
+bidPriceSnapshot Long Best bid price snapshot from order details.
+offerPriceSnapshot Long Best offer price snapshot from order details.
+submitterId Integer ID of the submitter.
+totalMatchedQuantity Long Total cumulative matched quantity.
+Table 22: Detailed Field Description
+Value Description
+orderType
+0 Undefined.
+1 Limit order.
+2 Market order.
+3 Market to limit order.
+4 Passive order, that is, cannot match as aggressive.
+07 January 2019 Document Revision a2520 / Draft page 24 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+8 Only at best order (currently not used).
+16 Pegged to best price order.
+32 Odd lot order (currently not used).
+64 Imbalance Order.
+exchangeOrderType
+0 Undefined.
+1 Force.
+2 Short sell.
+4 Market bid.
+8 Price Stabilization.
+16 Override crossing.
+32 Undisclosed quantity order.
+64 Center point order.
+128 Always inactive order.
+256 Center point crossing.
+512 Trigger on session order (SSO).
+1024 Peg order.
+2048 Center point sweep order.
+4096 Center point block order.
+orderCategory
+0 Undefined.
+1 Order.
+2 Hybrid Quote.
+4 Quote.
+8 Bait generated for a combination order.
+Combination Leg order generated when a combination order matches in the leg order
+books.
+16
+32 Trade Report.
+64 Crossing Order
+changeReason
+0 Undefined.
+1 Order canceled by the trader.
+3 Order traded.
+4 Order inactivated when a user lost connection to the exchange (configurable).
+07 January 2019 Document Revision a2520 / Draft page 25 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+5 Order updated by user.
+6 New order.
+Market order converted – Modified to EP during auction if an auction (market) order is
+modified during auction.
+7
+8 Market order converted to a Limit order (MTL).
+9 Order canceled by system.
+10 Order canceled on behalf.
+11 Bait re-calculated.
+12 Trigger order triggered and converted to an active order.
+13 Reserved order refreshed.
+15 Order canceled by system due to a price limit change.
+19 Order expired due to last trading day for the order.
+20 Order canceled due to that trading is halted.
+21 Order inactivated due to that trading is halted.
+23 Order inactivated/purged due to corporate action.
+24 Rest-Of-Day order inactivated/purged.
+25 Order inactivated due to delisting.
+26 Other than Rest-Of-Day order inactivated/purged.
+27 Order inactivated/purged due to being outside the purge price limits.
+28 Order Ownership transferred.
+29 New inactive order.
+30 Order reloaded by system on new trading day.
+31 Order reload at intraday Market Place restart.
+34 Order canceled after opening auction.
+35 Order inactivated/purged due to being outside the price limits.
+Order activated due to changed price limits and the order premium is inside the new
+limits.
+36
+37 Trigger on session order (SSO) triggered due to session change.
+38 Trigger on session order inactivated.
+39 Undisclosed quantity order converted to a regular order.
+40 Volume match order inactivated due to order value.
+41 Quote canceled by system due to the delta limit in market maker protection exceeded.
+Quote canceled by system due to the absolute (quantity) limit in market maker protection
+exceeded.
+42
+43 Deleted due to internal crossing.
+07 January 2019 Document Revision a2520 / Draft page 26 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+48 Center point sweep MTL order converted.
+49 MAQ center point order trades below minimum quantity.
+50 Center point sweep order re-loaded without MAQ and mid-tick conditions.
+51 Order canceled due having an invalid clearing participant ID.
+triggerCondition
+1 Bid greater than or equal to.
+2 Bid less than or equal to.
+3 Offer larger than or equal to.
+4 Offer less than or equal to.
+5 Last Paid greater than or equal to.
+6 Last Paid less than or equal to.
+orderStatus
+1 The order is stored on the order book.
+The order is not stored on the order book, for instance an incoming order that has yet
+not been handled or an order that has been canceled.
+2
+3 A trigger order that has not yet been triggered.
+4 An inactive order.
+timeValidity
+MSB set to 0 Bouncing.
+The order will not be stored in the order book after the completion of order transaction,
+if the order is not fully matched. LSB should be set to zero.
+MSB set to 1 Rest Of Day.
+The order will be stored in the order book for the remainder of the business day. LSB
+should be set to zero
+MSB set to 2 Good Till Canceled.
+The order will be stored in the order book until the instrument expires or the order is
+canceled. LSB should be set to zero.
+MSB set to 5 Days.
+The order will be stored in the order book for he number of days specified in LSB.
+MSB set to 6 Current Max.
+The order will be stored in the order book for the maximum amount of time allowed
+for the instrument. LSB should be set to zero.
+MSB set to 32 Current Max.
+The order will be stored in the order book until end of the session type specified in LSB.
+MSB set to 64 Purged.
+LSB should be set to zero.
+MSB set to 128 Negative Indicator.
+LSB should be set to zero.
+requestedPosition
+07 January 2019 Document Revision a2520 / Draft page 27 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+0 Default for the account.
+1 Open.
+2 Close.
+3 Mandatory close.
+4 Set to default for account (valid only when updating an order).
+midTick
+0 Undefined
+1 Yes
+2 No
+3 Dark execution
+4 Dark execution with midtick
+5 Any price block execution
+6 Any price block execution with midtick
+3.3.2 Rejected Order Message
+The rejected order message summarizes a rejected order insert or update. It includes
+the reason for rejection and some of fields entered, such as price.
+Note
+Some fields may not be populated in some messages. For example, orderId is
+only populated for order updates and will be 0 for a rejected order insert.
+• Message Group = 10
+• Message ID = 22
+Table 23: Rejected Order Message Additional Fields
+Field Type Description
+userId Integer User ID of the owner of the order.
+orderId Long Order ID (only populated for order update).
+orderBookId Integer Submitted order-book ID.
+side Byte Submitted side.
+price Long Submitted price.
+quantity Long Submitted quantity.
+errorCode Integer Error code indicating why the order entry/update was rejected.
+For more information about error codes, see System Error Messages Reference.
+07 January 2019 Document Revision a2520 / Draft page 28 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+3.3.3 Trade Message
+• Message Group = 10
+• Message ID = 7
+Table 24: Trade Message
+Field Type Description
+tradeTime Long The timestamp when the trade was made.
+orderBookId Integer The order book for the trade.
+userId Integer The trader that has traded.
+participantId Integer The participant the trader belongs to.
+orderId Long The order identification.
+The trade identification. An array of MatchIdItem records, which
+consist of the following fields:
+matchId
+Table 25: MatchIdItem Record
+Field Type Description
+executionEventNumber Long
+matchGroupNumber Integer
+matchItemNumber Integer
+Note
+This field is preceded by a boolean written by the serializer.
+If this boolean is set to true, the field
+matchId contains data.
+price Long The trade price.
+quantity Long The traded quantity.
+side Byte Buyer or seller.
+Specifies under which circumstances the deal was made, such as
+in continuous matching or in the opening auction.
+dealSource Short
+tradeType Byte The status of the trade, such as Standard, Reversing or Overtaking.
+Specifies if this was the aggressive side or passive side in the deal.
+It could also be set to neither of this.
+passiveAggressive Byte
+accountId Char[] The account that was used for the deal.
+This field contains exchange specific information that can be entered
+with the order. See OMnet Message Reference for details
+about the field.
+exchangeInfo Char[]
+This field is a free text field filled in by the client entering the
+transaction.
+customerInfo Char[]
+07 January 2019 Document Revision a2520 / Draft page 29 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+settlementDate Long The date for settlement of this deal.
+Note
+Only set for trade reports.
+If the order book is traded in yield, specified by the price Unit field
+in the Order Book message, this field is populated with the corresponding
+clean price. If the order book is trade in clean price or
+dirty price this field is populated with the corresponding yield.
+yieldOrPrice Long
+Only applicable for fixed income instruments.
+accruedInterest Long The accrued interest for this deal.
+Only applicable for fixed income instruments.
+giveUpParticipant Char[] This field is populated if the trade is given up to another participant.
+Specifies if this is the original trade received directly from the
+matching engine, true, or a rectified trade received from the
+clearing system, false.
+originalTrade Boolean
+Specifies the code of the trade report configuration parameters
+for the reported trade. Note that this field is only applicable for
+trade reports.
+tradeReportCode Byte
+reportTime Long The timestamp when the trade was reported (trade reports only).
+extendedPrice Long The trade price with additional decimals.
+shortSellQuantity Long The short sell quantity of the trade.
+tradeSlipNumber Long N/A
+Table 26: Detailed Field Description
+Value Description
+dealSource
+0 Undefined.
+1 Two orders matched in continuous matching.
+Reported Trades between different participants, that is, the buyer and seller belongs
+to different participants.
+3
+4 Reported Trades by the exchange between different participants.
+Reported Trades for the same participant, that is, the buyer and seller belong to the
+same participant.
+5
+6 Reported Trades by the exchange for the same participant.
+7 Two orders for a standard combination order book matched in continuous matching.
+20 Two orders match in an (opening) auction.
+Two orders for a Tailor Made combination order book (TMC) matched in continuous
+matching.
+36
+42 Priority crossing.
+43 Combination order against outright.
+44 Book Trade Continuous Matching.
+07 January 2019 Document Revision a2520 / Draft page 30 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Value Description
+45 Book Trade Auction.
+46 Preference Matched.
+47 CentrePoint
+48 BookTradeCentrePoint
+49 Preference Only Matched.
+50 Any Price Block Matched.
+51 Preference Any Price Block Matched
+52 Preference Only Any Price Block Matched.
+tradeType
+0 Undefined.
+1 Standard.
+2 Transitory.
+3 Overtaking.
+4 Reversing.
+5 Transfer.
+6 Exercise.
+7 Assign.
+8 Closing.
+9 Issuing.
+10 New Contract.
+passiveAggressive
+0 Passive
+1 Aggressive
+2 Neither
+3.3.4 Circuit Breaker Informational Message
+The circuit breaker informational message will be sent whenever a circuit breaker is
+tripped. It contains information about which order book the circuit breaker triggered
+in and why the circuit breaker was triggered.
+• Message Group = 10
+• Message ID = 24
+Table 27: Circuit Breaker Info Message
+Field Type Description
+orderBookId Integer The order book id where the circuit breaker has tripped.
+07 January 2019 Document Revision a2520 / Draft page 31 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+incomingOrder Circuit Breaker Incoming Order Info Record:
+Table 28: incomingOrder Structure
+Field Type Description
+The order book id where the circuit
+breaker has tripped. Always the
+same value as the higher level
+orderBookId.
+orderBookId Integer
+userId Long Owner of the order
+orderId Long The order ID
+price Long Order’s limit price
+quantity Long Remaining order quantity
+side Byte Buy or Sell
+hitOrder Circuit Breaker Hit Order Info Record:
+Table 29: hitOrder Structure
+Field Type Description
+userId Long Owner of the order
+orderId Long The order ID
+price Long Order’s limit price
+quantity Long Remaining order quantity
+side Byte Buy or Sell
+triggerDetail The circuit breaker trigger details:
+Table 30: Circuit Breaker Trigger Details
+Field Type Description
+matchPrice Long The attempted match price
+matchQuantity Long The attempted match quantity
+triggerCondition The triggering condition:
+Table 31: Triggering Condition Structure
+Field Type Description
+upperLimit Integer Circuit Breaker upper limit
+lowerLimit Integer Circuit Breaker lower limit
+sessionSequenceName String The session sequence name of the triggered circuit breaker.
+07 January 2019 Document Revision a2520 / Draft page 32 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+3.3.5 Quote Request Message
+The Quote Request message is sent when a quote request is received by the system.
+• Message Group = 10
+• Message ID = 18
+Table 32: Quote Request Message
+Field Type Description
+timestamp Long Timestamp when the quote request was received.
+orderBookId Integer Order book for the trade.
+userId Integer Trader that has traded.
+quoteRequestId Long Quote request Id.
+side Byte Buyer or Seller.
+quantity Long
+onBehalfOfSubmitterId Integer User who entered the request (only for on-behalf requests)
+3.4 Price Information Messages
+3.4.1 Price Information Message
+The Price Information Message is sent to report the edited price information per
+orderbook.
+• Message Group = 10
+• Message ID = 25
+Table 33: Price Information Message
+Field Type Description
+timestamp Long The time the message was sent.
+orderBookId Integer The order book the price is for.
+openingPrice Long The first traded price for the day.
+highPrice Long The highest traded price during the day.
+lowPrice Long The lowest traded price during the day.
+closingPrice Long The last traded price for the previous day.
+lastPrice Long The last traded price during the day.
+volume Long Trade volume.
+The number of traded contracts during the day. If there are 100
+contracts
+turnOver Long
+in a deal (100 bids and 100 asks) the turnover will increase with
+100.
+turnOverValue Long The total traded amount today.
+07 January 2019 Document Revision a2520 / Draft page 33 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+numberDeals Integer The number of deals executed today.
+numberTrades Integer Number of trades executed during the day.
+updatedTimestamp Char[] Time in ASCII. Format: HHMMSS.
+reason Byte Reason why the Price Information Message was sent.
+3.4.2 Equilibrium Price Message
+The Equilibrium Price message is sent when the equilibrium price for an order book has
+been calculated.
+• Message Group = 10
+• Message ID = 8
+Table 34: Equilibrium Price Message
+Field Type Description
+timestamp Long The time the message was sent.
+orderBookId Integer The order book the equilibrium price is for.
+equilibriumPrice Long The equilibrium price for the order book.
+bidQuantity Long The aggregated bid quantity at the equilibrium price or better.
+offerQuantity Long The aggregated offer quantity at the equilibrium price or better.
+If the imbalance is on the bid side this field is populated with
+bidQuantity – offerQuantity, otherwise set to 0.
+bidImbalanceQuantity Long
+If the imbalance is on the offer side this field is populated with
+offerQuantity – bidQuantity, otherwise set to 0.
+offerImbalanceQuantity Long
+sessionId Integer The ID of the current session for the order book.
+bestBidPrice Long The best bid price.
+bestBidQuantity Long The aggregated quantity at the best bid price.
+bestOfferPrice Long The best offer price.
+bestOfferQuantity Long The aggregated quantity at the best offer price.
+3.4.3 Index Price Message
+The Index Price message is sent when the index has been re-calculated.
+• Message Group = 10
+• Message ID = 16
+Table 35: Index Price Message
+Field Type Description
+timestamp Long The time the message was sent.
+07 January 2019 Document Revision a2520 / Draft page 34 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+orderBookId Integer The order book the index price is for.
+price Long The index price.
+3.4.4 Price Limits Message
+The Price Limits message is sent when the price limits for an order book has changed.
+• Message Group = 10
+• Message ID = 13
+Table 36: Price Limits Message
+Field Type Description
+timestamp Long The time the message was sent.
+orderBookId Integer The order book the limits are for.
+upperLimit Long The upper limit.
+lowerLimit Long The lower limit.
+priceLimits Boolean Price limits or circuit breaker limits, price limits = true.
+dynamic Boolean Dynamic or static limits, dynamic = true.
+referencePrice Long The reference price used when calculating the limits.
+3.4.5 Reference Price Message
+The Reference Price message is sent when the reference price for an order book has
+changed.
+• Message Group = 10
+• Message ID = 14
+Table 37: Reference Price Message
+Field Type Description
+timestamp Long The time the message was sent.
+orderBookId Integer The order book the reference price is for.
+The reference price used when calculating the equilibrium
+price as well as when calculating the leg prices for a combination/
+combination match, and there is no BBO for the
+leg order book.
+referencePrice Long
+The source for the reference price, such as externally injected
+or yesterday’s closing price.
+referencePriceSource Short
+The reference price used when calculating the static price
+limits.
+priceLimitsReferencePrice Long
+The reference price used when calculating the static circuit
+breaker limits.
+circuitBreakerLimitsReferencePrice Long
+07 January 2019 Document Revision a2520 / Draft page 35 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+The source for the price limits reference price, such as
+externally injected or yesterday’s closing price.
+priceLimitsReferencePriceSource Short
+The source for the circuit breaker limits reference price,
+such as externally injected or yesterday’s closing price.
+circuitBreakerLimitsReferencePriceSource Short
+Table 38: Detailed Field Description
+Value Description
+referencePriceSource
+0 Externally injected.
+1 Opening price.
+2 Uncross price.
+3 Previous Last Paid.
+4 Settlement price.
+5 Ever last paid.
+6 Opening price, no uncross.
+7 Price limit reference price.
+8 Settlement price diff.
+3.4.6 Open Balance Message
+The Open Balance message is sent at start of the system to inform about the open
+balance from yesterday.
+• Message Group = 10
+• Message ID = 15
+Table 39: Open Balance Message
+Field Type Description
+timestamp Long The time the message was sent.
+orderBookId Integer The order book.
+openBalance Long The open balance from yesterday.
+3.5 Miscellaneous Messages
+3.5.1 News Message
+A Market Control Message is sent when the Market Control staff wants to send a
+message. It is normally sent to a whole market, that is, with Level set to Market.
+Market Control Message
+(destination_level_c = 1) but it can sometimes be sent on Underlying or Series level. This message
+will be sent when the message type is set to Market Message/Market Control
+07 January 2019 Document Revision a2520 / Draft page 36 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+(message_information_type_c = 2). It can be sent with three different priorities: normal, high and
+low. A Market Control Message can be sent with destination to all markets. This is indicated by
+series in destination_item is set to null (no specific market is indicated), and destination_level_c
+= 1 (Market level).
+Company Announcement
+with Level set to Underlying (destination_level_c = 2) or Series level (destination_level_c = 3).
+This message will be sent when the message type is set to Company Announcement
+(message_information_type_c = 1). It can be sent with three different priorities: normal, high and
+low.
+• Message Group = 10
+• Message ID = 17
+Table 40: News Message
+Field Type Description
+timestamp Long The time the message was sent.
+sequenceNumber Integer A sequence number starting at 1 every day.
+The numeric identification of the exchange. This field is only populated
+if the destinationLevel is Market or Instrument.
+exchangeId Short
+The numeric identification of the market. This field is only populated
+if the destinationLevel is Market or Instrument.
+marketId Short
+The numeric identification of the instrument group. This field is
+only populated if the destinationLevel is Instrument.
+instrumentGroupId Short
+Expiration date modifier. This value is set to zero when the instrument
+is new. The value is incremented by one each time the instrument
+is involved in an issue, split, etc.
+modifier Short
+Note that the modifier value can be different for bid and ask options
+in the same Series.
+The numeric identification of the underlying. This field is only
+populated if the destinationLevel is Underlying or Instrument.
+underlyngId Integer
+The strike price for this order book. This field is only populated if
+the destinationLevel is Instrument.
+strikePrice Integer
+The expiration date. This field is only populated if the
+destinationLevel is Instrument.
+expirationDate Integer
+messagePriority Byte The priority of the message.
+The level the news applies for, the whole market, a specific underlying
+or a specific instrument.
+destinationLevel Byte
+typeOfInformation Byte The type of message sent in announcement.
+header Char[] 80 characters header.
+source Char[] 80 characters source.
+Text[ ] Char[] 10 lines of text where each text is 80 characters.
+urlLength Integer The actual length of the URL.
+255 characters URL pointing to a document where, for example,
+a full announcement can be found.
+url Char[]
+07 January 2019 Document Revision a2520 / Draft page 37 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Table 41: Detailed Field Description
+Value Description
+messagePriority
+1 Low.
+2 Medium.
+3 High.
+4 Critical.
+typeOfInformation
+0 Not applicable.
+1 Company announcement.
+2 Market message.
+3 Static line.
+4 Notice received.
+destinationLevel
+0 Not applicable.
+1 Market.
+2 Underlying.
+3 Series.
+3.5.2 Clearing Trade Message
+The Clearing Trade Message provides trade details derived from post match handling.
+• Message Group = 10
+• Message ID = 26
+Table 42: Clearing Trade Message
+Field Type Description
+orderBookId Long The order book the trade is for.
+Outright trade, identifies the combination in which the trade was
+made.
+combinationOrderBookId Integer
+userId Integer The trader that has traded.
+participantId Integer The participant the trader belongs to.
+orderId Long The order identification.
+07 January 2019 Document Revision a2520 / Draft page 38 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+The trade identification. An array of MatchIdItem records, which
+consist of the following fields:
+MatchId[ ]
+Table 43: MatchIdItem Record
+Field Type Description
+executionEventNumber Long
+matchGroupNumber Integer
+matchItemNumber Integer
+price Long The trade price.
+quantity Long The traded quantity.
+side Byte Buyer or seller.
+Specifies under which circumstances the deal was made, such as
+in continuous matching or in the opening auction.
+dealSource Short
+tradeType Byte The status of the trade, such as Standard, Reversing or Overtaking.
+accountId Char[] The account that was used for the deal.
+This field is a free text field filled in by the client entering the
+transaction.
+customerInfo Char[]
+settlementDate Long The date for settlement of this deal.
+giveUpParticipant Char[] This field is populated if the trade is given up to another participant.
+tradeReportCode Byte The code of the trade report configuration parameters
+for the reported trade. Note that this field is only applicable for
+trade reports.
+tradeSlipNumber Long A unique identifier per deal on the format 1DINNNNNNN:
+• The Trade Slip Number always starts with "1".
+• D is set to the number of days since 1/1 up to current business
+date + 50 MOD 10.
+• I is set to the running instance of server.
+• NNNNNNN is set to a sequential number representing the
+deal. The value ranges from 0000001 to 9999999 and resets
+to 0000001 every new business day.
+bigAttention Long Provides information about the trade.
+exchangeOrderType Short The exchange order type, such as Short Sell or Session State Order.
+executionTimestamp Long Time stamp of the execution.
+openCloseReq Short Describes how the requested position account should be updated
+tradeCondition Integer The condition in which a trade was executed.
+regulatoryData Char[] Data required to be submitted with orders and trade reports.
+shortSellQuantity Long The short sell quantity of the trade.
+tradeReportAttribute Byte Trade report attribute.
+07 January 2019 Document Revision a2520 / Draft page 39 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Field Type Description
+orderType Short The order type, such as Limit or Market.
+If a trade is a cross, this field publishes the opposing orders Agent
+Capacity.
+counterOrderCapacity Byte
+An increasing sequence number assigned to each trade. Trade
+number is unique within Instance and Instrument type.
+tradeNumber Integer
+asOf Long The date an object is valid for.
+timeStamp Long When the message was sent.
+extendedPrice Long Trade Report related extended price.
+modifiedTime Long Defines what time the item was last changed.
+timeOfAgreement Long Time when the trade was agreed.
+Table 44: Detailed Field Description Cont.
+Value Description
+tradeCondition
+0 No condition.
+1 Late Trade.
+2 Internal Trade/Crossing.
+4 Bulletin Board Trade.
+8 Buy Write.
+16 Off Market.
+openCloseReq
+0 Default for the account.
+1 Open.
+2 Close/net.
+3 Mandatory close.
+4 Set to default to the account
+(valid only for alter order).
+07 January 2019 Document Revision a2520 / Draft page 40 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+A Scenarios
+An incoming order will always result in that two Order messages are sent. The first
+Order message exactly mirrors the incoming order before it has been processed by the
+matching engine. The second Order message mirrors the order after being processed
+by the matching engine. The second Order message hence gives information about if
+and how match the order matched, if the order was added to the order book, and so
+on.
+Within a transaction the Order message for the incoming order will be sent before any
+other Order messages for orders impacted within the transaction.
+A.1 Order entered and added to the order book
+Table 1:
+Message id price orderQuantity leavesQuantity orderStatus changeReason
+StartOfTransaction 1
+Order 1 10 100 100 Incoming (2) New (6)
+Order 1 10 100 100 Active (1) New (6)
+Commit
+A.2 Order entered but not added to the order book
+Table 2:
+Message id price orderQuantity leavesQuantity orderStatus changeReason
+StartOfTransaction 1
+Order 1 10 100 100 Incoming (2) New (6)
+Order 1 10 100 100 Incoming (2) New (6)
+Commit
+A.3 Order entered and partly trades before added to the order book
+Order 2 is entered and is partly matched.
+Table 3:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 2
+Order 2 10 100 100 Incoming (2) New (6)
+Order 2 10 100 50 Active (1) Trade (3)
+Order 1 10 50 0 Canceled (2) Trade (3)
+Trade 2 10 50 Auto (1)
+Trade 1 10 50 Auto (1)
+07 January 2019 Document Revision a2520 / Draft page 41 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+Commit
+A.4 Order entered and fully traded
+Order 2 is entered and is fully matched.
+Table 4:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 2
+Order 2 10 100 100 Incoming (2) New (6)
+Order 2 10 100 0 Incoming (2) Trade (3)
+Order 1 10 200 100 Active (2) Trade (3)
+Trade 2 10 100 Auto (1)
+Trade 1 10 100 Auto (1)
+Commit
+A.5 Trigger order entered without triggering
+Table 5:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 1
+Order 1 10 100 100 Incoming (2) New (6)
+Order 1 10 100 100 Untriggered (3) New (6)
+Commit
+A.6 Trigger order entered and triggered immediately
+Table 6:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 1
+Order 1 10 100 100 Incoming (2) New (6)
+Order 1 10 100 100 Active (1) Triggered (12)
+Commit
+A.7 Order updated and added to the order book
+The quantity is changed from 100 to 200.
+07 January 2019 Document Revision a2520 / Draft page 42 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+Table 7:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 1
+Order 1 10 200 200 Active (1) Updated (5)
+Order 1 10 200 200 Active (1) Updated (5)
+Commit
+A.8 Order updated, traded and added to the order book
+The price of order 2 is changed from 10 to 11 and hence the order can trade.
+Table 8:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 2
+Order 2 11 100 100 Active (1) Updated (5)
+Order 2 11 100 50 Active (1) Trade (3)
+Order 1 11 50 0 Canceled (2) Trade (3)
+Trade 2 10 50 Auto (1)
+Trade 1 10 50 Auto (1)
+Commit
+A.9 Order updated and fully traded
+The price of order 2 is changed from 10 to 11 and hence the order can trade.
+Table 9:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 2
+Order 2 11 100 100 Active (1) Updated (5)
+Order 2 11 100 0 Canceled (2) Trade (3)
+Order 1 11 200 100 Active (1) Trade (3)
+Trade 2 10 100 Auto (1)
+Trade 1 10 100 Auto (1)
+Commit
+07 January 2019 Document Revision a2520 / Draft page 43 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+A.10 Order canceled by user
+Table 10:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 1
+Order 1 10 100 100 Canceled (2) Canceled (1)
+Commit
+A.11 Reserve order refreshed
+Table 11:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction 1
+Order 1 10 100 90 Active (2) Refreshed (13)
+Commit
+A.12 Combination order entered generating baits
+Table 12:
+changeRea- orderBookId
+son/
+dealSource
+leavesQuanti- orderStatus
+ty
+orderQuantity/
+tradedQuantity
+Message id price
+StartOfTransaction 1
+Order 1 0 100 100 Active (2) New (6) 101
+Order 1 10 100 100 Active (2) New (6) 1
+Order 1 10 100 100 Active (2) New (6) 2
+Commit
+A.13 Order entered and Circuit Breaker triggered
+Table 13:
+Message id price orderQuantity leavesQuantity orderStatus changeReason
+StartOfTransaction
+Equilibrium Price
+Order 1 10 100 100 Incoming (2) New (6)
+Order 1 10 100 100 Active (1) New (6)
+Circuit Breaker Message
+Commit
+07 January 2019 Document Revision a2520 / Draft page 44 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+A.14 Uncrossing auction of multiple instruments
+Table 14:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction
+Session Change
+Equilibrium Price
+Order 1 10 100 100 Incoming (2) Trade (3)
+Order 2 10 100 100 Incoming (2) Trade (3)
+Open allocation
+(20)
+Trade 1 10 100
+Open allocation
+(20)
+Trade 2 10 100
+Price limit
+Session Change
+Equilibrium Price
+Order 3 11 100 100 Incoming (2) Trade (3)
+Order 4 11 100 100 Incoming (2) Trade (3)
+Open allocation
+(20)
+Trade 3 11 100
+Open allocation
+(20)
+Trade 4 11 100
+Price limit
+Commit
+A.15 Session change that result in bait generation
+The following scenario changes session state in series FUT_NK225_1506 from HALT to
+M_ZARABA.
+The session state change result in a bait being generated in series FUT_NK225_1509.
+Table 15:
+leavesQuanti- orderStatus changeReason orderBookId
+ty
+Message id price orderQuantity
+StartOfTransaction
+Session Change Leg 2
+Equilibrium Price Leg 2
+Session Change Combo
+Equilibrium Price Combo
+Order 1 10 100 100 Incoming (2) New (6) Leg 1
+07 January 2019 Document Revision a2520 / Draft page 45 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+leavesQuanti- orderStatus changeReason orderBookId
+ty
+Message id price orderQuantity
+Order 1 10 100 100 Active (1) Bait (11) Leg 1
+Commit
+A.16 Session change that result in bait removal
+The following scenario changes session state in series FUT_NK225_1506 from M_ZARABA
+to HALT.
+The session state change result in a bait being removed in series FUT_NK225_1509.
+Table 16:
+leavesQuanti- orderStatus changeReason orderBookId
+ty
+Message id price orderQuantity
+StartOfTransaction
+Session Change Leg 2
+Equilibrium Price Leg 2
+Order 1 10 100 100 2 Canceled (9) Leg 1
+Session Change Combo
+Equilibrium Price Combo
+Equilibrium Price Leg 2
+Commit
+A.17 Matching combination vs leg
+Table 17:
+changeRea- orderBookId
+son/
+dealSource
+leavesQuanti- orderStatus
+ty
+orderQuantity/
+tradedQuantity
+Message id price
+StartOfTransaction
+Order 1 10 100 100 2 New (6) Combo
+Order 1 10 100 0 2 Trade (3) Combo
+Order 1 0 100 100 2 New (6) Leg 1
+Order 1 0 100 0 2 Trade (3) Leg 1
+Order 1 0 100 100 2 New (6) Leg 2
+Order 1 0 100 0 2 Trade (3) Leg 2
+Order 2 15010 100 0 2 Trade (3) Leg 1
+Order 3 15000 100 0 2 Trade (3) Leg 2
+Trade 1 15010 100 Auto (1) Leg 1
+Trade 2 15010 100 Auto (1) Leg 1
+07 January 2019 Document Revision a2520 / Draft page 46 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+changeRea- orderBookId
+son/
+dealSource
+leavesQuanti- orderStatus
+ty
+orderQuantity/
+tradedQuantity
+Message id price
+Trade 3 15000 100 Auto (1) Leg 2
+Trade 1 15000 100 Auto (1) Leg 2
+ComboV- Combo
+sOutright (43)
+Trade 1 10 100
+Price Limit Leg 1
+Price Limit Leg 2
+Commit
+A.18 Session state order triggered
+Table 18:
+Message id price orderQuantity leavesQuantity orderStatus changeReason
+StartOfTransaction
+Session Change
+Equilibrium Price
+Order 1 15000 100 100 Active (1) SSO trigger (37)
+Equilibrium Price
+Commit
+A.19 FaK-Order entered and partially traded
+Table 19:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction
+Order 1 150 150 Incoming (2) New (6)
+Order 1 150 50 Incoming (2) Trade (3)
+Order 2 100 0 Incoming (2) Trade (3)
+Trade 2 100 Auto (1)
+Trade 1 100 Auto (1)
+Price limit
+Commit
+07 January 2019 Document Revision a2520 / Draft page 47 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+A.20 Combo vs combo matching
+Table 20:
+changeRea- orderBookId
+son/
+dealSource
+leavesQuanti- orderStatus
+ty
+orderQuantity/
+tradedQuantity
+Message id price
+StartOfTransaction
+Order 1 0 100 100 Incoming (2) New (6) Combo
+Order 1 0 100 0 Incoming (2) Trade (3) Combo
+Order 2 0 100 0 Incoming (2) Trade (3) Combo
+Trade 2 0 100 Combo (7) Combo
+Trade 1 0 100 Combo (7) Combo
+Trade 2 1500 100 Combo (7) Leg 1
+Trade 1 1500 100 Combo (7) Leg 1
+Trade 1 1500 100 Combo (7) Leg 2
+Trade 2 1500 100 Combo (7) Leg 2
+Commit
+A.21 FoK-Order entered and not traded
+Table 21:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction
+Order 1 1500 100 100 Incoming (2) New (6)
+Order 1 1500 100 100 Incoming (2) New (6)
+Commit
+A.22 Incoming order rejected
+Table 22:
+changeReason/
+dealSource
+orderQuantity/ leavesQuantity orderStatus
+tradedQuantity
+Message id price
+StartOfTransaction
+RejectedOrder 1 1500 100
+Commit
+07 January 2019 Document Revision a2520 / Draft page 48 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
+A.23 Circuit Breaker triggered and reference price updated
+Table 23:
+upperLimit/lower- referencePrice Dynamic priceLimits
+Limit
+Message id price
+StartOfTransaction
+SessionChange 1
+EqulibriumPrice 1 16170
+PriceLimit 1 14310/16650 15480 false True
+PriceLimit 1 15360/15600 15480 true False
+CircuitBreakerinfo
+Commit
+07 January 2019 Document Revision a2520 / Draft page 49 / 50
+Private and Confidential
+Direct Drop (DD) Protocol Specification
