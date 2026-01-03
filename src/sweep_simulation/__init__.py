@@ -3,18 +3,19 @@ Sweep Order Matching Simulation Package
 
 This package provides functionality to simulate orderbook matching between
 sweep orders (type 2048) and incoming Centre Point orders.
+
+All modules now use simple functions instead of classes.
 """
 
-from .simulator import SweepMatchingSimulator, OrderLoader
-from .nbbo_provider import NBBOProvider
-from .metrics_calculator import SimulatedMetricsCalculator
-from .comparison_reporter import GroupComparator, ComparisonReporter
+# Import main functions from each module
+from . import nbbo_provider
+from . import metrics_calculator
+from . import simulator
+from . import comparison_reporter
 
 __all__ = [
-    'SweepMatchingSimulator',
-    'OrderLoader',
-    'NBBOProvider',
-    'SimulatedMetricsCalculator',
-    'GroupComparator',
-    'ComparisonReporter',
+    'nbbo_provider',
+    'metrics_calculator',
+    'simulator',
+    'comparison_reporter',
 ]
