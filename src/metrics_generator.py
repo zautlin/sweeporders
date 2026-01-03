@@ -905,3 +905,393 @@ def generate_sweep_comparison_reports(partition_key, comparison_results, output_
         print(f"    Generated: sweep_size_analysis.csv")
     
     return report_files
+
+
+# ============================================================================
+# TRADE-LEVEL COMPARISON (Real vs Simulated Trades)
+# ============================================================================
+
+def calculate_real_trade_metrics(trades_by_partition, orders_by_partition, processed_dir, column_mapping):
+    """
+    Calculate comprehensive metrics from real trades for sweep orders.
+    
+    Focuses only on trades involving sweep orders (type 2048).
+    
+    Args:
+        trades_by_partition: Dictionary of trade DataFrames by partition
+        orders_by_partition: Dictionary of order DataFrames by partition
+        processed_dir: Directory with processed data
+        column_mapping: Column name mapping dictionary
+    
+    Returns:
+        Dictionary mapping partition_key to real trade metrics DataFrame
+    """
+    print(f"\n[11/11] Calculating real trade metrics for sweep orders...")
+    
+    SWEEP_ORDER_TYPE = 2048
+    real_metrics_by_partition = {}
+    
+    for partition_key, trades_df in trades_by_partition.items():
+        if len(trades_df) == 0:
+            continue
+        
+        # Load order data to identify sweep orders
+        date, security_code = partition_key.split('/')
+        partition_dir = Path(processed_dir) / date / security_code
+        
+        orders_before_file = partition_dir / "orders_before_matching.csv"
+        if not orders_before_file.exists():
+            continue
+        
+        orders_before = pd.read_csv(orders_before_file)
+        
+        # Standardize column names
+        if 'order_id' in orders_before.columns:
+            orders_before = orders_before.rename(columns={'order_id': 'orderid'})
+        if 'order_id' in trades_df.columns:
+            trades_df = trades_df.rename(columns={'order_id': 'orderid'})
+        
+        # Get sweep order IDs
+        sweep_orderids = orders_before[
+            orders_before['exchangeordertype'] == SWEEP_ORDER_TYPE
+        ]['orderid'].unique()
+        
+        if len(sweep_orderids) == 0:
+            print(f"  {partition_key}: No sweep orders found")
+            continue
+        
+        # Filter trades to only those involving sweep orders
+        sweep_trades = trades_df[trades_df['orderid'].isin(sweep_orderids)].copy()
+        
+        if len(sweep_trades) == 0:
+            print(f"  {partition_key}: No trades for sweep orders")
+            continue
+        
+        # Calculate per-trade metrics
+        trade_metrics = _calculate_per_trade_metrics(sweep_trades, orders_before)
+        
+        # Calculate aggregated metrics per order
+        order_metrics = _aggregate_trade_metrics_per_order(sweep_trades)
+        
+        real_metrics_by_partition[partition_key] = {
+            'trade_metrics': trade_metrics,
+            'order_metrics': order_metrics
+        }
+        
+        print(f"  {partition_key}: {len(sweep_trades):,} trades for {len(sweep_orderids):,} sweep orders")
+    
+    return real_metrics_by_partition
+
+
+def _calculate_per_trade_metrics(trades_df, orders_df):
+    """Calculate metrics for each individual trade."""
+    
+    # Merge trade with order details
+    trades_with_order = trades_df.merge(
+        orders_df[['orderid', 'side', 'price', 'quantity']],
+        on='orderid',
+        how='left',
+        suffixes=('', '_order')
+    )
+    
+    # Sort by order and time
+    trades_with_order = trades_with_order.sort_values(['orderid', 'tradetime'])
+    
+    # Calculate cumulative fill per order (use trade quantity)
+    trades_with_order['cumulative_fill'] = trades_with_order.groupby('orderid')['quantity'].cumsum()
+    
+    # Identify first and last fills
+    trades_with_order['is_first_fill'] = ~trades_with_order.duplicated(subset=['orderid'], keep='first')
+    trades_with_order['is_last_fill'] = ~trades_with_order.duplicated(subset=['orderid'], keep='last')
+    
+    # Calculate price deviation from order price
+    trades_with_order['price_vs_order_price'] = (
+        trades_with_order['tradeprice'] - trades_with_order['price']
+    )
+    
+    return trades_with_order
+
+
+def _aggregate_trade_metrics_per_order(trades_df):
+    """Aggregate trade metrics per order."""
+    
+    aggregated = trades_df.groupby('orderid').agg({
+        'quantity': ['count', 'sum'],
+        'tradeprice': ['mean', 'std'],
+        'tradetime': ['min', 'max']
+    }).reset_index()
+    
+    # Flatten column names
+    aggregated.columns = [
+        'orderid',
+        'total_trades',
+        'total_quantity_filled',
+        'weighted_avg_price',
+        'price_std_dev',
+        'first_trade_time',
+        'last_trade_time'
+    ]
+    
+    # Calculate execution duration
+    aggregated['execution_duration_sec'] = (
+        (aggregated['last_trade_time'] - aggregated['first_trade_time']) / 1e9
+    )
+    
+    # Calculate average time between trades
+    aggregated['avg_time_between_trades'] = aggregated['execution_duration_sec'] / (aggregated['total_trades'] - 1)
+    aggregated.loc[aggregated['total_trades'] == 1, 'avg_time_between_trades'] = 0
+    
+    return aggregated
+
+
+def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_results_by_partition, output_dir):
+    """
+    Compare real trades with simulated trades at trade level.
+    
+    Generates detailed comparison focusing on:
+    - Trade-level comparison (trade by trade)
+    - Overall accuracy summary
+    
+    Args:
+        real_metrics_by_partition: Dictionary from calculate_real_trade_metrics()
+        simulation_results_by_partition: Dictionary from simulate_sweep_matching()
+        output_dir: Directory to save comparison reports
+    
+    Returns:
+        Dictionary mapping partition_key to comparison results
+    """
+    print(f"\n[12/11] Comparing real vs simulated trades...")
+    
+    trade_comparison_by_partition = {}
+    
+    for partition_key, real_metrics in real_metrics_by_partition.items():
+        sim_results = simulation_results_by_partition.get(partition_key)
+        
+        if not sim_results:
+            print(f"  {partition_key}: No simulation results found")
+            continue
+        
+        # Extract data
+        real_order_metrics = real_metrics['order_metrics']
+        sim_match_details = sim_results['match_details']
+        sim_order_summary = sim_results['order_summary']
+        
+        if len(sim_match_details) == 0:
+            print(f"  {partition_key}: No simulated matches")
+            continue
+        
+        # Aggregate simulated trades per order (for sweep orders)
+        sim_aggregated = _aggregate_simulated_trades_per_order(sim_match_details, sim_order_summary)
+        
+        # Compare real vs simulated at order level
+        comparison = _compare_order_level_trades(real_order_metrics, sim_aggregated)
+        
+        # Calculate accuracy summary
+        accuracy_summary = _calculate_trade_accuracy_summary(comparison)
+        
+        trade_comparison_by_partition[partition_key] = {
+            'trade_level_comparison': comparison,
+            'trade_accuracy_summary': accuracy_summary
+        }
+        
+        print(f"  {partition_key}: Compared {len(comparison):,} sweep orders")
+    
+    return trade_comparison_by_partition
+
+
+def _aggregate_simulated_trades_per_order(match_details, order_summary):
+    """Aggregate simulated match details per sweep order."""
+    
+    # Group by sweep_orderid
+    aggregated = match_details.groupby('sweep_orderid').agg({
+        'matched_quantity': ['count', 'sum'],
+        'price': ['mean', 'std'],
+        'timestamp': ['min', 'max']
+    }).reset_index()
+    
+    # Flatten column names
+    aggregated.columns = [
+        'orderid',
+        'sim_total_matches',
+        'sim_total_quantity',
+        'sim_avg_price',
+        'sim_price_std_dev',
+        'sim_first_match_time',
+        'sim_last_match_time'
+    ]
+    
+    # Calculate execution duration
+    aggregated['sim_execution_duration_sec'] = (
+        (aggregated['sim_last_match_time'] - aggregated['sim_first_match_time']) / 1e9
+    )
+    
+    return aggregated
+
+
+def _compare_order_level_trades(real_metrics, sim_metrics):
+    """Compare real vs simulated trades at order level."""
+    
+    # Merge real and simulated metrics
+    comparison = real_metrics.merge(
+        sim_metrics,
+        on='orderid',
+        how='outer',
+        suffixes=('_real', '_sim')
+    )
+    
+    # Fill NaN values
+    comparison = comparison.fillna(0)
+    
+    # Calculate differences
+    comparison['quantity_diff'] = comparison['sim_total_quantity'] - comparison['total_quantity_filled']
+    comparison['quantity_accuracy_pct'] = np.where(
+        comparison['total_quantity_filled'] > 0,
+        (comparison['sim_total_quantity'] / comparison['total_quantity_filled']) * 100,
+        0
+    )
+    
+    comparison['num_trades_diff'] = comparison['sim_total_matches'] - comparison['total_trades']
+    
+    comparison['price_diff'] = comparison['sim_avg_price'] - comparison['weighted_avg_price']
+    comparison['price_error_pct'] = np.where(
+        comparison['weighted_avg_price'] > 0,
+        abs(comparison['price_diff'] / comparison['weighted_avg_price']) * 100,
+        0
+    )
+    
+    comparison['execution_time_diff_sec'] = (
+        comparison['sim_execution_duration_sec'] - comparison['execution_duration_sec']
+    )
+    
+    # Calculate match status
+    comparison['match_status'] = comparison.apply(_determine_match_status, axis=1)
+    
+    # Calculate accuracy score (0-100)
+    comparison['accuracy_score'] = comparison.apply(_calculate_accuracy_score, axis=1)
+    
+    return comparison
+
+
+def _determine_match_status(row):
+    """Determine the match status between real and simulated."""
+    
+    qty_diff_pct = abs(row['quantity_diff']) / max(row['total_quantity_filled'], 1) * 100
+    price_diff_pct = row['price_error_pct']
+    time_diff_sec = abs(row['execution_time_diff_sec'])
+    
+    if qty_diff_pct < 5 and price_diff_pct < 1 and time_diff_sec < 1:
+        return 'EXACT_MATCH'
+    elif qty_diff_pct < 10 and price_diff_pct < 5:
+        return 'CLOSE_MATCH'
+    elif qty_diff_pct < 25:
+        return 'PARTIAL_MATCH'
+    else:
+        return 'POOR_MATCH'
+
+
+def _calculate_accuracy_score(row):
+    """Calculate accuracy score (0-100) for trade comparison."""
+    
+    # Quantity accuracy (40 points max)
+    qty_accuracy = 40 * min(
+        row['sim_total_quantity'] / max(row['total_quantity_filled'], 1),
+        1.0
+    )
+    
+    # Price accuracy (30 points max)
+    price_accuracy = 30 * max(0, 1 - row['price_error_pct'] / 100)
+    
+    # Trade count accuracy (20 points max)
+    trade_count_accuracy = 20 * min(
+        row['sim_total_matches'] / max(row['total_trades'], 1),
+        1.0
+    )
+    
+    # Time accuracy (10 points max)
+    time_accuracy = 10 * max(0, 1 - abs(row['execution_time_diff_sec']) / 10)
+    
+    return qty_accuracy + price_accuracy + trade_count_accuracy + time_accuracy
+
+
+def _calculate_trade_accuracy_summary(comparison):
+    """Calculate summary statistics for trade accuracy."""
+    
+    summary = {
+        'total_orders': len(comparison),
+        'orders_with_real_trades': (comparison['total_quantity_filled'] > 0).sum(),
+        'orders_with_sim_matches': (comparison['sim_total_quantity'] > 0).sum(),
+        
+        # Quantity metrics
+        'total_real_quantity': comparison['total_quantity_filled'].sum(),
+        'total_sim_quantity': comparison['sim_total_quantity'].sum(),
+        'quantity_match_rate_pct': (comparison['sim_total_quantity'].sum() / 
+                                     max(comparison['total_quantity_filled'].sum(), 1)) * 100,
+        
+        # Price metrics
+        'avg_price_error_pct': comparison['price_error_pct'].mean(),
+        'median_price_error_pct': comparison['price_error_pct'].median(),
+        'price_rmse': np.sqrt((comparison['price_diff'] ** 2).mean()),
+        
+        # Trade count metrics
+        'total_real_trades': comparison['total_trades'].sum(),
+        'total_sim_matches': comparison['sim_total_matches'].sum(),
+        'trade_count_match_rate_pct': (comparison['sim_total_matches'].sum() / 
+                                        max(comparison['total_trades'].sum(), 1)) * 100,
+        
+        # Time metrics
+        'avg_time_diff_sec': comparison['execution_time_diff_sec'].mean(),
+        'median_time_diff_sec': comparison['execution_time_diff_sec'].median(),
+        
+        # Match status distribution
+        'exact_matches': (comparison['match_status'] == 'EXACT_MATCH').sum(),
+        'close_matches': (comparison['match_status'] == 'CLOSE_MATCH').sum(),
+        'partial_matches': (comparison['match_status'] == 'PARTIAL_MATCH').sum(),
+        'poor_matches': (comparison['match_status'] == 'POOR_MATCH').sum(),
+        
+        # Overall accuracy
+        'avg_accuracy_score': comparison['accuracy_score'].mean(),
+        'median_accuracy_score': comparison['accuracy_score'].median(),
+    }
+    
+    return pd.DataFrame([summary])
+
+
+def generate_trade_comparison_reports(trade_comparison_by_partition, output_dir):
+    """
+    Generate trade-level comparison reports.
+    
+    Args:
+        trade_comparison_by_partition: Dictionary from compare_real_vs_simulated_trades()
+        output_dir: Directory to save reports
+    
+    Returns:
+        Dictionary mapping partition_key to generated report files
+    """
+    print(f"\n  Generating trade-level comparison reports...")
+    
+    report_files_by_partition = {}
+    
+    for partition_key, comparison_data in trade_comparison_by_partition.items():
+        partition_output_dir = Path(output_dir) / partition_key
+        partition_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        report_files = {}
+        
+        # Report 1: Trade-level comparison
+        if 'trade_level_comparison' in comparison_data:
+            file_path = partition_output_dir / 'trade_level_comparison.csv'
+            comparison_data['trade_level_comparison'].to_csv(file_path, index=False)
+            report_files['trade_level_comparison'] = file_path
+            print(f"    {partition_key}/trade_level_comparison.csv: {len(comparison_data['trade_level_comparison']):,} orders")
+        
+        # Report 2: Trade accuracy summary
+        if 'trade_accuracy_summary' in comparison_data:
+            file_path = partition_output_dir / 'trade_accuracy_summary.csv'
+            comparison_data['trade_accuracy_summary'].to_csv(file_path, index=False)
+            report_files['trade_accuracy_summary'] = file_path
+            print(f"    {partition_key}/trade_accuracy_summary.csv: Overall metrics")
+        
+        report_files_by_partition[partition_key] = report_files
+    
+    return report_files_by_partition
+

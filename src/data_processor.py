@@ -234,6 +234,238 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
     return trades_agg_by_partition
 
 
+
+
+def process_reference_data(raw_folders, processed_dir, orders_by_partition, column_mapping):
+    """
+    Process and partition all reference data files (session, reference, participants, nbbo).
+    
+    Output structure:
+    - Session: processed/{date}/session.csv.gz
+    - Reference: processed/{date}/reference.csv.gz
+    - Participants: processed/{date}/participants.csv.gz
+    - NBBO: processed/{date}/{orderbookid}/nbbo.csv.gz
+    
+    All timestamps converted to AEST and date column added.
+    
+    Args:
+        raw_folders: Dictionary with keys 'session', 'reference', 'participants', 'nbbo'
+        processed_dir: Directory to save processed files
+        orders_by_partition: Dictionary of orders (to get dates and securities)
+        column_mapping: Column name mapping dictionary
+    
+    Returns:
+        Dictionary with processing results
+    """
+    print(f"\n[4/11] Processing reference data files...")
+    
+    # Get unique dates and securities from orders
+    unique_dates = sorted(set(pk.split('/')[0] for pk in orders_by_partition.keys()))
+    unique_securities = {}  # date -> [securities]
+    for pk in orders_by_partition.keys():
+        date, security = pk.split('/')
+        if date not in unique_securities:
+            unique_securities[date] = []
+        unique_securities[date].append(security)
+    
+    print(f"  Target dates: {unique_dates}")
+    print(f"  Target securities by date: {unique_securities}")
+    
+    results = {
+        'session': {},
+        'reference': {},
+        'participants': {},
+        'nbbo': {}
+    }
+    
+    # ========================================================================
+    # PROCESS SESSION DATA
+    # ========================================================================
+    session_files = list(Path(raw_folders['session']).glob('*.csv'))
+    if session_files:
+        print(f"\n  Processing Session data from {len(session_files)} file(s)...")
+        
+        session_dfs = []
+        for file in session_files:
+            df = pd.read_csv(file)
+            session_dfs.append(df)
+        
+        session_df = pd.concat(session_dfs, ignore_index=True) if len(session_dfs) > 1 else session_dfs[0]
+        
+        # Convert timestamp to AEST and add date column
+        timestamp_col = col('session', 'timestamp', column_mapping)
+        session_df = add_date_column(session_df, timestamp_col)
+        
+        # Partition by date
+        for date in unique_dates:
+            date_data = session_df[session_df['date'] == date].copy()
+            
+            if len(date_data) > 0:
+                date_dir = Path(processed_dir) / date
+                date_dir.mkdir(parents=True, exist_ok=True)
+                
+                output_file = date_dir / "session.csv.gz"
+                date_data.to_csv(output_file, index=False, compression='gzip')
+                
+                results['session'][date] = date_data
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {date}/session.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
+            else:
+                print(f"    {date}/session.csv.gz: NO DATA (missing in raw files)")
+    else:
+        print(f"  No session files found in {raw_folders['session']}")
+    
+    # ========================================================================
+    # PROCESS REFERENCE DATA
+    # ========================================================================
+    reference_files = list(Path(raw_folders['reference']).glob('*.csv'))
+    if reference_files:
+        print(f"\n  Processing Reference data from {len(reference_files)} file(s)...")
+        
+        reference_dfs = []
+        for file in reference_files:
+            df = pd.read_csv(file)
+            reference_dfs.append(df)
+        
+        reference_df = pd.concat(reference_dfs, ignore_index=True) if len(reference_dfs) > 1 else reference_dfs[0]
+        
+        # Convert timestamp to AEST and add date column
+        timestamp_col = col('reference', 'timestamp', column_mapping)
+        reference_df = add_date_column(reference_df, timestamp_col)
+        
+        # Partition by date
+        for date in unique_dates:
+            date_data = reference_df[reference_df['date'] == date].copy()
+            
+            if len(date_data) > 0:
+                date_dir = Path(processed_dir) / date
+                date_dir.mkdir(parents=True, exist_ok=True)
+                
+                output_file = date_dir / "reference.csv.gz"
+                date_data.to_csv(output_file, index=False, compression='gzip')
+                
+                results['reference'][date] = date_data
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {date}/reference.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
+            else:
+                print(f"    {date}/reference.csv.gz: NO DATA (missing in raw files)")
+    else:
+        print(f"  No reference files found in {raw_folders['reference']}")
+    
+    # ========================================================================
+    # PROCESS PARTICIPANTS DATA
+    # ========================================================================
+    participants_files = list(Path(raw_folders['participants']).glob('*.csv'))
+    if participants_files:
+        print(f"\n  Processing Participants data from {len(participants_files)} file(s)...")
+        
+        participants_dfs = []
+        for file in participants_files:
+            df = pd.read_csv(file)
+            participants_dfs.append(df)
+        
+        participants_df = pd.concat(participants_dfs, ignore_index=True) if len(participants_dfs) > 1 else participants_dfs[0]
+        
+        # Convert timestamp to AEST and add date column
+        timestamp_col = col('participants', 'timestamp', column_mapping)
+        participants_df = add_date_column(participants_df, timestamp_col)
+        
+        # Get all unique dates in participants data
+        all_participant_dates = participants_df['date'].unique()
+        print(f"    Available dates in participants: {sorted(all_participant_dates)}")
+        
+        # Partition by date (use latest available if exact date missing)
+        for date in unique_dates:
+            date_data = participants_df[participants_df['date'] == date].copy()
+            
+            if len(date_data) > 0:
+                # Exact match found
+                date_dir = Path(processed_dir) / date
+                date_dir.mkdir(parents=True, exist_ok=True)
+                
+                output_file = date_dir / "participants.csv.gz"
+                date_data.to_csv(output_file, index=False, compression='gzip')
+                
+                results['participants'][date] = date_data
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {date}/participants.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
+            else:
+                # Use latest available date as fallback
+                latest_date = max(all_participant_dates)
+                fallback_data = participants_df[participants_df['date'] == latest_date].copy()
+                
+                date_dir = Path(processed_dir) / date
+                date_dir.mkdir(parents=True, exist_ok=True)
+                
+                output_file = date_dir / "participants.csv.gz"
+                fallback_data.to_csv(output_file, index=False, compression='gzip')
+                
+                results['participants'][date] = fallback_data
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records ({size_kb:.1f} KB) [FALLBACK from {latest_date}]")
+    else:
+        print(f"  No participants files found in {raw_folders['participants']}")
+    
+    # ========================================================================
+    # PROCESS NBBO DATA
+    # ========================================================================
+    nbbo_files = list(Path(raw_folders['nbbo']).glob('*.csv'))
+    if nbbo_files:
+        print(f"\n  Processing NBBO data from {len(nbbo_files)} file(s)...")
+        
+        nbbo_dfs = []
+        for file in nbbo_files:
+            df = pd.read_csv(file)
+            nbbo_dfs.append(df)
+        
+        nbbo_df = pd.concat(nbbo_dfs, ignore_index=True) if len(nbbo_dfs) > 1 else nbbo_dfs[0]
+        
+        # Convert timestamp to AEST and add date column
+        timestamp_col = col('nbbo', 'timestamp', column_mapping)
+        nbbo_df = add_date_column(nbbo_df, timestamp_col)
+        
+        # Standardize security_code column
+        security_col = col('nbbo', 'security_code', column_mapping)
+        if security_col != 'orderbookid':
+            nbbo_df = nbbo_df.rename(columns={security_col: 'orderbookid'})
+        
+        # Partition by date and orderbookid
+        for partition_key in orders_by_partition.keys():
+            date, orderbookid = partition_key.split('/')
+            orderbookid_int = int(orderbookid)
+            
+            partition_data = nbbo_df[
+                (nbbo_df['date'] == date) & 
+                (nbbo_df['orderbookid'] == orderbookid_int)
+            ].copy()
+            
+            if len(partition_data) > 0:
+                partition_dir = Path(processed_dir) / date / orderbookid
+                partition_dir.mkdir(parents=True, exist_ok=True)
+                
+                output_file = partition_dir / "nbbo.csv.gz"
+                partition_data.to_csv(output_file, index=False, compression='gzip')
+                
+                results['nbbo'][partition_key] = partition_data
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {partition_key}/nbbo.csv.gz: {len(partition_data):,} records ({size_kb:.1f} KB)")
+            else:
+                print(f"    {partition_key}/nbbo.csv.gz: NO DATA (missing in raw files)")
+    else:
+        print(f"  No NBBO files found in {raw_folders['nbbo']}")
+    
+    # ========================================================================
+    # SUMMARY
+    # ========================================================================
+    print(f"\n  Summary:")
+    print(f"    Session: {len(results['session'])} dates processed")
+    print(f"    Reference: {len(results['reference'])} dates processed")
+    print(f"    Participants: {len(results['participants'])} dates processed")
+    print(f"    NBBO: {len(results['nbbo'])} partitions processed")
+    
+    return results
+
+
 def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping):
     """
     Extract and partition NBBO data by date/security.
@@ -376,7 +608,7 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     Returns:
         Dictionary mapping partition_key to {'before': DataFrame, 'after': DataFrame}
     """
-    print(f"\n[6/11] Extracting order states...")
+    print(f"\n[5/11] Extracting order states...")
     
     order_id_col = col('orders', 'order_id', column_mapping)
     timestamp_col = col('orders', 'timestamp', column_mapping)
@@ -420,37 +652,109 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
 
 def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
     """
-    Extract first and last execution time per order from trades.
+    Extract first and last time each order was in the book.
+    
+    Algorithm:
+    - first_execution_time: Earliest timestamp where order entered book (orderstatus = 1)
+    - last_execution_time: Latest timestamp where order exited book (via trade, cancel, or purge)
+    
+    Exit conditions (changereason):
+        Traded: 3 (when leavesquantity = 0)
+        Cancelled: 1, 9, 10, 20, 34, 41, 42, 43, 51
+        Purged: 23, 24, 25, 26, 27, 35
     
     Args:
-        orders_by_partition: Dictionary of orders (unused, for consistency)
-        trades_by_partition: Dictionary of trades DataFrames
+        orders_by_partition: Dictionary of orders DataFrames
+        trades_by_partition: Dictionary of trades (unused, for consistency)
         processed_dir: Directory to save execution times
         column_mapping: Column name mapping dictionary
     
     Returns:
         Dictionary mapping partition_key to execution times DataFrame
     """
-    print(f"\n[7/11] Extracting last execution times...")
+    print(f"\n[6/11] Extracting first and last execution times from order book lifecycle...")
     
-    order_id_col = col('trades', 'order_id', column_mapping)
-    trade_time_col = col('trades', 'trade_time', column_mapping)
+    order_id_col = col('orders', 'order_id', column_mapping)
+    timestamp_col = col('orders', 'timestamp', column_mapping)
+    orderstatus_col = col('orders', 'order_status', column_mapping)
+    changereason_col = col('orders', 'change_reason', column_mapping)
+    leavesqty_col = col('orders', 'leaves_quantity', column_mapping)
+    
+    # Exit changereason codes
+    EXIT_REASONS = {
+        1,   # Canceled by user
+        3,   # Traded (when leavesquantity = 0)
+        9,   # Canceled by system
+        10,  # Canceled on behalf
+        20,  # Canceled due to trading halt
+        23,  # Inactivated/purged due to corporate action
+        24,  # Rest-Of-Day order inactivated/purged
+        25,  # Inactivated due to delisting
+        26,  # Other than Rest-Of-Day purged
+        27,  # Purged due to outside purge price limits
+        34,  # Canceled after opening auction
+        35,  # Purged due to outside price limits
+        41,  # Canceled - delta limit exceeded
+        42,  # Canceled - quantity limit exceeded
+        43,  # Deleted due to internal crossing
+        51   # Canceled due to invalid clearing participant ID
+    }
     
     execution_times_by_partition = {}
     
-    for partition_key, trades_df in trades_by_partition.items():
-        if len(trades_df) == 0:
+    for partition_key, orders_df in orders_by_partition.items():
+        if len(orders_df) == 0:
             continue
         
-        # Group by order and get first/last trade times
-        execution_times = trades_df.groupby(order_id_col).agg({
-            trade_time_col: ['min', 'max']
-        }).reset_index()
+        # Get end of day timestamp (max timestamp in partition)
+        end_of_day = orders_df[timestamp_col].max()
         
-        # Flatten column names
-        execution_times.columns = ['orderid', 'first_execution_time', 'last_execution_time']
+        # Sort by timestamp for chronological processing
+        orders_sorted = orders_df.sort_values([order_id_col, timestamp_col])
         
-        execution_times_by_partition[partition_key] = execution_times
+        execution_times = []
+        
+        # Process each order
+        for order_id, group in orders_sorted.groupby(order_id_col):
+            first_time = None
+            last_time = None
+            
+            # Find first time in book (orderstatus = 1)
+            active_orders = group[group[orderstatus_col] == 1]
+            if len(active_orders) > 0:
+                first_time = active_orders[timestamp_col].iloc[0]
+            
+            # Find last time in book (exit condition)
+            for idx in range(len(group) - 1, -1, -1):  # Reverse iteration
+                row = group.iloc[idx]
+                changereason = row[changereason_col]
+                
+                # Check exit conditions
+                if changereason in EXIT_REASONS:
+                    # For changereason = 3 (Traded), only exit if fully filled
+                    if changereason == 3:
+                        if row[leavesqty_col] == 0:
+                            last_time = row[timestamp_col]
+                            break
+                    else:
+                        # All other exit reasons
+                        last_time = row[timestamp_col]
+                        break
+            
+            # If no exit found but was active, use end of day timestamp
+            if last_time is None and first_time is not None:
+                # Use end of day timestamp for this partition
+                last_time = end_of_day
+            
+            # Record times (use end of day if never exited book)
+            execution_times.append({
+                'orderid': order_id,
+                'first_execution_time': first_time if first_time is not None else pd.NA,
+                'last_execution_time': last_time if last_time is not None else end_of_day
+            })
+        
+        execution_times_df = pd.DataFrame(execution_times)
+        execution_times_by_partition[partition_key] = execution_times_df
         
         # Save to processed directory
         date, security_code = partition_key.split('/')
@@ -458,9 +762,15 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
         partition_dir.mkdir(parents=True, exist_ok=True)
         
         exec_file = partition_dir / "last_execution_time.csv"
-        execution_times.to_csv(exec_file, index=False)
+        execution_times_df.to_csv(exec_file, index=False)
         
-        print(f"  {partition_key}: {len(execution_times):,} orders with execution times")
+        # Count how many orders have valid times
+        valid_times = execution_times_df[
+            execution_times_df['first_execution_time'].notna() & 
+            execution_times_df['last_execution_time'].notna()
+        ]
+        
+        print(f"  {partition_key}: {len(valid_times):,}/{len(execution_times_df):,} orders with book lifecycle times")
     
     return execution_times_by_partition
 
@@ -521,7 +831,7 @@ def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
     Returns:
         Dictionary mapping partition_key to groups dictionary
     """
-    print(f"\n[10/11] Classifying sweep order groups (type 2048 only)...")
+    print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     
     order_type_col = col('orders', 'order_type', column_mapping)
     leaves_qty_col = col('orders', 'leaves_quantity', column_mapping)

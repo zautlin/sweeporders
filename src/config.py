@@ -26,18 +26,32 @@ SYSTEM_CONFIG = sc.get_config_with_overrides()
 CHUNK_SIZE = SYSTEM_CONFIG.chunk_size
 NUM_WORKERS = SYSTEM_CONFIG.num_workers
 
+# Parallel processing configuration
+ENABLE_PARALLEL_PROCESSING = True  # Set to False for debugging/sequential mode
+MAX_PARALLEL_WORKERS = NUM_WORKERS  # Number of parallel workers for partition processing
+
 
 # ============================================================================
 # INPUT FILES
 # ============================================================================
 
 INPUT_FILES = {
-    'orders': str(PROJECT_ROOT / 'data/raw/orders/drr_orders.csv'),
-    'trades': str(PROJECT_ROOT / 'data/raw/trades/drr_trades_segment_1.csv'),
+    'orders': str(PROJECT_ROOT / 'data/raw/orders/cba_orders.csv'),
+    'trades': str(PROJECT_ROOT / 'data/raw/trades/cba_trades.csv'),
     'nbbo': str(PROJECT_ROOT / 'data/raw/nbbo/nbbo.csv'),
     'session': str(PROJECT_ROOT / 'data/raw/session/session.csv'),
     'reference': str(PROJECT_ROOT / 'data/raw/reference/ob.csv'),
     'participants': str(PROJECT_ROOT / 'data/raw/participants/par.csv'),
+}
+
+# Raw data directories
+RAW_FOLDERS = {
+    'orders': str(PROJECT_ROOT / 'data/raw/orders'),
+    'trades': str(PROJECT_ROOT / 'data/raw/trades'),
+    'nbbo': str(PROJECT_ROOT / 'data/raw/nbbo'),
+    'session': str(PROJECT_ROOT / 'data/raw/session'),
+    'reference': str(PROJECT_ROOT / 'data/raw/reference'),
+    'participants': str(PROJECT_ROOT / 'data/raw/participants'),
 }
 
 
@@ -75,7 +89,7 @@ COLUMN_MAPPING = {
         'timestamp': 'timestamp',
         'sequence': 'sequence',
         'order_type': 'exchangeordertype',
-        'security_code': 'securitycode',
+        'security_code': 'security_code',
         'side': 'side',
         'quantity': 'quantity',
         'price': 'price',
@@ -83,6 +97,8 @@ COLUMN_MAPPING = {
         'offer': 'offer',
         'leaves_quantity': 'leavesquantity',
         'matched_quantity': 'totalmatchedquantity',
+        'order_status': 'orderstatus',
+        'change_reason': 'changereason',
     },
     # Trades file columns
     'trades': {
@@ -93,7 +109,7 @@ COLUMN_MAPPING = {
     },
     # NBBO file columns
     'nbbo': {
-        'timestamp': 'tradedate',
+        'timestamp': 'timestamp',
         'security_code': 'orderbookid',
         'bid': 'bidprice',
         'offer': 'offerprice',
@@ -101,10 +117,12 @@ COLUMN_MAPPING = {
     # Session file columns
     'session': {
         'timestamp': 'TradeDate',
+        'security_code': 'OrderBookId',
     },
     # Reference file columns
     'reference': {
         'timestamp': 'TradeDate',
+        'security_code': 'Id',
     },
     # Participants file columns
     'participants': {
