@@ -664,10 +664,13 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
 
 def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
     """
-    Extract first and last time each order was in the book.
+    Extract first and last execution times from order book lifecycle.
     
-    Algorithm:
-    - first_execution_time: Earliest timestamp where order entered book (orderstatus = 1)
+    Times extracted:
+    - first_execution_time: First timestamp in order lifecycle (order submission/entry)
+        * For orders with orderstatus=1: time entered book
+        * For fast-execution orders: submission time (never achieved stable orderstatus=1 but executed)
+        * For cancelled orders: submission time (never entered book)
     - last_execution_time: Latest timestamp where order exited book (via trade, cancel, or purge)
     
     Exit conditions (changereason):
@@ -728,13 +731,14 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
         
         # Process each order
         for order_id, group in orders_sorted.groupby(order_id_col):
-            first_time = None
             last_time = None
             
-            # Find first time in book (orderstatus = 1)
-            active_orders = group[group[orderstatus_col] == 1]
-            if len(active_orders) > 0:
-                first_time = active_orders[timestamp_col].iloc[0]
+            # Use first timestamp as first_execution_time
+            # This captures:
+            # - Normal orders: time entered book (orderstatus=1)
+            # - Fast execution: submission time (never achieved stable orderstatus=1 but executed)
+            # - Cancelled orders: submission time (never entered book)
+            first_time = group[timestamp_col].iloc[0]
             
             # Find last time in book (exit condition)
             for idx in range(len(group) - 1, -1, -1):  # Reverse iteration
@@ -776,13 +780,8 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
         exec_file = partition_dir / "last_execution_time.csv"
         execution_times_df.to_csv(exec_file, index=False)
         
-        # Count how many orders have valid times
-        valid_times = execution_times_df[
-            execution_times_df['first_execution_time'].notna() & 
-            execution_times_df['last_execution_time'].notna()
-        ]
-        
-        print(f"  {partition_key}: {len(valid_times):,}/{len(execution_times_df):,} orders with book lifecycle times")
+        # All orders now have first_execution_time
+        print(f"  {partition_key}: {len(execution_times_df):,} orders with lifecycle times (all orders)")
     
     return execution_times_by_partition
 
