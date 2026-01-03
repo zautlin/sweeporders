@@ -1,13 +1,16 @@
 """
-Sweep Order Matching Simulator
+Sweep Simulator Module
 
-This module simulates the matching of sweep orders (type 2048) with incoming orders
-(types 64, 256, 4096, 4098) to compare simulated execution with actual execution.
+Handles all sweep order matching simulation logic:
+- Load and prepare sweep orders and incoming orders
+- Simulate time-priority sweep matching algorithm
+- Calculate midpoint prices from NBBO or fallback to bid/offer
+- Track sweep order utilization
+- Generate match details and order summaries
 """
 
 import pandas as pd
 import numpy as np
-from . import nbbo_provider
 
 # Constants
 SWEEP_ORDER_TYPE = 2048
@@ -15,12 +18,77 @@ INCOMING_ORDER_TYPES = {64, 256, 4096, 4098}
 ORDER_TYPE_COLUMN = 'exchangeordertype'
 
 
-def load_and_prepare_orders(partition_key, partition_data):
+def get_midpoint(nbbo_data, timestamp, orderbookid, fallback_bid, fallback_offer):
+    """
+    Get midpoint price at given timestamp.
+    
+    Priority:
+    1. NBBO file data (if available)
+    2. Fallback to bid/offer from orders
+    
+    Args:
+        nbbo_data: DataFrame from nbbo.csv (or None if not available), 
+                   should be sorted by timestamp
+        timestamp: Order timestamp (nanoseconds)
+        orderbookid: Security code
+        fallback_bid: Bid price from order (fallback)
+        fallback_offer: Offer price from order (fallback)
+    
+    Returns:
+        Midpoint price or None
+    """
+    
+    # Try NBBO data first
+    if nbbo_data is not None and len(nbbo_data) > 0:
+        midpoint = _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid)
+        if midpoint is not None:
+            return midpoint
+    
+    # Fallback to order bid/offer
+    if fallback_bid is not None and fallback_offer is not None:
+        if pd.notna(fallback_bid) and pd.notna(fallback_offer):
+            return (fallback_bid + fallback_offer) / 2.0
+    
+    return None
+
+
+def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
+    """Get midpoint from NBBO data (most recent quote before timestamp)."""
+    
+    if nbbo_data is None:
+        return None
+    
+    # Handle both 'security_code' and 'orderbookid' column names
+    orderbook_col = 'security_code' if 'security_code' in nbbo_data.columns else 'orderbookid'
+    timestamp_col = 'timestamp' if 'timestamp' in nbbo_data.columns else 'tradedate'
+    
+    # Filter for this orderbookid and timestamp <= target
+    valid_quotes = nbbo_data[
+        (nbbo_data[orderbook_col] == orderbookid) &
+        (nbbo_data[timestamp_col] <= timestamp)
+    ]
+    
+    if len(valid_quotes) == 0:
+        return None
+    
+    # Get most recent quote
+    latest = valid_quotes.iloc[-1]
+    
+    # Handle both standardized and original column names
+    bid_col = 'bidprice' if 'bidprice' in latest.index else 'bid'
+    offer_col = 'offerprice' if 'offerprice' in latest.index else 'offer'
+    
+    # Calculate midpoint
+    midpoint = (latest[bid_col] + latest[offer_col]) / 2.0
+    
+    return midpoint
+
+
+def load_and_prepare_orders(partition_data):
     """
     Load and prepare sweep and incoming orders for simulation.
     
     Args:
-        partition_key: Partition identifier (e.g., "2024-09-05/110621")
         partition_data: Dictionary containing:
             - 'orders_before': DataFrame from orders_before_lob.csv
             - 'orders_after': DataFrame from orders_after_lob.csv
@@ -62,6 +130,8 @@ def _prepare_sweep_orders(partition_data):
     # Rename security_code to orderbookid for consistency
     if 'security_code' in sweep_orders.columns:
         sweep_orders = sweep_orders.rename(columns={'security_code': 'orderbookid'})
+    elif 'securitycode' in sweep_orders.columns:
+        sweep_orders = sweep_orders.rename(columns={'securitycode': 'orderbookid'})
     
     # Merge with last_execution_time
     sweep_orders = sweep_orders.merge(
@@ -114,6 +184,8 @@ def _prepare_incoming_orders(partition_data):
     # Rename security_code to orderbookid for consistency
     if 'security_code' in incoming_orders.columns:
         incoming_orders = incoming_orders.rename(columns={'security_code': 'orderbookid'})
+    elif 'securitycode' in incoming_orders.columns:
+        incoming_orders = incoming_orders.rename(columns={'securitycode': 'orderbookid'})
     
     # Select required columns
     incoming_orders = incoming_orders[[
@@ -126,9 +198,54 @@ def _prepare_incoming_orders(partition_data):
     return incoming_orders
 
 
-def simulate_sweep_matching(partition_key, sweep_orders, incoming_orders, nbbo_data):
+def simulate_partition(partition_key, partition_data):
     """
     Simulate sweep matching for a partition.
+    
+    Args:
+        partition_key: Partition identifier (e.g., "2024-09-05/110621")
+        partition_data: Dictionary containing:
+            - 'orders_before': DataFrame
+            - 'orders_after': DataFrame
+            - 'last_execution': DataFrame
+            - 'nbbo': DataFrame or None
+    
+    Returns:
+        Dictionary containing:
+            - 'match_details': All individual matches
+            - 'order_summary': Per incoming order summary
+            - 'sweep_utilization': Per sweep order utilization
+    """
+    
+    # Load and prepare orders
+    sweep_orders, incoming_orders = load_and_prepare_orders(partition_data)
+    
+    if len(sweep_orders) == 0:
+        print(f"  {partition_key}: No sweep orders, skipping")
+        return None
+    
+    if len(incoming_orders) == 0:
+        print(f"  {partition_key}: No incoming orders, skipping")
+        return None
+    
+    # Get NBBO data
+    nbbo_data = partition_data.get('nbbo')
+    
+    # Prepare NBBO data if available
+    if nbbo_data is not None and len(nbbo_data) > 0:
+        nbbo_data = nbbo_data.sort_values('timestamp').reset_index(drop=True)
+    
+    # Run simulation
+    results = simulate_sweep_matching(sweep_orders, incoming_orders, nbbo_data)
+    
+    print(f"  {partition_key}: {len(results['match_details']):,} matches, {len(incoming_orders):,} incoming orders")
+    
+    return results
+
+
+def simulate_sweep_matching(sweep_orders, incoming_orders, nbbo_data):
+    """
+    Simulate sweep matching with time-priority algorithm.
     
     Algorithm:
         1. Process incoming orders chronologically by timestamp
@@ -140,7 +257,6 @@ def simulate_sweep_matching(partition_key, sweep_orders, incoming_orders, nbbo_d
             e. Record matches at midpoint price
     
     Args:
-        partition_key: Partition identifier
         sweep_orders: DataFrame of sweep orders
         incoming_orders: DataFrame of incoming orders
         nbbo_data: DataFrame with NBBO data (or None)
@@ -152,18 +268,14 @@ def simulate_sweep_matching(partition_key, sweep_orders, incoming_orders, nbbo_d
             - 'sweep_utilization': Per sweep order utilization
     """
     
-    # Prepare NBBO data if available
-    if nbbo_data is not None and len(nbbo_data) > 0:
-        nbbo_data = nbbo_data.sort_values('timestamp').reset_index(drop=True)
-    
     # Initialize tracking structures
     all_matches = []
     order_summaries = []
-    sweep_usage = {int(orderid): {'matched_quantity': 0, 'num_matches': 0} 
+    sweep_usage = {orderid: {'matched_quantity': 0, 'num_matches': 0} 
                    for orderid in sweep_orders['orderid'].values}
     
     # Track remaining quantities for sweep orders
-    sweep_remaining = {int(orderid): qty for orderid, qty in 
+    sweep_remaining = {orderid: qty for orderid, qty in 
                       zip(sweep_orders['orderid'].values, sweep_orders['leavesquantity'].values)}
     
     # Process each incoming order chronologically
@@ -237,11 +349,16 @@ def _match_incoming_order(incoming, sweep_orders, sweep_remaining, nbbo_data):
     total_matched_qty = 0
     num_matches = 0
     
-    for _, sweep in matching_sweeps.iterrows():
+    # Access columns as arrays to avoid dtype conversion
+    sweep_orderids = matching_sweeps['orderid'].values
+    sweep_sides = matching_sweeps['side'].values
+    sweep_orderbookids = matching_sweeps['orderbookid'].values
+    
+    for idx in range(len(matching_sweeps)):
         if remaining_qty <= 0:
             break
         
-        sweep_id = int(sweep['orderid'])
+        sweep_id = sweep_orderids[idx]  # Direct array access, preserves int64
         sweep_available = sweep_remaining.get(sweep_id, 0)
         
         if sweep_available <= 0:
@@ -251,13 +368,16 @@ def _match_incoming_order(incoming, sweep_orders, sweep_remaining, nbbo_data):
         match_qty = min(remaining_qty, sweep_available)
         
         # Get midpoint price
-        midpoint = nbbo_provider.get_midpoint(
+        midpoint = get_midpoint(
             nbbo_data=nbbo_data,
             timestamp=incoming_ts,
             orderbookid=orderbookid,
             fallback_bid=incoming['bid'],
             fallback_offer=incoming['offer']
         )
+        
+        if midpoint is None:
+            continue
         
         # Record match
         matches.append({
