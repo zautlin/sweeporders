@@ -151,26 +151,9 @@ def main():
             config.OUTPUTS_DIR
         )
         
-        # Step 11: Calculate real trade metrics
-        real_trade_metrics_by_partition = mg.calculate_real_trade_metrics(
-            trades_by_partition,
-            orders_by_partition,
-            config.PROCESSED_DIR,
-            config.COLUMN_MAPPING
-        )
-        
-        # Step 12: Compare real vs simulated trades
-        if real_trade_metrics_by_partition:
-            trade_comparison_by_partition = mg.compare_real_vs_simulated_trades(
-                real_trade_metrics_by_partition,
-                simulation_results_by_partition,
-                config.OUTPUTS_DIR
-            )
-            
-            mg.generate_trade_comparison_reports(
-                trade_comparison_by_partition,
-                config.OUTPUTS_DIR
-            )
+        # Step 11 & 12: Trade comparison reports (DISABLED)
+        # Removed: calculate_real_trade_metrics, compare_real_vs_simulated_trades, 
+        # generate_trade_comparison_reports (trade_level_comparison.csv, trade_accuracy_summary.csv)
     
     # Print summary
     execution_time = time.time() - start_time

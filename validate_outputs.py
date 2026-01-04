@@ -17,8 +17,6 @@ BASELINE_METRICS = {
         'orders_with_simulated_metrics.csv': 8248,
         'simulation_order_summary.csv': 1274,
         'simulation_match_details.csv': 1549,
-        'trade_level_comparison.csv': 1688,
-        'trade_accuracy_summary.csv': 2,
         's_t_2024-09-05.csv.gz': 3097,  # 19-column format: 2 rows per match + header (1548 * 2 + 1)
     }
 }
