@@ -106,84 +106,76 @@ def load_and_prepare_orders(partition_data):
 
 def _prepare_sweep_orders(partition_data):
     """
-    Prepare sweep orders (type 2048) from orders_before_matching.csv.
+    Prepare sweep orders (type 2048) from ONLY qualifying orders in last_execution.
     
-    Uses orders_before to get FIRST timestamp and sequence for correct sorting.
-    Merges with orders_after to get final leavesquantity.
+    Strategy:
+    1. Start with last_execution (ONLY 3-level filtered sweep orders)
+    2. INNER JOIN with orders_after to get ALL order data
     
-    NOTE: orders_before may have multiple rows per order (different states).
-    We take the FIRST occurrence (earliest timestamp/sequence) per order.
+    NOTE: Only sweep orders from last_execution participate (3-level filtering)
+    NOTE: Uses orders_after (Option A: MIN timestamp + MAX sequence) for all order fields
     
     Returns:
         DataFrame with columns:
             - orderid
-            - timestamp (original placement time - FIRST occurrence)
-            - sequence (original placement sequence - FIRST occurrence)
-            - side (1=BUY, 2=SELL)
-            - leavesquantity (available quantity from orders_after)
-            - first_execution_time
-            - last_execution_time
-            - orderbookid
+            - timestamp (placement time from orders_after)
+            - sequence (placement sequence from orders_after)
+            - side (from orders_after)
+            - leavesquantity (from orders_after - Option A)
+            - totalmatchedquantity (from orders_after - Option A)
+            - price (from orders_after - Option A)
+            - first_execution_time (from last_execution)
+            - last_execution_time (from last_execution)
+            - orderbookid (from orders_after)
     """
-    orders_before = partition_data['orders_before']
     orders_after = partition_data['orders_after']
     last_execution = partition_data['last_execution']
     
-    # Standardize column names first
-    if 'order_id' in orders_before.columns and 'orderid' not in orders_before.columns:
-        orders_before = orders_before.rename(columns={'order_id': 'orderid'})
+    # Standardize column names
     if 'order_id' in orders_after.columns and 'orderid' not in orders_after.columns:
         orders_after = orders_after.rename(columns={'order_id': 'orderid'})
     
-    # Get sweep orders from orders_before (for timestamp/sequence)
-    # IMPORTANT: Take only FIRST occurrence per order (earliest timestamp/sequence)
-    sweep_orders_before = orders_before[orders_before[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE].copy()
-    sweep_orders_before = sweep_orders_before.sort_values(['orderid', 'timestamp', 'sequence'])
-    sweep_orders_before = sweep_orders_before.groupby('orderid', as_index=False).first()
+    # Start with last_execution (ONLY qualifying sweep orders)
+    # Already has: orderid, first_execution_time, last_execution_time
+    sweep_orders = last_execution.copy()
     
-    # Get leavesquantity from orders_after (final state)
-    sweep_orders_after = orders_after[orders_after[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE][['orderid', 'leavesquantity']].copy()
+    # INNER JOIN with orders_after to get ALL order data
+    sweep_orders_after = orders_after[orders_after[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE].copy()
     
-    # Merge to get both timestamp/sequence AND leavesquantity
-    sweep_orders = sweep_orders_before.merge(
-        sweep_orders_after[['orderid', 'leavesquantity']],
-        on='orderid',
-        how='left',
-        suffixes=('', '_after')
-    )
+    # Handle orderbookid naming variations
+    if 'security_code' in sweep_orders_after.columns and 'orderbookid' not in sweep_orders_after.columns:
+        sweep_orders_after = sweep_orders_after.rename(columns={'security_code': 'orderbookid'})
+    elif 'securitycode' in sweep_orders_after.columns and 'orderbookid' not in sweep_orders_after.columns:
+        sweep_orders_after = sweep_orders_after.rename(columns={'securitycode': 'orderbookid'})
     
-    # Use leavesquantity from orders_after if available
-    if 'leavesquantity_after' in sweep_orders.columns:
-        sweep_orders['leavesquantity'] = sweep_orders['leavesquantity_after'].fillna(sweep_orders['leavesquantity'])
-        sweep_orders = sweep_orders.drop(columns=['leavesquantity_after'])
-    
-    # Rename security_code to orderbookid for consistency
-    if 'security_code' in sweep_orders.columns:
-        sweep_orders = sweep_orders.rename(columns={'security_code': 'orderbookid'})
-    elif 'securitycode' in sweep_orders.columns:
-        sweep_orders = sweep_orders.rename(columns={'securitycode': 'orderbookid'})
-    
-    # Merge with last_execution_time
     sweep_orders = sweep_orders.merge(
-        last_execution[['orderid', 'first_execution_time', 'last_execution_time']],
+        sweep_orders_after,
         on='orderid',
-        how='left'
+        how='inner'  # INNER JOIN - only keep qualifying orders
     )
     
-    # For orders without execution times, use a very wide time window
-    sweep_orders['first_execution_time'] = sweep_orders['first_execution_time'].fillna(0)
-    sweep_orders['last_execution_time'] = sweep_orders['last_execution_time'].fillna(float('inf'))
-    
-    # Select required columns
-    sweep_orders = sweep_orders[[
+    # Select required columns (include all available)
+    base_columns = [
         'orderid', 'timestamp', 'sequence', 'side', 'leavesquantity', 
         'first_execution_time', 'last_execution_time', 'orderbookid'
-    ]].copy()
+    ]
+    
+    # Add optional columns if they exist
+    optional_columns = []
+    if 'totalmatchedquantity' in sweep_orders.columns:
+        optional_columns.append('totalmatchedquantity')
+    if 'price' in sweep_orders.columns:
+        optional_columns.append('price')
+    
+    # Insert optional columns after leavesquantity
+    final_columns = base_columns[:5] + optional_columns + base_columns[5:]
+    
+    sweep_orders = sweep_orders[final_columns].copy()
     
     # Ensure orderid is int64
     sweep_orders['orderid'] = sweep_orders['orderid'].astype('int64')
     
-    # Sort by timestamp, then sequence (time priority based on PLACEMENT, not execution)
+    # Sort by timestamp, then sequence (time priority based on PLACEMENT)
     sweep_orders = sweep_orders.sort_values(['timestamp', 'sequence']).reset_index(drop=True)
     
     return sweep_orders
@@ -435,11 +427,86 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
     order_summary_df = pd.DataFrame(sweep_summaries)
     sweep_utilization_df = _generate_sweep_utilization(sweep_orders, sweep_usage)
     
+    # Generate simulated trades
+    simulated_trades_df = generate_simulated_trades(match_details_df, sweep_orders)
+    
     return {
         'match_details': match_details_df,
         'order_summary': order_summary_df,
-        'sweep_utilization': sweep_utilization_df
+        'sweep_utilization': sweep_utilization_df,
+        'simulated_trades': simulated_trades_df
     }
+
+
+def generate_simulated_trades(match_details, sweep_orders):
+    """
+    Generate simulated trade file from match details.
+    
+    Transforms match details into a trade-like format with:
+    - Clear aggressor (sweep) vs passive (incoming) order distinction
+    - Trade sequence numbers per aggressor order (restarts for each sweep)
+    - Side information for the aggressor
+    - Descriptive column names
+    
+    Args:
+        match_details: DataFrame with columns:
+            - sweep_orderid, incoming_orderid, timestamp,
+              matched_quantity, price, orderbookid
+        sweep_orders: DataFrame with sweep order information including 'side'
+    
+    Returns:
+        DataFrame with simulated trade structure, sorted by aggressor_orderid
+        and match_timestamp. Empty DataFrame with correct structure if no matches.
+    """
+    if len(match_details) == 0:
+        # Return empty DataFrame with correct structure
+        return pd.DataFrame(columns=[
+            'aggressor_orderid',
+            'passive_orderid',
+            'match_timestamp',
+            'trade_quantity',
+            'execution_price',
+            'security_code',
+            'trade_sequence',
+            'aggressor_side'
+        ])
+    
+    # Create copy to avoid modifying original
+    trades = match_details.copy()
+    
+    # Rename columns for clarity
+    trades = trades.rename(columns={
+        'sweep_orderid': 'aggressor_orderid',
+        'incoming_orderid': 'passive_orderid',
+        'timestamp': 'match_timestamp',
+        'matched_quantity': 'trade_quantity',
+        'price': 'execution_price',
+        'orderbookid': 'security_code'
+    })
+    
+    # Merge with sweep_orders to get aggressor side
+    sweep_side_map = sweep_orders.set_index('orderid')['side'].to_dict()
+    trades['aggressor_side'] = trades['aggressor_orderid'].map(sweep_side_map)
+    
+    # Sort by aggressor_orderid first, then timestamp (for sequence generation)
+    trades = trades.sort_values(['aggressor_orderid', 'match_timestamp']).reset_index(drop=True)
+    
+    # Generate trade_sequence: restarts at 1 for each aggressor_orderid
+    trades['trade_sequence'] = trades.groupby('aggressor_orderid').cumcount() + 1
+    
+    # Select and order columns
+    trades = trades[[
+        'aggressor_orderid',
+        'passive_orderid',
+        'match_timestamp',
+        'trade_quantity',
+        'execution_price',
+        'security_code',
+        'trade_sequence',
+        'aggressor_side'
+    ]]
+    
+    return trades
 
 
 def _generate_sweep_utilization(sweep_orders, sweep_usage):

@@ -20,7 +20,8 @@ import config
 # HELPER FUNCTIONS
 # ============================================================================
 
-def simulate_sweep_matching(orders_by_partition, nbbo_by_partition, output_dir):
+def simulate_sweep_matching(orders_by_partition, order_states_by_partition, 
+                           last_execution_by_partition, nbbo_by_partition, output_dir):
     """Step 7: Simulate sweep matching for all partitions."""
     print("\n[7/11] Simulating sweep matching...")
     
@@ -36,6 +37,15 @@ def simulate_sweep_matching(orders_by_partition, nbbo_by_partition, output_dir):
         if not partition_data or 'orders_before' not in partition_data:
             continue
         
+        # Override with in-memory datasets
+        if partition_key in order_states_by_partition:
+            partition_data['orders_before'] = order_states_by_partition[partition_key]['before']
+            partition_data['orders_after'] = order_states_by_partition[partition_key]['after']
+            # Note: orders_final not passed - used for debugging only, saved separately
+        
+        if partition_key in last_execution_by_partition:
+            partition_data['last_execution'] = last_execution_by_partition[partition_key]
+        
         # Add NBBO data if available
         if partition_key not in nbbo_by_partition:
             partition_data['nbbo'] = None
@@ -50,6 +60,7 @@ def simulate_sweep_matching(orders_by_partition, nbbo_by_partition, output_dir):
         
         order_summary = sim_results['order_summary']
         match_details = sim_results['match_details']
+        simulated_trades = sim_results.get('simulated_trades')
         
         # Save simulation results
         partition_output_dir = Path(output_dir) / partition_key
@@ -57,6 +68,16 @@ def simulate_sweep_matching(orders_by_partition, nbbo_by_partition, output_dir):
         
         order_summary.to_csv(partition_output_dir / 'simulation_order_summary.csv', index=False)
         match_details.to_csv(partition_output_dir / 'simulation_match_details.csv', index=False)
+        
+        # Save simulated trades file
+        if simulated_trades is not None and len(simulated_trades) > 0:
+            date_part = partition_key.split('/')[0]  # Extract '2024-09-05'
+            trades_filename = f's_t_{date_part}.csv.gz'
+            simulated_trades.to_csv(
+                partition_output_dir / trades_filename,
+                index=False,
+                compression='gzip'
+            )
         
         simulation_results_by_partition[partition_key] = {
             'order_summary': order_summary,
@@ -560,14 +581,14 @@ def main():
     nbbo_by_partition = reference_results.get('nbbo', {})
     
     # Step 5: Extract order states (before/after matching)
-    dp.get_orders_state(
+    order_states_by_partition = dp.get_orders_state(
         orders_by_partition, 
         config.PROCESSED_DIR, 
         config.COLUMN_MAPPING
     )
     
     # Step 6: Extract last execution times (order book lifecycle tracking)
-    dp.extract_last_execution_times(
+    last_execution_by_partition = dp.extract_last_execution_times(
         orders_by_partition, 
         trades_by_partition, 
         config.PROCESSED_DIR, 
@@ -604,7 +625,9 @@ def main():
         
         # Step 7: Simulate sweep matching (outputs to config.OUTPUTS_DIR)
         simulation_results_by_partition = simulate_sweep_matching(
-            orders_by_partition, 
+            orders_by_partition,
+            order_states_by_partition,
+            last_execution_by_partition,
             nbbo_by_partition,
             config.OUTPUTS_DIR
         )
