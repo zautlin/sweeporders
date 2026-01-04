@@ -275,13 +275,6 @@ def process_single_partition(partition_key, processed_dir, outputs_dir, enable_t
             )
             orders_with_metrics.to_csv(partition_output_dir / 'orders_with_simulated_metrics.csv', index=False)
         
-        # Step 9: Classify order groups (sweep orders only)
-        groups = _classify_order_group_for_partition(partition_key, processed_dir)
-        
-        # Step 10: Compare sweep orders
-        if groups:
-            _compare_sweep_for_partition(partition_key, sim_results, groups, processed_dir, partition_output_dir)
-        
         # Steps 11-12: Trade-level comparison
         if enable_trade_comparison:
             _compare_trades_for_partition(partition_key, sim_results, processed_dir, partition_output_dir)
@@ -636,17 +629,6 @@ def main():
         orders_with_sim_metrics_by_partition = calculate_simulated_metrics_step(
             orders_by_partition,
             simulation_results_by_partition,
-            config.OUTPUTS_DIR
-        )
-        
-        # Step 9: Classify order groups (sweep orders only, type 2048)
-        groups_by_partition = classify_order_groups(orders_by_partition)
-        
-        # Step 10: Compare real vs simulated (outputs to config.OUTPUTS_DIR)
-        compare_real_vs_simulated(
-            simulation_results_by_partition,
-            groups_by_partition,
-            orders_by_partition,
             config.OUTPUTS_DIR
         )
         
