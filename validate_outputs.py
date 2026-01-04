@@ -13,12 +13,13 @@ BASELINE_METRICS = {
     'execution_time_max': 7.0,  # seconds (allow some variance)
     'qualifying_sweep_orders': 1273,
     'simulation_matches': 1548,
-    'file_counts': {
+    'outputs_files': {
         'orders_with_simulated_metrics.csv': 8248,
         'simulation_order_summary.csv': 1274,
-        'simulation_match_details.csv': 1549,
         'trade_level_comparison.csv': 1688,
-        's_t_2024-09-05.csv.gz': 3097,  # 19-column format: 2 rows per match + header (1548 * 2 + 1)
+    },
+    'processed_files': {
+        'cp_trades_simulation.csv': 3097,  # 19-column format: 2 rows per match + header (1548 * 2 + 1)
     }
 }
 
@@ -83,20 +84,27 @@ def validate_pipeline_outputs(output_dir):
     print("PIPELINE OUTPUT VALIDATION")
     print("="*80)
     
-    output_path = Path(output_dir) / "2024-09-05" / "110621"
+    partition_key = "2024-09-05/110621"
+    output_path = Path(output_dir) / partition_key
+    processed_path = Path(output_dir).parent / 'processed' / partition_key
     
     if not output_path.exists():
         print(f"❌ Output directory not found: {output_path}")
         return False
     
-    print(f"\nValidating outputs in: {output_path}\n")
+    if not processed_path.exists():
+        print(f"❌ Processed directory not found: {processed_path}")
+        return False
+    
+    print(f"\nValidating outputs in: {output_path}")
+    print(f"Validating processed in: {processed_path}\n")
     
     all_valid = True
     
-    # Check file existence and row counts
-    print("\n1. FILE EXISTENCE & ROW COUNTS")
+    # Check outputs/ files
+    print("\n1. OUTPUTS/ FILE EXISTENCE & ROW COUNTS")
     print("-" * 80)
-    for filename, expected_rows in BASELINE_METRICS['file_counts'].items():
+    for filename, expected_rows in BASELINE_METRICS['outputs_files'].items():
         filepath = output_path / filename
         if not validate_file_exists(filepath):
             all_valid = False
@@ -104,20 +112,42 @@ def validate_pipeline_outputs(output_dir):
         if not validate_row_count(filepath, expected_rows, tolerance=1):
             all_valid = False
     
-    # Check key columns
-    print("\n2. REQUIRED COLUMNS")
+    # Check processed/ files
+    print("\n2. PROCESSED/ FILE EXISTENCE & ROW COUNTS")
+    print("-" * 80)
+    for filename, expected_rows in BASELINE_METRICS['processed_files'].items():
+        filepath = processed_path / filename
+        if not validate_file_exists(filepath):
+            all_valid = False
+            continue
+        if not validate_row_count(filepath, expected_rows, tolerance=1):
+            all_valid = False
+    
+    # Check key columns in outputs/
+    print("\n3. OUTPUTS/ REQUIRED COLUMNS")
     print("-" * 80)
     
-    column_checks = {
+    outputs_column_checks = {
         'simulation_order_summary.csv': ['orderid', 'matched_quantity', 'num_matches'],
-        'simulation_match_details.csv': ['sweep_orderid', 'incoming_orderid', 'matched_quantity'],
-        's_t_2024-09-05.csv.gz': ['EXCHANGE', 'sequence', 'tradedate', 'tradetime', 'securitycode', 
-                                   'orderid', 'dealsource', 'matchgroupid', 'side', 'passiveaggressive'],
         'orders_with_simulated_metrics.csv': ['orderid', 'simulated_matched_quantity', 'simulated_fill_status'],
     }
     
-    for filename, required_cols in column_checks.items():
+    for filename, required_cols in outputs_column_checks.items():
         filepath = output_path / filename
+        if not validate_key_columns(filepath, required_cols):
+            all_valid = False
+    
+    # Check key columns in processed/
+    print("\n4. PROCESSED/ REQUIRED COLUMNS")
+    print("-" * 80)
+    
+    processed_column_checks = {
+        'cp_trades_simulation.csv': ['EXCHANGE', 'sequence', 'tradedate', 'tradetime', 'securitycode', 
+                                      'orderid', 'dealsource', 'matchgroupid', 'side', 'passiveaggressive'],
+    }
+    
+    for filename, required_cols in processed_column_checks.items():
+        filepath = processed_path / filename
         if not validate_key_columns(filepath, required_cols):
             all_valid = False
     

@@ -87,24 +87,22 @@ def save_simulation_results(sim_results, output_dir, partition_key):
             create_dirs=False
         )
     
-    # Save match details
-    if 'match_details' in sim_results and sim_results['match_details'] is not None:
-        safe_write_csv(
-            sim_results['match_details'],
-            partition_output_dir / 'simulation_match_details.csv',
-            create_dirs=False
-        )
+
     
-    # Save simulated trades
+    # Save simulated trades to processed directory
     if 'simulated_trades' in sim_results and sim_results['simulated_trades'] is not None:
         simulated_trades = sim_results['simulated_trades']
         if len(simulated_trades) > 0:
-            date_part = partition_key.split('/')[0]
-            trades_filename = f's_t_{date_part}.csv.gz'
+            # Save to processed directory instead of outputs
+            processed_dir = Path(output_dir).parent / 'processed'
+            partition_processed_dir = processed_dir / partition_key
+            partition_processed_dir.mkdir(parents=True, exist_ok=True)
+            
+            trades_filename = 'cp_trades_simulation.csv'
             safe_write_csv(
                 simulated_trades,
-                partition_output_dir / trades_filename,
-                compression='gzip',
+                partition_processed_dir / trades_filename,
+                compression=None,  # Uncompressed for easier access
                 create_dirs=False
             )
 

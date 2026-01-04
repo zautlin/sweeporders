@@ -76,12 +76,6 @@ def main():
         config.CHUNK_SIZE
     )
     
-    # Step 3: Aggregate trades
-    if trades_by_partition:
-        dp.aggregate_trades(orders_by_partition, trades_by_partition, config.PROCESSED_DIR, config.COLUMN_MAPPING)
-    else:
-        print("\n[3/11] No trades to aggregate")
-    
     # Step 4: Process reference data
     reference_results = dp.process_reference_data(
         config.RAW_FOLDERS,
