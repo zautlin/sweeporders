@@ -1296,13 +1296,14 @@ def _calculate_trade_accuracy_summary(comparison):
     return pd.DataFrame([summary])
 
 
-def generate_trade_comparison_reports(trade_comparison_by_partition, output_dir):
+def generate_trade_comparison_reports(trade_comparison_by_partition, output_dir, include_accuracy_summary=True):
     """
     Generate trade-level comparison reports.
     
     Args:
         trade_comparison_by_partition: Dictionary from compare_real_vs_simulated_trades()
         output_dir: Directory to save reports
+        include_accuracy_summary: If False, skip generating trade_accuracy_summary.csv
     
     Returns:
         Dictionary mapping partition_key to generated report files
@@ -1324,8 +1325,8 @@ def generate_trade_comparison_reports(trade_comparison_by_partition, output_dir)
             report_files['trade_level_comparison'] = file_path
             print(f"    {partition_key}/trade_level_comparison.csv: {len(comparison_data['trade_level_comparison']):,} orders")
         
-        # Report 2: Trade accuracy summary
-        if 'trade_accuracy_summary' in comparison_data:
+        # Report 2: Trade accuracy summary (optional)
+        if include_accuracy_summary and 'trade_accuracy_summary' in comparison_data:
             file_path = partition_output_dir / 'trade_accuracy_summary.csv'
             comparison_data['trade_accuracy_summary'].to_csv(file_path, index=False)
             report_files['trade_accuracy_summary'] = file_path
