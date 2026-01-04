@@ -19,7 +19,7 @@ BASELINE_METRICS = {
         'simulation_match_details.csv': 1549,
         'trade_level_comparison.csv': 1688,
         'trade_accuracy_summary.csv': 2,
-        's_t_2024-09-05.csv.gz': 1549,  # uncompressed
+        's_t_2024-09-05.csv.gz': 3097,  # 19-column format: 2 rows per match + header (1548 * 2 + 1)
     }
 }
 
@@ -112,7 +112,8 @@ def validate_pipeline_outputs(output_dir):
     column_checks = {
         'simulation_order_summary.csv': ['orderid', 'matched_quantity', 'num_matches'],
         'simulation_match_details.csv': ['sweep_orderid', 'incoming_orderid', 'matched_quantity'],
-        's_t_2024-09-05.csv.gz': ['aggressor_orderid', 'passive_orderid', 'trade_quantity'],
+        's_t_2024-09-05.csv.gz': ['EXCHANGE', 'sequence', 'tradedate', 'tradetime', 'securitycode', 
+                                   'orderid', 'dealsource', 'matchgroupid', 'side', 'passiveaggressive'],
         'orders_with_simulated_metrics.csv': ['orderid', 'simulated_matched_quantity', 'simulated_fill_status'],
     }
     
