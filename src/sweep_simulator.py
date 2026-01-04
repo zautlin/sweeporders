@@ -388,8 +388,8 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             
             # Record match
             all_matches.append({
-                'incoming_orderid': order_id,  # Keep this name for backward compat with metrics generator
-                'sweep_orderid': sweep_id,
+                'incoming_orderid': np.int64(order_id),  # Explicit numpy int64
+                'sweep_orderid': np.int64(sweep_id),     # Explicit numpy int64
                 'timestamp': order['timestamp'],
                 'matched_quantity': match_qty,
                 'price': midpoint,
@@ -422,8 +422,22 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             'orderbookid': sweep_orderbookid
         })
     
-    # Convert to DataFrames
-    match_details_df = pd.DataFrame(all_matches) if all_matches else pd.DataFrame()
+    # Convert to DataFrames with explicit dtypes to prevent float conversion
+    if all_matches:
+        match_details_df = pd.DataFrame(all_matches)
+        # Force int64 IMMEDIATELY to prevent any float conversion
+        match_details_df['sweep_orderid'] = pd.to_numeric(match_details_df['sweep_orderid'], downcast='signed', errors='coerce').astype('int64')
+        match_details_df['incoming_orderid'] = pd.to_numeric(match_details_df['incoming_orderid'], downcast='signed', errors='coerce').astype('int64')
+    else:
+        match_details_df = pd.DataFrame()
+    
+    # DEBUG: Check after DataFrame creation
+    if len(match_details_df) > 0:
+        print(f"  [DEBUG] After DataFrame creation:")
+        print(f"    First sweep_orderid: {match_details_df['sweep_orderid'].iloc[0]}")
+        print(f"    Expected: 7904794000124134556")
+        print(f"    Match? {match_details_df['sweep_orderid'].iloc[0] == 7904794000124134556}")
+    
     order_summary_df = pd.DataFrame(sweep_summaries)
     sweep_utilization_df = _generate_sweep_utilization(sweep_orders, sweep_usage)
     
@@ -448,6 +462,13 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
             'side', 'sidedecoded', 'participantid', 'passiveaggressive', 'row_num'
         ])
     
+    # DEBUG: Check what we received
+    print(f"  [DEBUG] generate_simulated_trades received:")
+    print(f"    First sweep_orderid: {match_details['sweep_orderid'].iloc[0]}")
+    print(f"    Type: {match_details['sweep_orderid'].dtype}")
+    print(f"    Expected: 7904794000124134556")
+    print(f"    Match? {match_details['sweep_orderid'].iloc[0] == 7904794000124134556}")
+    
     # Extract date from first match timestamp
     first_timestamp = match_details['timestamp'].iloc[0]
     tradedate = pd.to_datetime(first_timestamp, unit='ns').strftime('%Y-%m-%d')
@@ -457,6 +478,13 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
     
     # Sort matches by timestamp for consistent ordering
     matches_sorted = match_details.sort_values('timestamp').reset_index(drop=True)
+    
+    # DEBUG: Check what's in match_details
+    print(f"  [DEBUG] match_details has {len(matches_sorted)} rows")
+    print(f"  [DEBUG] match_details columns: {matches_sorted.columns.tolist()}")
+    if len(matches_sorted) > 0:
+        print(f"  [DEBUG] First 3 sweep_orderids: {matches_sorted['sweep_orderid'].head(3).tolist()}")
+        print(f"  [DEBUG] First 3 incoming_orderids: {matches_sorted['incoming_orderid'].head(3).tolist()}")
     
     # Prepare NBBO data for lookup (sort by timestamp)
     if nbbo_data is not None and len(nbbo_data) > 0:
@@ -468,13 +496,22 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
     rows = []
     row_counter = 1
     
-    for idx, match in matches_sorted.iterrows():
-        sweep_orderid = match['sweep_orderid']
-        incoming_orderid = match['incoming_orderid']
-        timestamp = match['timestamp']
-        quantity = match['matched_quantity']
-        price = match['price']
-        security_code = match['orderbookid']
+    # CRITICAL: Use itertuples() instead of iterrows() to preserve int64 precision
+    # iterrows() converts int64 to float64, causing precision loss for large integers
+    for match in matches_sorted.itertuples(index=True, name='Match'):
+        sweep_orderid = match.sweep_orderid
+        incoming_orderid = match.incoming_orderid
+        timestamp = match.timestamp
+        quantity = match.matched_quantity
+        price = match.price
+        security_code = match.orderbookid
+        idx = match.Index
+        
+        # DEBUG: Print first match details
+        if idx == 0:
+            print(f"  [DEBUG] First match:")
+            print(f"    sweep_orderid: {sweep_orderid} (type: {type(sweep_orderid)})")
+            print(f"    incoming_orderid: {incoming_orderid} (type: {type(incoming_orderid)})")
         
         # Generate unique matchgroupid (use base + match index)
         matchgroupid = 7904794000999000001 + idx
@@ -482,6 +519,12 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
         # Get aggressor side
         aggressor_side = sweep_side_map.get(sweep_orderid, 2)
         passive_side = 1 if aggressor_side == 2 else 2
+        
+        # DEBUG first row
+        if idx == 0:
+            print(f"  [DEBUG] Before appending to rows:")
+            print(f"    sweep_orderid: {sweep_orderid} (type: {type(sweep_orderid)})")
+            print(f"    incoming_orderid: {incoming_orderid} (type: {type(incoming_orderid)})")
         
         # Get NBBO snapshots (most recent before this timestamp)
         bid_snapshot = 0

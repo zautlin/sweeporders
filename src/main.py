@@ -6,6 +6,7 @@ from pathlib import Path
 import data_processor as dp
 import partition_processor as pp
 import metrics_generator as mg
+import sweep_execution_analyzer as sea
 import config
 
 
@@ -167,6 +168,12 @@ def main():
                 config.OUTPUTS_DIR,
                 include_accuracy_summary=False
             )
+        
+        # Step 13: Sweep order execution analysis
+        sea.analyze_sweep_execution(
+            config.PROCESSED_DIR,
+            partition_keys
+        )
     
     # Print summary
     execution_time = time.time() - start_time
