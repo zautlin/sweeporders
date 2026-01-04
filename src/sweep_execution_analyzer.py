@@ -44,10 +44,10 @@ def load_order_metadata(partition_dir, sweep_orderids):
     # Rename and select columns
     df = df.rename(columns={'order_id': 'orderid'})
     
-    # De-duplicate: keep last row per orderid (final state)
-    # Sort by timestamp to ensure we get the latest state
+    # De-duplicate: keep FIRST row per orderid (arrival state, not final state)
+    # Sort by timestamp to ensure we get the earliest state for arrival time
     df = df.sort_values(['orderid', 'timestamp'])
-    df = df.drop_duplicates(subset='orderid', keep='last')
+    df = df.drop_duplicates(subset='orderid', keep='first')
     
     # Calculate arrival metrics
     df['arrival_midpoint'] = (df['national_bid'] + df['national_offer']) / 2
@@ -170,24 +170,25 @@ def calculate_execution_metrics(trades_df, orderid, arrival_context):
     
     # === GROUP A: FILL METRICS ===
     qty_filled = order_trades['quantity'].sum()
-    fill_rate_pct = (qty_filled / order_qty) * 100
+    fill_rate_pct = (qty_filled / order_qty) * 100 if order_qty > 0 else 0
     num_fills = len(order_trades)
-    avg_fill_size = qty_filled / num_fills
+    avg_fill_size = qty_filled / num_fills if num_fills > 0 else 0
     
     # === GROUP B: PRICE/COST METRICS ===
-    vwap = (order_trades['tradeprice'] * order_trades['quantity']).sum() / qty_filled
+    vwap = (order_trades['tradeprice'] * order_trades['quantity']).sum() / qty_filled if qty_filled > 0 else 0
     
     # Execution cost - arrival based
-    exec_cost_arrival_bps = side_multiplier * ((vwap - arrival_mid) / arrival_mid) * 10000
+    exec_cost_arrival_bps = side_multiplier * ((vwap - arrival_mid) / arrival_mid) * 10000 if arrival_mid > 0 else 0
     
     # Execution cost - volume weighted (using trade-by-trade NBBO)
     weighted_costs = []
     for _, trade in order_trades.iterrows():
         trade_mid = trade['trade_midpoint']
-        trade_cost = side_multiplier * ((trade['tradeprice'] - trade_mid) / trade_mid) * 10000
-        weighted_cost = trade_cost * trade['quantity']
-        weighted_costs.append(weighted_cost)
-    exec_cost_vw_bps = sum(weighted_costs) / qty_filled
+        if trade_mid > 0:
+            trade_cost = side_multiplier * ((trade['tradeprice'] - trade_mid) / trade_mid) * 10000
+            weighted_cost = trade_cost * trade['quantity']
+            weighted_costs.append(weighted_cost)
+    exec_cost_vw_bps = sum(weighted_costs) / qty_filled if qty_filled > 0 else 0
     
     # Effective spread captured
     effective_spread = 2 * abs(vwap - arrival_mid)
@@ -196,8 +197,28 @@ def calculate_execution_metrics(trades_df, orderid, arrival_context):
     # === GROUP C: TIMING METRICS ===
     first_trade_time = order_trades['tradetime'].min()
     last_trade_time = order_trades['tradetime'].max()
-    exec_time_sec = (last_trade_time - first_trade_time) / 1e9
+    
+    # Calculate execution time (always non-negative)
+    exec_time_sec = max(0, (last_trade_time - first_trade_time) / 1e9)
+    
+    # Calculate time to first fill (can be negative if timestamp ordering is wrong)
     time_to_first_fill_sec = (first_trade_time - arrival_time) / 1e9
+    
+    # If time to first fill is negative, it means the order timestamp is after the trade
+    # This can happen if we're using the wrong timestamp. Set to 0 in this case.
+    if time_to_first_fill_sec < 0:
+        time_to_first_fill_sec = 0.0
+    
+    # Calculate volume-weighted time of execution (VWTE)
+    # Weights each fill time by its quantity - shows when bulk volume executed
+    weighted_time = 0.0
+    for _, trade in order_trades.iterrows():
+        time_from_arrival = (trade['tradetime'] - arrival_time) / 1e9
+        # Ensure non-negative (handle timestamp issues)
+        time_from_arrival = max(0.0, time_from_arrival)
+        weighted_time += trade['quantity'] * time_from_arrival
+    
+    vw_exec_time_sec = weighted_time / qty_filled if qty_filled > 0 else 0.0
     
     # === GROUP D: CONTEXT METRICS ===
     first_trade_mid = order_trades.iloc[0]['trade_midpoint']
@@ -215,6 +236,7 @@ def calculate_execution_metrics(trades_df, orderid, arrival_context):
         'effective_spread_pct': effective_spread_pct,
         'exec_time_sec': exec_time_sec,
         'time_to_first_fill_sec': time_to_first_fill_sec,
+        'vw_exec_time_sec': vw_exec_time_sec,
         'market_drift_bps': market_drift_bps,
         'first_trade_time': first_trade_time,
         'last_trade_time': last_trade_time,
@@ -266,6 +288,7 @@ def merge_and_calculate_differences(set_a_orderids, real_metrics, sim_metrics, o
             'effective_spread_diff_pct': real['real_effective_spread_pct'] - sim['sim_effective_spread_pct'],
             'exec_time_diff_sec': real['real_exec_time_sec'] - sim['sim_exec_time_sec'],
             'time_to_first_fill_diff_sec': real['real_time_to_first_fill_sec'] - sim['sim_time_to_first_fill_sec'],
+            'vw_exec_time_diff_sec': real['real_vw_exec_time_sec'] - sim['sim_vw_exec_time_sec'],
         }
         
         # Dark pool better if lower cost
@@ -347,7 +370,8 @@ def calculate_summary_statistics(comparison_df):
         'exec_cost_vw_bps',
         'effective_spread_pct',
         'exec_time_sec',
-        'time_to_first_fill_sec'
+        'time_to_first_fill_sec',
+        'vw_exec_time_sec'
     ]
     
     metric_groups = {
@@ -360,7 +384,8 @@ def calculate_summary_statistics(comparison_df):
         'exec_cost_vw_bps': 'Cost',
         'effective_spread_pct': 'Cost',
         'exec_time_sec': 'Timing',
-        'time_to_first_fill_sec': 'Timing'
+        'time_to_first_fill_sec': 'Timing',
+        'vw_exec_time_sec': 'Timing'
     }
     
     summary_rows = []
@@ -378,10 +403,12 @@ def calculate_summary_statistics(comparison_df):
                 diff_col = 'exec_cost_vw_diff_bps'
             elif 'effective_spread' in metric:
                 diff_col = 'effective_spread_diff_pct'
-            elif 'exec_time' in metric:
+            elif metric == 'exec_time_sec':
                 diff_col = 'exec_time_diff_sec'
-            elif 'time_to_first_fill' in metric:
+            elif metric == 'time_to_first_fill_sec':
                 diff_col = 'time_to_first_fill_diff_sec'
+            elif metric == 'vw_exec_time_sec':
+                diff_col = 'vw_exec_time_diff_sec'
             elif 'fill_rate' in metric:
                 diff_col = 'fill_rate_diff_pct'
             else:
@@ -437,7 +464,8 @@ def perform_statistical_tests(comparison_df):
         'exec_cost_vw_bps',
         'effective_spread_pct',
         'exec_time_sec',
-        'time_to_first_fill_sec'
+        'time_to_first_fill_sec',
+        'vw_exec_time_sec'
     ]
     
     test_rows = []
@@ -482,13 +510,13 @@ def perform_statistical_tests(comparison_df):
             spearman_r, spearman_p = np.nan, np.nan
         
         # Effect size (Cohen's d)
-        if differences.std() > 0:
+        if n_pairs >= 2 and differences.std() > 0:
             cohens_d = differences.mean() / differences.std()
         else:
             cohens_d = np.nan
         
         # Confidence interval
-        if n_pairs >= 2:
+        if n_pairs >= 2 and differences.std() > 0:
             ci = stats.t.interval(
                 confidence=0.95,
                 df=n_pairs-1,
@@ -594,6 +622,119 @@ def calculate_quantile_comparison(comparison_df):
 
 # ===== PHASE 5: OUTPUT GENERATION =====
 
+def print_statistical_summary(summary_df, tests_df, n_matched, n_unmatched):
+    """Print formatted statistical summary table to console."""
+    print(f"\n{'='*90}")
+    print(f"STATISTICAL TEST SUMMARY")
+    print(f"{'='*90}")
+    print(f"Matched Orders (Set A):   {n_matched:>6}")
+    print(f"Unmatched Orders (Set B): {n_unmatched:>6}")
+    print(f"{'='*90}")
+    
+    # Key metrics to display
+    display_metrics = [
+        ('exec_cost_arrival_bps', 'Execution Cost (Arrival)', 'bps'),
+        ('exec_cost_vw_bps', 'Execution Cost (VW)', 'bps'),
+        ('effective_spread_pct', 'Effective Spread', '%'),
+        ('vwap', 'VWAP', 'price'),
+        ('qty_filled', 'Quantity Filled', 'units'),
+        ('fill_rate_pct', 'Fill Rate', '%'),
+        ('num_fills', 'Number of Fills', 'count'),
+        ('exec_time_sec', 'Execution Time', 'sec'),
+        ('vw_exec_time_sec', 'VW Execution Time', 'sec')
+    ]
+    
+    print(f"\n{'Metric':<30} {'Real':>12} {'Sim':>12} {'Diff':>12} {'p-value':>12} {'Sig':>5}")
+    print(f"{'-'*90}")
+    
+    for metric_key, metric_label, unit in display_metrics:
+        # Get summary stats
+        summary_row = summary_df[summary_df['metric_name'] == metric_key]
+        test_row = tests_df[tests_df['metric_name'] == metric_key]
+        
+        if len(summary_row) == 0 or len(test_row) == 0:
+            continue
+        
+        real_mean = summary_row['real_mean'].values[0]
+        sim_mean = summary_row['sim_mean'].values[0]
+        diff_mean = summary_row['diff_mean'].values[0]
+        p_value = test_row['paired_t_pvalue'].values[0]
+        
+        # Determine significance level
+        if not np.isnan(p_value):
+            if p_value < 0.001:
+                sig = '***'
+            elif p_value < 0.01:
+                sig = '**'
+            elif p_value < 0.05:
+                sig = '*'
+            else:
+                sig = 'ns'
+        else:
+            sig = 'N/A'
+        
+        # Format based on unit
+        if unit == 'bps':
+            print(f"{metric_label:<30} {real_mean:>12.2f} {sim_mean:>12.2f} {diff_mean:>12.2f} {p_value:>12.2e} {sig:>5}")
+        elif unit == '%':
+            print(f"{metric_label:<30} {real_mean:>12.2f} {sim_mean:>12.2f} {diff_mean:>12.2f} {p_value:>12.2e} {sig:>5}")
+        elif unit == 'price':
+            print(f"{metric_label:<30} {real_mean:>12.2f} {sim_mean:>12.2f} {diff_mean:>12.2f} {p_value:>12.2e} {sig:>5}")
+        elif unit == 'units':
+            print(f"{metric_label:<30} {real_mean:>12.1f} {sim_mean:>12.1f} {diff_mean:>12.1f} {p_value:>12.2e} {sig:>5}")
+        elif unit == 'count':
+            print(f"{metric_label:<30} {real_mean:>12.1f} {sim_mean:>12.1f} {diff_mean:>12.1f} {p_value:>12.2e} {sig:>5}")
+        else:
+            print(f"{metric_label:<30} {real_mean:>12.2f} {sim_mean:>12.2f} {diff_mean:>12.2f} {p_value:>12.2e} {sig:>5}")
+    
+    print(f"{'-'*90}")
+    print(f"Significance: *** p<0.001, ** p<0.01, * p<0.05, ns = not significant")
+    
+    # Key finding
+    exec_cost_summary = summary_df[summary_df['metric_name'] == 'exec_cost_arrival_bps']
+    exec_cost_test = tests_df[tests_df['metric_name'] == 'exec_cost_arrival_bps']
+    
+    if len(exec_cost_summary) > 0 and len(exec_cost_test) > 0:
+        diff_mean = exec_cost_summary['diff_mean'].values[0]  # Real - Sim
+        real_mean = exec_cost_summary['real_mean'].values[0]
+        sim_mean = exec_cost_summary['sim_mean'].values[0]
+        p_val = exec_cost_test['paired_t_pvalue'].values[0]
+        cohens_d = exec_cost_test['cohens_d_effect_size'].values[0]
+        
+        # For execution cost: LOWER (more negative) = BETTER
+        # If diff_mean > 0, it means Real > Sim, so Sim is BETTER (more negative)
+        # If diff_mean < 0, it means Real < Sim, so Real is BETTER (more negative)
+        
+        print(f"\n{'='*90}")
+        print(f"KEY FINDING:")
+        print(f"  Real execution cost:      {real_mean:>8.2f} bps")
+        print(f"  Simulated execution cost: {sim_mean:>8.2f} bps")
+        print(f"  Difference (Real - Sim):  {diff_mean:>8.2f} bps")
+        
+        if diff_mean > 0:
+            # Real is higher (worse), Sim is lower (better)
+            print(f"  --> Dark pool provides {diff_mean:.2f} bps BETTER execution cost")
+        elif diff_mean < 0:
+            # Real is lower (better), Sim is higher (worse)
+            print(f"  --> Dark pool provides {abs(diff_mean):.2f} bps WORSE execution cost")
+        else:
+            print(f"  --> No difference in execution cost")
+        
+        print(f"  Statistical significance: p = {p_val:.2e}")
+        if not np.isnan(cohens_d):
+            print(f"  Effect size (Cohen's d): {cohens_d:.3f}")
+            if abs(cohens_d) < 0.2:
+                effect_interp = "small"
+            elif abs(cohens_d) < 0.5:
+                effect_interp = "small to medium"
+            elif abs(cohens_d) < 0.8:
+                effect_interp = "medium to large"
+            else:
+                effect_interp = "large"
+            print(f"  Practical significance: {effect_interp} effect")
+        print(f"{'='*90}")
+
+
 def create_output_directories(partition_dir):
     """Create stats/matched/ and stats/unmatched/ directories."""
     stats_dir = Path(partition_dir) / 'stats'
@@ -660,9 +801,8 @@ def write_output_files(comparison_df, summary_df, tests_df, quantiles_df, unmatc
         json.dump(validation_report, f, indent=2)
     print(f"    ✓ {validation_path.name}")
     
-    print(f"\n  📊 Key Finding:")
-    print(f"     Dark pool saves avg {validation_report['key_findings']['avg_cost_savings_bps']:.2f} bps")
-    print(f"     (p={validation_report['key_findings']['cost_diff_pvalue']:.4f})")
+    # Print formatted statistical summary
+    print_statistical_summary(summary_df, tests_df, len(comparison_df), len(unmatched_df))
 
 
 # ===== MAIN ANALYSIS FUNCTION =====
