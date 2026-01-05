@@ -88,9 +88,7 @@ def compare_trades_for_partition(partition_key, sim_results, processed_dir, outp
     if orders_before is None:
         return
     
-    # Standardize column names
-    orders_before = du.normalize_column_names(orders_before)
-    trades_df = du.normalize_column_names(trades_df)
+    # No normalization needed - Stage 1 already normalized column names
     
     # Get sweep order IDs
     sweep_orderids = du.get_sweep_orderids(orders_before)

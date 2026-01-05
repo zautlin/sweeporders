@@ -15,7 +15,7 @@ Handles all data extraction, partitioning, and preprocessing operations:
 
 import pandas as pd
 from pathlib import Path
-from config.config import SWEEP_ORDER_TYPE
+from config.config import SWEEP_ORDER_TYPE, normalize_to_standard_names
 from config.column_schema import col
 
 
@@ -62,12 +62,15 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
         partition_key = f"{date}/{security_code}"
         partitions[partition_key] = group_df
         
+        # Normalize column names to standard before saving
+        group_df_normalized = normalize_to_standard_names(group_df, 'orders')
+        
         # Save to processed directory
         partition_dir = Path(processed_dir) / date / str(security_code)
         partition_dir.mkdir(parents=True, exist_ok=True)
         
         partition_file = partition_dir / "cp_orders_filtered.csv.gz"
-        group_df.to_csv(partition_file, index=False, compression='gzip')
+        group_df_normalized.to_csv(partition_file, index=False, compression='gzip')
         
         size_mb = partition_file.stat().st_size / (1024 * 1024)
         print(f"  {partition_key}: {len(group_df):,} orders ({size_mb:.2f} MB)")
@@ -122,13 +125,16 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
         if len(partition_trades) > 0:
             trades_by_partition[partition_key] = partition_trades
             
+            # Normalize column names to standard before saving
+            partition_trades_normalized = normalize_to_standard_names(partition_trades, 'trades')
+            
             # Save to processed directory
             date, security_code = partition_key.split('/')
             partition_dir = Path(processed_dir) / date / security_code
             partition_dir.mkdir(parents=True, exist_ok=True)
             
             partition_file = partition_dir / "cp_trades_matched.csv.gz"
-            partition_trades.to_csv(partition_file, index=False, compression='gzip')
+            partition_trades_normalized.to_csv(partition_file, index=False, compression='gzip')
             
             size_mb = partition_file.stat().st_size / (1024 * 1024)
             unique_orders = partition_trades[order_id_col_trades].nunique()
@@ -394,11 +400,14 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
             ].copy()
             
             if len(partition_data) > 0:
+                # Normalize column names to standard before saving
+                partition_data_normalized = normalize_to_standard_names(partition_data, 'nbbo')
+                
                 partition_dir = Path(processed_dir) / date / orderbookid
                 partition_dir.mkdir(parents=True, exist_ok=True)
                 
                 output_file = partition_dir / "nbbo.csv.gz"
-                partition_data.to_csv(output_file, index=False, compression='gzip')
+                partition_data_normalized.to_csv(output_file, index=False, compression='gzip')
                 
                 results['nbbo'][partition_key] = partition_data
                 size_kb = output_file.stat().st_size / 1024

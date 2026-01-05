@@ -42,9 +42,9 @@ def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
     if nbbo_data is None:
         return None
     
-    # Handle both 'security_code' and 'orderbookid' column names
-    orderbook_col = 'security_code' if 'security_code' in nbbo_data.columns else 'orderbookid'
-    timestamp_col = 'timestamp' if 'timestamp' in nbbo_data.columns else 'tradedate'
+    # Use standardized column names (normalized in Stage 1)
+    orderbook_col = 'orderbookid'
+    timestamp_col = 'timestamp'
     
     # Filter for this orderbookid and timestamp <= target
     valid_quotes = nbbo_data[
@@ -58,9 +58,9 @@ def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
     # Get most recent quote
     latest = valid_quotes.iloc[-1]
     
-    # Handle both standardized and original column names
-    bid_col = 'bidprice' if 'bidprice' in latest.index else 'bid'
-    offer_col = 'offerprice' if 'offerprice' in latest.index else 'offer'
+    # Use standardized column names (normalized in Stage 1)
+    bid_col = 'bid'
+    offer_col = 'offer'
     
     # Calculate midpoint
     midpoint = (latest[bid_col] + latest[offer_col]) / 2.0
@@ -82,9 +82,7 @@ def _prepare_sweep_orders(partition_data):
     orders_after = partition_data['orders_after']
     last_execution = partition_data['last_execution']
     
-    # Standardize column names
-    if 'order_id' in orders_after.columns and 'orderid' not in orders_after.columns:
-        orders_after = orders_after.rename(columns={'order_id': 'orderid'})
+    # No normalization needed - Stage 1 already normalized column names
     
     # Start with last_execution (ONLY qualifying sweep orders)
     # Already has: orderid, first_execution_time, last_execution_time
@@ -92,12 +90,6 @@ def _prepare_sweep_orders(partition_data):
     
     # INNER JOIN with orders_after to get ALL order data
     sweep_orders_after = orders_after[orders_after[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE].copy()
-    
-    # Handle orderbookid naming variations
-    if 'security_code' in sweep_orders_after.columns and 'orderbookid' not in sweep_orders_after.columns:
-        sweep_orders_after = sweep_orders_after.rename(columns={'security_code': 'orderbookid'})
-    elif 'securitycode' in sweep_orders_after.columns and 'orderbookid' not in sweep_orders_after.columns:
-        sweep_orders_after = sweep_orders_after.rename(columns={'securitycode': 'orderbookid'})
     
     sweep_orders = sweep_orders.merge(
         sweep_orders_after,
@@ -136,20 +128,12 @@ def _prepare_all_orders_for_matching(partition_data):
     """Prepare ALL Centre Point orders for matching (including sweeps)."""
     orders_before = partition_data['orders_before']
     
-    # Standardize column names first
-    if 'order_id' in orders_before.columns and 'orderid' not in orders_before.columns:
-        orders_before = orders_before.rename(columns={'order_id': 'orderid'})
+    # No normalization needed - Stage 1 already normalized column names
     
     # Get ALL Centre Point orders (including type 2048)
     all_orders = orders_before[
         orders_before[ORDER_TYPE_COLUMN].isin(ELIGIBLE_MATCHING_ORDER_TYPES)
     ].copy()
-    
-    # Rename security_code to orderbookid for consistency
-    if 'security_code' in all_orders.columns:
-        all_orders = all_orders.rename(columns={'security_code': 'orderbookid'})
-    elif 'securitycode' in all_orders.columns:
-        all_orders = all_orders.rename(columns={'securitycode': 'orderbookid'})
     
     # Select required columns
     all_orders = all_orders[[

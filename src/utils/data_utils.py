@@ -3,21 +3,9 @@
 import pandas as pd
 
 
-def normalize_column_names(df):
-    """Standardize column names (order_id → orderid, security_code → orderbookid)."""
-    df = df.copy()
-    
-    # Standardize orderid
-    if 'order_id' in df.columns and 'orderid' not in df.columns:
-        df = df.rename(columns={'order_id': 'orderid'})
-    
-    # Standardize orderbookid  
-    if 'security_code' in df.columns and 'orderbookid' not in df.columns:
-        df = df.rename(columns={'security_code': 'orderbookid'})
-    elif 'securitycode' in df.columns and 'orderbookid' not in df.columns:
-        df = df.rename(columns={'securitycode': 'orderbookid'})
-    
-    return df
+# NOTE: Column normalization now happens in Stage 1 (data_processor.py)
+# using config.normalize_to_standard_names(). The normalize_column_names()
+# function has been removed as it's no longer needed.
 
 
 def add_date_column(df, timestamp_col):

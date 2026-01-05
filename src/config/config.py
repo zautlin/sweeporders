@@ -352,6 +352,47 @@ COLUMN_MAPPING = {
 
 
 # ============================================================================
+# COLUMN NORMALIZATION MAPPING
+# Maps raw/alternative column names to standardized names for processed files
+# ============================================================================
+
+COLUMN_NORMALIZATION_MAP = {
+    'orders': {
+        # Raw name → Standard name
+        'order_id': 'orderid',
+        'security_code': 'orderbookid',
+        'securitycode': 'orderbookid',
+        'SecurityCode': 'orderbookid',
+        'totalmatchedquantity': 'matched_quantity',
+    },
+    'trades': {
+        'order_id': 'orderid',
+        'security_code': 'orderbookid',
+        'securitycode': 'orderbookid',
+    },
+    'nbbo': {
+        'security_code': 'orderbookid',
+        'securitycode': 'orderbookid',
+        'bidprice': 'bid',
+        'offerprice': 'offer',
+        'bidquantity': 'bid_quantity',
+        'offerquantity': 'offer_quantity',
+    },
+    'session': {
+        'OrderBookId': 'orderbookid',
+        'TradeDate': 'timestamp',
+    },
+    'reference': {
+        'Id': 'orderbookid',
+        'TradeDate': 'timestamp',
+    },
+    'participants': {
+        'TradeDate': 'timestamp',
+    }
+}
+
+
+# ============================================================================
 # LEGACY COLUMN DEFINITIONS (for backward compatibility)
 # ============================================================================
 
@@ -506,6 +547,46 @@ def rename_columns_to_standard(df: pd.DataFrame, data_type: str) -> pd.DataFrame
     rename_map = {k: v for k, v in rename_map.items() if k in df.columns}
     
     return df.rename(columns=rename_map)
+
+
+def normalize_to_standard_names(df: pd.DataFrame, data_type: str) -> pd.DataFrame:
+    """
+    Normalize DataFrame columns to standard names based on COLUMN_NORMALIZATION_MAP.
+    
+    This function is used by Stage 1 (data_processor) to standardize column names
+    before saving processed files. This ensures all downstream stages can use
+    consistent column names without runtime normalization.
+    
+    Args:
+        df: DataFrame with raw/alternative column names
+        data_type: Type of data ('orders', 'trades', 'nbbo', etc.)
+    
+    Returns:
+        DataFrame with standardized column names
+    
+    Example:
+        >>> df = pd.DataFrame({'order_id': [1, 2], 'security_code': [100, 200]})
+        >>> df_normalized = normalize_to_standard_names(df, 'orders')
+        >>> df_normalized.columns
+        Index(['orderid', 'orderbookid'])
+    """
+    if data_type not in COLUMN_NORMALIZATION_MAP:
+        # No normalization defined for this data type, return as-is
+        return df
+    
+    norm_map = COLUMN_NORMALIZATION_MAP[data_type]
+    rename_dict = {}
+    
+    # Build rename dictionary for columns that exist in DataFrame
+    for col in df.columns:
+        if col in norm_map:
+            rename_dict[col] = norm_map[col]
+    
+    # Apply renaming if any mappings found
+    if rename_dict:
+        df = df.rename(columns=rename_dict)
+    
+    return df
 
 
 def validate_columns(df: pd.DataFrame, required_columns: list, context: str = "") -> bool:
