@@ -37,18 +37,42 @@ def load_all_centre_point_orders(partition_dir):
     # Filter to Centre Point orders only
     df = df[df['exchangeordertype'] == 2048].copy()
     
-    # Sort by timestamp for temporal queries
-    df = df.sort_values('timestamp')
-    
     print(f"  Loaded {len(df)} Centre Point orders ({df['order_id'].nunique()} unique)")
     return df
 
 
+def build_order_index(all_orders_df):
+    """
+    Pre-sort and index orders by side and timestamp for fast lookups.
+    
+    This optimization reduces complexity from O(N*M) to O(M log M + N log M)
+    where N = unmatched orders, M = all orders.
+    
+    Returns:
+        dict: {side: DataFrame} with orders sorted by timestamp
+    """
+    print(f"  Building order index for fast lookups...")
+    
+    # Create separate DataFrames for each side, sorted by timestamp
+    index_by_side = {}
+    
+    for side in [1, 2]:
+        side_orders = all_orders_df[all_orders_df['side'] == side].copy()
+        # Sort by timestamp for binary search
+        side_orders = side_orders.sort_values('timestamp').reset_index(drop=True)
+        index_by_side[side] = side_orders
+        print(f"    Side {side}: {len(side_orders):,} orders indexed")
+    
+    return index_by_side
+
+
 # ===== PHASE 2: LIQUIDITY AT ARRIVAL ANALYSIS =====
 
-def analyze_liquidity_at_arrival(unmatched_order, all_orders_df):
+def analyze_liquidity_at_arrival(unmatched_order, order_index):
     """
     Analyze contra-side liquidity at the moment the unmatched order arrived.
+    
+    OPTIMIZED: Uses pre-sorted index with binary search instead of full table scan.
     
     Returns metrics:
     - contra_depth_at_arrival: Total quantity available on contra side
@@ -66,17 +90,21 @@ def analyze_liquidity_at_arrival(unmatched_order, all_orders_df):
     # Determine contra side
     contra_side = 2 if side == 1 else 1
     
-    # Find all contra-side orders that were active at arrival time
-    # Active = entered before arrival_time and not yet filled
-    # For simplicity, we'll use orders that have timestamp <= arrival_time
-    contra_orders = all_orders_df[
-        (all_orders_df['side'] == contra_side) &
-        (all_orders_df['timestamp'] <= arrival_time)
-    ].copy()
+    # OPTIMIZED: Use pre-sorted index with binary search
+    # Get all contra-side orders (already sorted by timestamp)
+    contra_orders_all = order_index[contra_side]
     
-    # Get unique orderids and their latest state before arrival
-    contra_orders = contra_orders.sort_values('timestamp')
-    contra_orders = contra_orders.drop_duplicates(subset='order_id', keep='last')
+    # Binary search to find index where timestamp <= arrival_time
+    # searchsorted with side='right' gives us the rightmost position
+    idx = contra_orders_all['timestamp'].searchsorted(arrival_time, side='right')
+    
+    # Get all orders up to and including arrival_time
+    contra_orders = contra_orders_all.iloc[:idx].copy() if idx > 0 else pd.DataFrame()
+    
+    if len(contra_orders) > 0:
+        # Get unique orderids and their latest state before arrival
+        contra_orders = contra_orders.sort_values('timestamp')
+        contra_orders = contra_orders.drop_duplicates(subset='order_id', keep='last')
     
     # Calculate metrics
     contra_depth = contra_orders['quantity'].sum() if len(contra_orders) > 0 else 0
@@ -125,9 +153,11 @@ def analyze_liquidity_at_arrival(unmatched_order, all_orders_df):
 
 # ===== PHASE 3: TEMPORAL LIQUIDITY EVOLUTION =====
 
-def analyze_liquidity_evolution(unmatched_order, all_orders_df):
+def analyze_liquidity_evolution(unmatched_order, order_index):
     """
     Track contra-side liquidity arrivals during order lifetime.
+    
+    OPTIMIZED: Uses pre-sorted index with binary search instead of full table scan.
     
     Returns metrics:
     - time_to_lit_execution: How long order waited before lit execution
@@ -149,16 +179,21 @@ def analyze_liquidity_evolution(unmatched_order, all_orders_df):
     # Determine contra side
     contra_side = 2 if side == 1 else 1
     
-    # Find contra orders that arrived during order lifetime
-    contra_arrivals = all_orders_df[
-        (all_orders_df['side'] == contra_side) &
-        (all_orders_df['timestamp'] > arrival_time) &
-        (all_orders_df['timestamp'] <= first_lit_fill_time)
-    ].copy()
+    # OPTIMIZED: Use pre-sorted index with binary search
+    # Find contra orders that arrived during order lifetime (arrival_time < timestamp <= first_lit_fill_time)
+    contra_orders_all = order_index[contra_side]
     
-    # Get first occurrence of each order (when it entered)
-    contra_arrivals = contra_arrivals.sort_values('timestamp')
-    contra_arrivals = contra_arrivals.drop_duplicates(subset='order_id', keep='first')
+    # Binary search to find index range
+    start_idx = contra_orders_all['timestamp'].searchsorted(arrival_time, side='right')
+    end_idx = contra_orders_all['timestamp'].searchsorted(first_lit_fill_time, side='right')
+    
+    # Get orders in time range
+    contra_arrivals = contra_orders_all.iloc[start_idx:end_idx].copy() if end_idx > start_idx else pd.DataFrame()
+    
+    if len(contra_arrivals) > 0:
+        # Get first occurrence of each order (when it entered)
+        contra_arrivals = contra_arrivals.sort_values('timestamp')
+        contra_arrivals = contra_arrivals.drop_duplicates(subset='order_id', keep='first')
     
     contra_arrival_during_lifetime = len(contra_arrivals) > 0
     contra_qty_arrived_during_lifetime = contra_arrivals['quantity'].sum() if len(contra_arrivals) > 0 else 0
@@ -366,11 +401,14 @@ def analyze_unmatched_orders(processed_dir, partition_keys):
         
         all_orders_df = load_all_centre_point_orders(partition_dir)
         
+        # Build order index for fast lookups (contains its own logging)
+        order_index = build_order_index(all_orders_df)
+        
         # Phase 2: Analyze liquidity at arrival
         print(f"\nPhase 2: Analyzing liquidity at arrival...")
         liquidity_at_arrival_results = []
         for _, order in unmatched_df.iterrows():
-            result = analyze_liquidity_at_arrival(order, all_orders_df)
+            result = analyze_liquidity_at_arrival(order, order_index)
             liquidity_at_arrival_results.append(result)
         
         liquidity_at_arrival_df = pd.DataFrame(liquidity_at_arrival_results)
@@ -380,7 +418,7 @@ def analyze_unmatched_orders(processed_dir, partition_keys):
         print(f"\nPhase 3: Analyzing temporal liquidity evolution...")
         liquidity_evolution_results = []
         for _, order in unmatched_df.iterrows():
-            result = analyze_liquidity_evolution(order, all_orders_df)
+            result = analyze_liquidity_evolution(order, order_index)
             liquidity_evolution_results.append(result)
         
         liquidity_evolution_df = pd.DataFrame(liquidity_evolution_results)

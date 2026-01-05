@@ -27,22 +27,60 @@ CHUNK_SIZE = SYSTEM_CONFIG.chunk_size
 NUM_WORKERS = SYSTEM_CONFIG.num_workers
 
 # Parallel processing configuration
-ENABLE_PARALLEL_PROCESSING = True  # Set to False for debugging/sequential mode
+ENABLE_PARALLEL_PROCESSING = False  # Set to False for debugging/sequential mode
 MAX_PARALLEL_WORKERS = NUM_WORKERS  # Number of parallel workers for partition processing
+
+
+# ============================================================================
+# DATASET CONFIGURATION
+# ============================================================================
+
+# Default ticker and date - used when CLI args not provided
+TICKER = 'drr'           # Default ticker symbol
+DATE = '20240905'        # Default date in YYYYMMDD format
 
 
 # ============================================================================
 # INPUT FILES
 # ============================================================================
 
-INPUT_FILES = {
-    'orders': str(PROJECT_ROOT / 'data/raw/orders/cba_orders.csv'),
-    'trades': str(PROJECT_ROOT / 'data/raw/trades/cba_trades.csv'),
-    'nbbo': str(PROJECT_ROOT / 'data/raw/nbbo/nbbo.csv'),
-    'session': str(PROJECT_ROOT / 'data/raw/session/session.csv'),
-    'reference': str(PROJECT_ROOT / 'data/raw/reference/ob.csv'),
-    'participants': str(PROJECT_ROOT / 'data/raw/participants/par.csv'),
-}
+def get_input_files(ticker=None, date=None):
+    """Build input file paths from ticker and date. Uses config defaults if not provided."""
+    ticker = ticker or TICKER
+    date = date or DATE
+    
+    base = PROJECT_ROOT / 'data/raw'
+    
+    return {
+        'orders': str(base / f'orders/{ticker}_{date}_orders.csv'),
+        'trades': str(base / f'trades/{ticker}_{date}_trades.csv'),
+        'nbbo': str(base / f'nbbo/{ticker}_{date}_nbbo.csv'),
+        'session': str(base / f'session/{ticker}_{date}_session.csv'),
+        'reference': str(base / f'reference/{ticker}_{date}_ob.csv'),
+        'participants': str(base / f'participants/{ticker}_{date}_par.csv'),
+    }
+
+
+def validate_input_files(files):
+    """Check if required input files exist, raise error if missing."""
+    required = ['orders', 'trades']  # Minimum required files
+    missing = []
+    
+    for key in required:
+        if key in files and not Path(files[key]).exists():
+            missing.append(f"{key}: {files[key]}")
+    
+    if missing:
+        raise FileNotFoundError(
+            f"Required input files not found:\n  " + "\n  ".join(missing) +
+            f"\n\nExpected pattern: {{ticker}}_{{date}}_{{type}}.csv"
+        )
+    
+    return True
+
+
+# Default INPUT_FILES using config values
+INPUT_FILES = get_input_files()
 
 # Raw data directories
 RAW_FOLDERS = {
@@ -344,6 +382,9 @@ def print_config():
     print("="*80)
     print("PIPELINE CONFIGURATION")
     print("="*80)
+    print("\nDataset Configuration:")
+    print(f"  Ticker:  {TICKER}")
+    print(f"  Date:    {DATE}")
     print("\nSystem Configuration:")
     print(SYSTEM_CONFIG)
     print(f"\nInput Files:")

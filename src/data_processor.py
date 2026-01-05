@@ -15,6 +15,7 @@ Handles all data extraction, partitioning, and preprocessing operations:
 
 import pandas as pd
 from pathlib import Path
+from config import SWEEP_ORDER_TYPE
 
 
 def add_date_column(df, timestamp_col):
@@ -607,10 +608,13 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
 
 def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     """
-    Extract before/after order states per partition.
+    Extract before/after/final order states per partition.
     
-    - orders_before_matching: Initial state (min timestamp+sequence per order)
-    - orders_after_matching: Final state (max timestamp+sequence per order)
+    - orders_before_matching: MIN sequence at MIN timestamp per order (entry)
+    - orders_after_matching: MAX sequence at MIN timestamp per order (Option A)
+    - orders_final_state: MAX sequence at MAX timestamp per order (final state - for debugging)
+    
+    Uses only timestamp and sequence for ordering (no orderstatus filtering).
     
     Args:
         orders_by_partition: Dictionary of orders DataFrames
@@ -618,7 +622,7 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
         column_mapping: Column name mapping dictionary
     
     Returns:
-        Dictionary mapping partition_key to {'before': DataFrame, 'after': DataFrame}
+        Dictionary mapping partition_key to {'before': DataFrame, 'after': DataFrame, 'final': DataFrame}
     """
     print(f"\n[5/11] Extracting order states...")
     
@@ -628,151 +632,258 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     
     order_states_by_partition = {}
     
+    # Create debug directory
+    debug_dir = Path(processed_dir).parent / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    
     for partition_key, orders_df in orders_by_partition.items():
         if len(orders_df) == 0:
             continue
         
-        # Sort by timestamp, then sequence
+        date, security_code = partition_key.split('/')
+        
+        # Sort by timestamp, then sequence (ascending)
         orders_sorted = orders_df.sort_values([timestamp_col, sequence_col])
         
-        # Get first state per order (orders_before_matching)
-        orders_before = orders_sorted.groupby(order_id_col).first().reset_index()
+        # Get minimum and maximum timestamps per order
+        min_timestamps = orders_sorted.groupby(order_id_col)[timestamp_col].min()
+        max_timestamps = orders_sorted.groupby(order_id_col)[timestamp_col].max()
         
-        # Get last state per order (orders_after_matching)
-        orders_after = orders_sorted.groupby(order_id_col).last().reset_index()
+        orders_before_list = []
+        orders_after_list = []
+        orders_final_list = []
+        
+        for order_id in min_timestamps.index:
+            min_ts = min_timestamps[order_id]
+            max_ts = max_timestamps[order_id]
+            
+            # Filter to records at minimum timestamp for this order
+            records_at_min_ts = orders_sorted[
+                (orders_sorted[order_id_col] == order_id) & 
+                (orders_sorted[timestamp_col] == min_ts)
+            ]
+            
+            # BEFORE: First record at min timestamp (min sequence)
+            orders_before_list.append(records_at_min_ts.iloc[0])
+            
+            # AFTER: Last record at min timestamp (max sequence)
+            orders_after_list.append(records_at_min_ts.iloc[-1])
+            
+            # Filter to records at maximum timestamp for this order
+            records_at_max_ts = orders_sorted[
+                (orders_sorted[order_id_col] == order_id) & 
+                (orders_sorted[timestamp_col] == max_ts)
+            ]
+            
+            # FINAL: Last record at max timestamp (max sequence) - for debugging
+            orders_final_list.append(records_at_max_ts.iloc[-1])
+        
+        orders_before = pd.DataFrame(orders_before_list).reset_index(drop=True)
+        orders_after = pd.DataFrame(orders_after_list).reset_index(drop=True)
+        orders_final = pd.DataFrame(orders_final_list).reset_index(drop=True)
         
         order_states_by_partition[partition_key] = {
             'before': orders_before,
-            'after': orders_after
+            'after': orders_after,
+            'final': orders_final
         }
         
         # Save to processed directory
-        date, security_code = partition_key.split('/')
         partition_dir = Path(processed_dir) / date / security_code
         partition_dir.mkdir(parents=True, exist_ok=True)
         
         before_file = partition_dir / "orders_before_matching.csv"
         after_file = partition_dir / "orders_after_matching.csv"
+        final_file = partition_dir / "orders_final_state.csv"
         
         orders_before.to_csv(before_file, index=False)
         orders_after.to_csv(after_file, index=False)
+        orders_final.to_csv(final_file, index=False)
         
-        print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after")
+        # Save to DEBUG directory with naming convention: orders_final_{date}_{orderbookid}.csv
+        debug_file = debug_dir / f"orders_final_{date}_{security_code}.csv"
+        orders_final.to_csv(debug_file, index=False)
+        
+        print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after, {len(orders_final):,} final")
     
     return order_states_by_partition
 
 
 def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
     """
-    Extract first and last execution times from order book lifecycle.
+    Extract first and last execution times for SWEEP ORDERS ONLY.
     
-    Times extracted:
-    - first_execution_time: First timestamp in order lifecycle (order submission/entry)
-        * For orders with orderstatus=1: time entered book
-        * For fast-execution orders: submission time (never achieved stable orderstatus=1 but executed)
-        * For cancelled orders: submission time (never entered book)
-    - last_execution_time: Latest timestamp where order exited book (via trade, cancel, or purge)
+    Three-level filtering:
     
-    Exit conditions (changereason):
-        Traded: 3 (when leavesquantity = 0)
-        Cancelled: 1, 9, 10, 20, 34, 41, 42, 43, 51
-        Purged: 23, 24, 25, 26, 27, 35
+    LEVEL 1 - Order Filter (cp_orders_filtered.csv):
+        1. exchangeordertype == SWEEP_ORDER_TYPE
+        2. changereason == 3 at max(timestamp)
+        3. leavesquantity == 0 at max(timestamp)
+        4. At least one record has changereason == 6 (new order)
+    
+    LEVEL 2 - Trade Filter (cp_trades_matched.csv):
+        1. Order must have at least one trade
+        2. ALL trades must have dealsource == 1
+    
+    Output Times:
+        - first_execution_time: min(timestamp) from order file
+        - last_execution_time: max(tradetime) from trades file
     
     Args:
-        orders_by_partition: Dictionary of orders DataFrames
-        trades_by_partition: Dictionary of trades (unused, for consistency)
+        orders_by_partition: Dictionary of orders DataFrames (cp_orders_filtered.csv)
+        trades_by_partition: Dictionary of trades DataFrames (cp_trades_matched.csv)
         processed_dir: Directory to save execution times
         column_mapping: Column name mapping dictionary
     
     Returns:
         Dictionary mapping partition_key to execution times DataFrame
+        (Only includes orders meeting ALL criteria)
     """
-    print(f"\n[6/11] Extracting first and last execution times from order book lifecycle...")
+    print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
     
+    # Get column names for ORDERS
     order_id_col = col('orders', 'order_id', column_mapping)
     timestamp_col = col('orders', 'timestamp', column_mapping)
-    orderstatus_col = col('orders', 'order_status', column_mapping)
+    order_type_col = col('orders', 'order_type', column_mapping)
     changereason_col = col('orders', 'change_reason', column_mapping)
     leavesqty_col = col('orders', 'leaves_quantity', column_mapping)
     
-    # Exit changereason codes
-    EXIT_REASONS = {
-        1,   # Canceled by user
-        3,   # Traded (when leavesquantity = 0)
-        9,   # Canceled by system
-        10,  # Canceled on behalf
-        20,  # Canceled due to trading halt
-        23,  # Inactivated/purged due to corporate action
-        24,  # Rest-Of-Day order inactivated/purged
-        25,  # Inactivated due to delisting
-        26,  # Other than Rest-Of-Day purged
-        27,  # Purged due to outside purge price limits
-        34,  # Canceled after opening auction
-        35,  # Purged due to outside price limits
-        41,  # Canceled - delta limit exceeded
-        42,  # Canceled - quantity limit exceeded
-        43,  # Deleted due to internal crossing
-        51   # Canceled due to invalid clearing participant ID
-    }
+    # Get column names for TRADES
+    trade_orderid_col = col('trades', 'order_id', column_mapping)
+    trade_time_col = col('trades', 'trade_time', column_mapping)
     
     execution_times_by_partition = {}
     
     for partition_key, orders_df in orders_by_partition.items():
+
+
         if len(orders_df) == 0:
             continue
         
-        # Get end of day timestamp (max timestamp in partition)
-        end_of_day = orders_df[timestamp_col].max()
+        # =====================================================================
+        # LEVEL 1: FILTER ORDERS
+        # =====================================================================
+        
+        # Filter 1.1: Sweep orders only
+        sweep_orders = orders_df[orders_df[order_type_col] == SWEEP_ORDER_TYPE].copy()
+        
+        if len(sweep_orders) == 0:
+            # No sweep orders - create empty DataFrame with headers
+            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+            execution_times_by_partition[partition_key] = execution_times_df
+            
+            # Save empty file
+            date, security_code = partition_key.split('/')
+            partition_dir = Path(processed_dir) / date / security_code
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            exec_file = partition_dir / "last_execution_time.csv"
+            execution_times_df.to_csv(exec_file, index=False)
+            
+            print(f"  {partition_key}: 0 qualifying sweep orders")
+            continue
         
         # Sort by timestamp for chronological processing
-        orders_sorted = orders_df.sort_values([order_id_col, timestamp_col])
+        sweep_orders_sorted = sweep_orders.sort_values([order_id_col, timestamp_col])
+        
+        # Filter 1.2, 1.3, 1.4: Get orders with changereason=3 and leavesquantity=0 at max(timestamp)
+        # AND at least one changereason=6 (new order)
+        qualifying_order_ids = []
+        
+        for order_id, group in sweep_orders_sorted.groupby(order_id_col):
+            # Get final state (max timestamp)
+            final_state = group.iloc[-1]
+            
+            # Check 1: changereason == 3 AND leavesquantity == 0 at final state
+            if final_state[changereason_col] == 3 and final_state[leavesqty_col] == 0:
+                # Check 2: At least one record has changereason == 6 (new order)
+                if (group[changereason_col] == 6).any():
+                    qualifying_order_ids.append(order_id)
+        
+        if len(qualifying_order_ids) == 0:
+            # No orders pass Level 1 filters - create empty DataFrame
+            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+            execution_times_by_partition[partition_key] = execution_times_df
+            
+            # Save empty file
+            date, security_code = partition_key.split('/')
+            partition_dir = Path(processed_dir) / date / security_code
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            exec_file = partition_dir / "last_execution_time.csv"
+            execution_times_df.to_csv(exec_file, index=False)
+            
+            print(f"  {partition_key}: 0 qualifying sweep orders")
+            continue
+        
+        # =====================================================================
+        # LEVEL 2: FILTER TRADES
+        # =====================================================================
+        
+        # Check if trades exist for this partition
+        if partition_key not in trades_by_partition:
+            # No trades - create empty DataFrame
+            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+            execution_times_by_partition[partition_key] = execution_times_df
+            
+            # Save empty file
+            date, security_code = partition_key.split('/')
+            partition_dir = Path(processed_dir) / date / security_code
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            exec_file = partition_dir / "last_execution_time.csv"
+            execution_times_df.to_csv(exec_file, index=False)
+            
+            print(f"  {partition_key}: 0 qualifying sweep orders")
+            continue
+        
+        trades_df = trades_by_partition[partition_key]
+        
+        # Filter trades for qualifying order IDs
+        qualifying_trades = trades_df[trades_df[trade_orderid_col].isin(qualifying_order_ids)].copy()
         
         execution_times = []
         
-        # Process each order
-        for order_id, group in orders_sorted.groupby(order_id_col):
-            last_time = None
+        # Process each qualifying order
+        for order_id in qualifying_order_ids:
+            # Get trades for this order
+            order_trades = qualifying_trades[qualifying_trades[trade_orderid_col] == order_id]
             
-            # Use first timestamp as first_execution_time
-            # This captures:
-            # - Normal orders: time entered book (orderstatus=1)
-            # - Fast execution: submission time (never achieved stable orderstatus=1 but executed)
-            # - Cancelled orders: submission time (never entered book)
-            first_time = group[timestamp_col].iloc[0]
+            # Filter 2.1: Must have at least one trade
+            if len(order_trades) == 0:
+                continue  # EXCLUDE: no trades
             
-            # Find last time in book (exit condition)
-            for idx in range(len(group) - 1, -1, -1):  # Reverse iteration
-                row = group.iloc[idx]
-                changereason = row[changereason_col]
-                
-                # Check exit conditions
-                if changereason in EXIT_REASONS:
-                    # For changereason = 3 (Traded), only exit if fully filled
-                    if changereason == 3:
-                        if row[leavesqty_col] == 0:
-                            last_time = row[timestamp_col]
-                            break
-                    else:
-                        # All other exit reasons
-                        last_time = row[timestamp_col]
-                        break
+            # Filter 2.2: ALL trades must have dealsource == 1
+            dealsources = order_trades['dealsource'].unique()
+            if not (len(dealsources) == 1 and dealsources[0] == 1):
+                continue  # EXCLUDE: not all trades are dealsource=1
             
-            # If no exit found but was active, use end of day timestamp
-            if last_time is None and first_time is not None:
-                # Use end of day timestamp for this partition
-                last_time = end_of_day
+            # ORDER QUALIFIES - Extract timestamps
+            # Get order data for this order_id
+            order_data = sweep_orders_sorted[sweep_orders_sorted[order_id_col] == order_id]
             
-            # Record times (use end of day if never exited book)
+            # first_execution_time: min(timestamp) from ORDER file
+            first_time = order_data[timestamp_col].min()
+            
+            # last_execution_time: max(tradetime) from TRADES file
+            last_time = order_trades[trade_time_col].max()
+            
             execution_times.append({
                 'orderid': order_id,
-                'first_execution_time': first_time if first_time is not None else pd.NA,
-                'last_execution_time': last_time if last_time is not None else end_of_day
+                'first_execution_time': first_time,
+                'last_execution_time': last_time
             })
         
-        execution_times_df = pd.DataFrame(execution_times)
+        # =====================================================================
+        # CREATE OUTPUT AND SAVE
+        # =====================================================================
+        
+        if len(execution_times) > 0:
+            execution_times_df = pd.DataFrame(execution_times)
+        else:
+            # No orders pass all filters - create empty DataFrame with headers
+            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+        
         execution_times_by_partition[partition_key] = execution_times_df
         
-        # Save to processed directory
+        # Save to file
         date, security_code = partition_key.split('/')
         partition_dir = Path(processed_dir) / date / security_code
         partition_dir.mkdir(parents=True, exist_ok=True)
@@ -780,8 +891,7 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
         exec_file = partition_dir / "last_execution_time.csv"
         execution_times_df.to_csv(exec_file, index=False)
         
-        # All orders now have first_execution_time
-        print(f"  {partition_key}: {len(execution_times_df):,} orders with lifecycle times (all orders)")
+        print(f"  {partition_key}: {len(execution_times_df):,} qualifying sweep orders")
     
     return execution_times_by_partition
 
@@ -798,6 +908,7 @@ def load_partition_data(partition_key, processed_dir):
         Dictionary containing:
             - 'orders_before': DataFrame from orders_before_matching.csv
             - 'orders_after': DataFrame from orders_after_matching.csv
+            - 'orders_final': DataFrame from orders_final_state.csv
             - 'last_execution': DataFrame from last_execution_time.csv
     """
     date, security_code = partition_key.split('/')
@@ -814,6 +925,11 @@ def load_partition_data(partition_key, processed_dir):
     after_file = partition_dir / "orders_after_matching.csv"
     if after_file.exists():
         partition_data['orders_after'] = pd.read_csv(after_file)
+    
+    # Load orders_final_state
+    final_file = partition_dir / "orders_final_state.csv"
+    if final_file.exists():
+        partition_data['orders_final'] = pd.read_csv(final_file)
     
     # Load last_execution_time
     exec_file = partition_dir / "last_execution_time.csv"
