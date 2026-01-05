@@ -11,6 +11,7 @@ Handles all sweep order matching simulation logic:
 
 import pandas as pd
 import numpy as np
+from column_schema import col
 
 # Constants
 SWEEP_ORDER_TYPE = 2048
@@ -173,7 +174,7 @@ def _prepare_sweep_orders(partition_data):
     sweep_orders = sweep_orders[final_columns].copy()
     
     # Ensure orderid is int64
-    sweep_orders['orderid'] = sweep_orders['orderid'].astype('int64')
+    sweep_orders[col.common.orderid] = sweep_orders[col.common.orderid].astype('int64')
     
     # Sort by timestamp, then sequence (time priority based on PLACEMENT)
     sweep_orders = sweep_orders.sort_values(['timestamp', 'sequence']).reset_index(drop=True)
@@ -222,7 +223,7 @@ def _prepare_all_orders_for_matching(partition_data):
     ]].copy()
     
     # Ensure orderid is int64
-    all_orders['orderid'] = all_orders['orderid'].astype('int64')
+    all_orders[col.common.orderid] = all_orders[col.common.orderid].astype('int64')
     
     # Sort by timestamp, then sequence for chronological processing
     all_orders = all_orders.sort_values(['timestamp', 'sequence']).reset_index(drop=True)
@@ -308,11 +309,11 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
     
     # Track sweep usage
     sweep_usage = {int(orderid): {'matched_quantity': 0, 'num_matches': 0} 
-                   for orderid in sweep_orders['orderid'].values}
+                   for orderid in sweep_orders[col.common.orderid].values}
     
     # Track remaining quantities for ALL orders (for matching)
     order_remaining = {int(orderid): qty for orderid, qty in 
-                      zip(all_orders['orderid'].values, all_orders['quantity'].values)}
+                      zip(all_orders[col.common.orderid].values, all_orders[col.common.quantity].values)}
     
     # Pre-index all_orders by orderid for fast lookup
     all_orders_indexed = all_orders.set_index('orderid')
@@ -322,10 +323,10 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
         sweep = sweep_orders.iloc[idx]
         # CRITICAL: Use .loc with column name and explicit astype to preserve int64
         # When using .iterrows(), pandas converts to float64 causing precision loss
-        sweep_id = int(sweep_orders['orderid'].iloc[idx])
-        sweep_side = int(sweep['side'])
-        sweep_qty_available = sweep['leavesquantity']
-        sweep_orderbookid = sweep['orderbookid']
+        sweep_id = int(sweep_orders[col.common.orderid].iloc[idx])
+        sweep_side = int(sweep[col.common.side])
+        sweep_qty_available = sweep[col.orders.leaves_quantity]
+        sweep_orderbookid = sweep[col.common.orderbookid]
         first_exec_time = sweep['first_execution_time']
         last_exec_time = sweep['last_execution_time']
         
@@ -333,7 +334,7 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             # No quantity to match
             sweep_summaries.append({
                 'orderid': sweep_id,
-                'timestamp': sweep['timestamp'],
+                'timestamp': sweep[col.common.timestamp],
                 'side': sweep_side,
                 'quantity': sweep_qty_available,
                 'matched_quantity': 0,
@@ -346,11 +347,11 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
         
         # Find eligible orders in execution time window
         eligible_orders = all_orders[
-            (all_orders['timestamp'] >= first_exec_time) &
-            (all_orders['timestamp'] <= last_exec_time) &
-            (all_orders['orderid'] != sweep_id) &  # CRITICAL: Exclude self
-            (all_orders['orderbookid'] == sweep_orderbookid) &
-            (all_orders['side'] != sweep_side)  # Opposite side
+            (all_orders[col.common.timestamp] >= first_exec_time) &
+            (all_orders[col.common.timestamp] <= last_exec_time) &
+            (all_orders[col.common.orderid] != sweep_id) &  # CRITICAL: Exclude self
+            (all_orders[col.common.orderbookid] == sweep_orderbookid) &
+            (all_orders[col.common.side] != sweep_side)  # Opposite side
         ].copy()
         
         # Sort by time priority (timestamp, then sequence)
@@ -365,7 +366,7 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             if sweep_remaining_qty <= 0:
                 break
             
-            order_id = int(order['orderid'])  # Convert to int
+            order_id = int(order[col.common.orderid])  # Convert to int
             order_available = order_remaining.get(order_id, 0)
             
             if order_available <= 0:
@@ -377,10 +378,10 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             # Get midpoint price
             midpoint = get_midpoint(
                 nbbo_data=nbbo_data,
-                timestamp=order['timestamp'],
+                timestamp=order[col.common.timestamp],
                 orderbookid=sweep_orderbookid,
-                fallback_bid=order['bid'],
-                fallback_offer=order['offer']
+                fallback_bid=order[col.orders.bid],
+                fallback_offer=order[col.orders.offer]
             )
             
             if midpoint is None:
@@ -390,7 +391,7 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             all_matches.append({
                 'incoming_orderid': np.int64(order_id),  # Explicit numpy int64
                 'sweep_orderid': np.int64(sweep_id),     # Explicit numpy int64
-                'timestamp': order['timestamp'],
+                'timestamp': order[col.common.timestamp],
                 'matched_quantity': match_qty,
                 'price': midpoint,
                 'orderbookid': sweep_orderbookid
@@ -412,7 +413,7 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
         # Generate summary for this sweep
         sweep_summaries.append({
             'orderid': sweep_id,
-            'timestamp': sweep['timestamp'],
+            'timestamp': sweep[col.common.timestamp],
             'side': sweep_side,
             'quantity': sweep_qty_available,
             'matched_quantity': sweep_matched_qty,
@@ -470,11 +471,11 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
     print(f"    Match? {match_details['sweep_orderid'].iloc[0] == 7904794000124134556}")
     
     # Extract date from first match timestamp
-    first_timestamp = match_details['timestamp'].iloc[0]
+    first_timestamp = match_details[col.common.timestamp].iloc[0]
     tradedate = pd.to_datetime(first_timestamp, unit='ns').strftime('%Y-%m-%d')
     
     # Get sweep order sides
-    sweep_side_map = sweep_orders.set_index('orderid')['side'].to_dict()
+    sweep_side_map = sweep_orders.set_index('orderid')[col.common.side].to_dict()
     
     # Sort matches by timestamp for consistent ordering
     matches_sorted = match_details.sort_values('timestamp').reset_index(drop=True)
@@ -530,7 +531,7 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
         bid_snapshot = 0
         offer_snapshot = 0
         if nbbo_sorted is not None:
-            recent_nbbo = nbbo_sorted[nbbo_sorted['timestamp'] <= timestamp]
+            recent_nbbo = nbbo_sorted[nbbo_sorted[col.common.timestamp] <= timestamp]
             if len(recent_nbbo) > 0:
                 latest_nbbo = recent_nbbo.iloc[-1]
                 bid_snapshot = latest_nbbo.get('bidprice', 0)
@@ -620,8 +621,8 @@ def _generate_sweep_utilization(sweep_orders, sweep_usage):
     utilization = []
     
     for _, sweep in sweep_orders.iterrows():
-        sweep_id = int(sweep['orderid'])
-        available_qty = sweep['leavesquantity']
+        sweep_id = int(sweep[col.common.orderid])
+        available_qty = sweep[col.orders.leaves_quantity]
         
         if sweep_id not in sweep_usage:
             continue
