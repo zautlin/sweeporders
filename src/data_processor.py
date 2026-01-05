@@ -16,21 +16,16 @@ Handles all data extraction, partitioning, and preprocessing operations:
 import pandas as pd
 from pathlib import Path
 from config import SWEEP_ORDER_TYPE
+from column_schema import col
 
 
 def add_date_column(df, timestamp_col):
     """Add date column from timestamp (convert UTC to AEST)."""
-    df['date'] = (pd.to_datetime(df[timestamp_col], unit='ns')
+    df[col.common.date] = (pd.to_datetime(df[timestamp_col], unit='ns')
                     .dt.tz_localize('UTC')
                     .dt.tz_convert('Australia/Sydney')
                     .dt.strftime('%Y-%m-%d'))
     return df
-
-
-def col(file_type, logical_name, column_mapping):
-    """Get actual column name from logical name using mapping."""
-    mapped = column_mapping.get(file_type, {}).get(logical_name)
-    return mapped if mapped is not None else logical_name
 
 
 def extract_orders(input_file, processed_dir, order_types, chunk_size, column_mapping):
@@ -42,16 +37,16 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
         processed_dir: Directory to save processed partitions
         order_types: List of order types to extract (e.g., [64, 256, 2048, 4096, 4098])
         chunk_size: Chunk size for reading large files
-        column_mapping: Column name mapping dictionary
+        column_mapping: Column name mapping dictionary (DEPRECATED - uses column_schema)
     
     Returns:
         Dictionary mapping partition_key (date/security) to DataFrame
     """
     print(f"\n[1/11] Extracting Centre Point orders from {input_file}...")
     
-    order_type_col = col('orders', 'order_type', column_mapping)
-    timestamp_col = col('orders', 'timestamp', column_mapping)
-    security_col = col('orders', 'security_code', column_mapping)
+    order_type_col = col.orders.order_type
+    timestamp_col = col.orders.timestamp
+    security_col = col.orders.security_code
     
     orders_list = []
     total_rows = 0
@@ -100,7 +95,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
         input_file: Path to trades CSV file
         orders_by_partition: Dictionary of orders DataFrames by partition
         processed_dir: Directory to save processed trades
-        column_mapping: Column name mapping dictionary
+        column_mapping: Column name mapping dictionary (DEPRECATED - uses column_schema)
         chunk_size: Chunk size for reading CSV (from config.CHUNK_SIZE)
     
     Returns:
@@ -108,9 +103,9 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     """
     print(f"\n[2/11] Extracting matching trades from {input_file}...")
     
-    order_id_col_orders = col('orders', 'order_id', column_mapping)
-    order_id_col_trades = col('trades', 'order_id', column_mapping)
-    trade_time_col = col('trades', 'trade_time', column_mapping)
+    order_id_col_orders = col.orders.order_id
+    order_id_col_trades = col.trades.order_id
+    trade_time_col = col.trades.trade_time
     
     # Collect all order IDs
     all_order_ids = set()
@@ -181,10 +176,10 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
     """
     print(f"\n[3/11] Aggregating trades by order...")
     
-    order_id_col = col('trades', 'order_id', column_mapping)
-    trade_time_col = col('trades', 'trade_time', column_mapping)
-    trade_price_col = col('trades', 'trade_price', column_mapping)
-    quantity_col = col('trades', 'quantity', column_mapping)
+    order_id_col = col.trades.order_id
+    trade_time_col = col.trades.trade_time
+    trade_price_col = col.trades.trade_price
+    quantity_col = col.trades.quantity
     
     trades_agg_by_partition = {}
     
@@ -306,12 +301,12 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
         session_df = pd.concat(session_dfs, ignore_index=True) if len(session_dfs) > 1 else session_dfs[0]
         
         # Convert timestamp to AEST and add date column
-        timestamp_col = col('session', 'timestamp', column_mapping)
+        timestamp_col = col.session.timestamp
         session_df = add_date_column(session_df, timestamp_col)
         
         # Partition by date
         for date in unique_dates:
-            date_data = session_df[session_df['date'] == date].copy()
+            date_data = session_df[session_df[col.common.date] == date].copy()
             
             if len(date_data) > 0:
                 date_dir = Path(processed_dir) / date
@@ -343,12 +338,12 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
         reference_df = pd.concat(reference_dfs, ignore_index=True) if len(reference_dfs) > 1 else reference_dfs[0]
         
         # Convert timestamp to AEST and add date column
-        timestamp_col = col('reference', 'timestamp', column_mapping)
+        timestamp_col = col.reference.timestamp
         reference_df = add_date_column(reference_df, timestamp_col)
         
         # Partition by date
         for date in unique_dates:
-            date_data = reference_df[reference_df['date'] == date].copy()
+            date_data = reference_df[reference_df[col.common.date] == date].copy()
             
             if len(date_data) > 0:
                 date_dir = Path(processed_dir) / date
@@ -380,16 +375,16 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
         participants_df = pd.concat(participants_dfs, ignore_index=True) if len(participants_dfs) > 1 else participants_dfs[0]
         
         # Convert timestamp to AEST and add date column
-        timestamp_col = col('participants', 'timestamp', column_mapping)
+        timestamp_col = col.participants.timestamp
         participants_df = add_date_column(participants_df, timestamp_col)
         
         # Get all unique dates in participants data
-        all_participant_dates = participants_df['date'].unique()
+        all_participant_dates = participants_df[col.common.date].unique()
         print(f"    Available dates in participants: {sorted(all_participant_dates)}")
         
         # Partition by date (use latest available if exact date missing)
         for date in unique_dates:
-            date_data = participants_df[participants_df['date'] == date].copy()
+            date_data = participants_df[participants_df[col.common.date] == date].copy()
             
             if len(date_data) > 0:
                 # Exact match found
@@ -405,7 +400,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
             else:
                 # Use latest available date as fallback
                 latest_date = max(all_participant_dates)
-                fallback_data = participants_df[participants_df['date'] == latest_date].copy()
+                fallback_data = participants_df[participants_df[col.common.date] == latest_date].copy()
                 
                 date_dir = Path(processed_dir) / date
                 date_dir.mkdir(parents=True, exist_ok=True)
@@ -434,11 +429,11 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
         nbbo_df = pd.concat(nbbo_dfs, ignore_index=True) if len(nbbo_dfs) > 1 else nbbo_dfs[0]
         
         # Convert timestamp to AEST and add date column
-        timestamp_col = col('nbbo', 'timestamp', column_mapping)
+        timestamp_col = col.nbbo.timestamp
         nbbo_df = add_date_column(nbbo_df, timestamp_col)
         
         # Standardize security_code column
-        security_col = col('nbbo', 'security_code', column_mapping)
+        security_col = col.nbbo.security_code
         if security_col != 'orderbookid':
             nbbo_df = nbbo_df.rename(columns={security_col: 'orderbookid'})
         
@@ -448,7 +443,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
             orderbookid_int = int(orderbookid)
             
             partition_data = nbbo_df[
-                (nbbo_df['date'] == date) & 
+                (nbbo_df[col.common.date] == date) & 
                 (nbbo_df['orderbookid'] == orderbookid_int)
             ].copy()
             
@@ -498,15 +493,15 @@ def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping)
         print(f"  File not found, skipping")
         return {}
     
-    timestamp_col = col('nbbo', 'timestamp', column_mapping)
-    security_col = col('nbbo', 'security_code', column_mapping)
+    timestamp_col = col.nbbo.timestamp
+    security_col = col.nbbo.security_code
     
     # Read NBBO file
     nbbo_df = pd.read_csv(input_file)
     print(f"  Total NBBO records: {len(nbbo_df):,}")
     
     # Add date column
-    if 'date' not in nbbo_df.columns:
+    if 'date' not in df.columns:
         nbbo_df = add_date_column(nbbo_df, timestamp_col)
     
     # Standardize security_code column
@@ -521,7 +516,7 @@ def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping)
         
         # Filter NBBO for this partition
         partition_nbbo = nbbo_df[
-            (nbbo_df['date'] == date) & 
+            (nbbo_df[col.common.date] == date) & 
             (nbbo_df['security_code'] == security_code_int)
         ].copy()
         
@@ -558,11 +553,11 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
     session_file = input_files['session']
     if Path(session_file).exists():
         session_df = pd.read_csv(session_file)
-        if 'date' not in session_df.columns:
+        if 'date' not in df.columns:
             session_df = add_date_column(session_df, 'TradeDate')
         
         for date in unique_dates:
-            date_session = session_df[session_df['date'] == date].copy()
+            date_session = session_df[session_df[col.common.date] == date].copy()
             if len(date_session) > 0:
                 date_dir = Path(processed_dir) / date
                 date_dir.mkdir(parents=True, exist_ok=True)
@@ -575,11 +570,11 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
     reference_file = input_files['reference']
     if Path(reference_file).exists():
         ref_df = pd.read_csv(reference_file)
-        if 'date' not in ref_df.columns:
+        if 'date' not in df.columns:
             ref_df = add_date_column(ref_df, 'TradeDate')
         
         for date in unique_dates:
-            date_ref = ref_df[ref_df['date'] == date].copy()
+            date_ref = ref_df[ref_df[col.common.date] == date].copy()
             if len(date_ref) > 0:
                 date_dir = Path(processed_dir) / date
                 date_dir.mkdir(parents=True, exist_ok=True)
@@ -592,11 +587,11 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
     participants_file = input_files['participants']
     if Path(participants_file).exists():
         par_df = pd.read_csv(participants_file)
-        if 'date' not in par_df.columns:
+        if 'date' not in df.columns:
             par_df = add_date_column(par_df, 'TradeDate')
         
         for date in unique_dates:
-            date_par = par_df[par_df['date'] == date].copy()
+            date_par = par_df[par_df[col.common.date] == date].copy()
             if len(date_par) > 0:
                 date_dir = Path(processed_dir) / date
                 date_dir.mkdir(parents=True, exist_ok=True)
@@ -626,9 +621,9 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     """
     print(f"\n[5/11] Extracting order states...")
     
-    order_id_col = col('orders', 'order_id', column_mapping)
-    timestamp_col = col('orders', 'timestamp', column_mapping)
-    sequence_col = col('orders', 'sequence', column_mapping)
+    order_id_col = col.orders.order_id
+    timestamp_col = col.orders.timestamp
+    sequence_col = col.orders.sequence
     
     order_states_by_partition = {}
     
@@ -742,15 +737,15 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
     
     # Get column names for ORDERS
-    order_id_col = col('orders', 'order_id', column_mapping)
-    timestamp_col = col('orders', 'timestamp', column_mapping)
-    order_type_col = col('orders', 'order_type', column_mapping)
-    changereason_col = col('orders', 'change_reason', column_mapping)
-    leavesqty_col = col('orders', 'leaves_quantity', column_mapping)
+    order_id_col = col.orders.order_id
+    timestamp_col = col.orders.timestamp
+    order_type_col = col.orders.order_type
+    changereason_col = col.orders.change_reason
+    leavesqty_col = col.orders.leaves_quantity
     
     # Get column names for TRADES
-    trade_orderid_col = col('trades', 'order_id', column_mapping)
-    trade_time_col = col('trades', 'trade_time', column_mapping)
+    trade_orderid_col = col.trades.order_id
+    trade_time_col = col.trades.trade_time
     
     execution_times_by_partition = {}
     
@@ -960,9 +955,9 @@ def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
     """
     print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     
-    order_type_col = col('orders', 'order_type', column_mapping)
-    leaves_qty_col = col('orders', 'leaves_quantity', column_mapping)
-    matched_qty_col = col('orders', 'matched_quantity', column_mapping)
+    order_type_col = col.orders.order_type
+    leaves_qty_col = col.orders.leaves_quantity
+    matched_qty_col = col.orders.matched_quantity
     
     groups_by_partition = {}
     
