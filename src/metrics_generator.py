@@ -9,8 +9,18 @@ Handles calculation of simulated execution metrics and comparison with real exec
 """
 
 import pandas as pd
+from column_schema import col
 import numpy as np
 from pathlib import Path
+from statistics_layer import StatisticsEngine
+
+# Try to import scipy for backward compatibility
+try:
+    from scipy import stats as scipy_stats
+    SCIPY_AVAILABLE = True
+except ImportError:
+    scipy_stats = None
+    SCIPY_AVAILABLE = False
 
 
 def calculate_simulated_metrics(all_orders, order_summary, match_details):
@@ -69,8 +79,8 @@ def calculate_simulated_metrics(all_orders, order_summary, match_details):
     
     # Calculate fill ratio
     result['simulated_fill_ratio'] = np.where(
-        result['quantity'] > 0,
-        result['simulated_matched_quantity'] / result['quantity'],
+        result[col.common.quantity] > 0,
+        result['simulated_matched_quantity'] / result[col.common.quantity],
         0
     )
     
@@ -78,7 +88,7 @@ def calculate_simulated_metrics(all_orders, order_summary, match_details):
     result['simulated_fill_status'] = result.apply(
         lambda row: _determine_fill_status(
             row['simulated_matched_quantity'],
-            row['quantity']
+            row[col.common.quantity]
         ),
         axis=1
     )
@@ -139,7 +149,7 @@ def _calculate_price_metrics(match_details):
     """
     # Calculate total value per match
     match_details = match_details.copy()
-    match_details['match_value'] = match_details['matched_quantity'] * match_details['price']
+    match_details['match_value'] = match_details['matched_quantity'] * match_details[col.common.price]
     
     # Aggregate by incoming order
     price_stats = match_details.groupby('incoming_orderid').agg({
@@ -193,10 +203,10 @@ def compare_by_group(orders_with_metrics, groups):
     for group_name, group_orders in groups.items():
         # Get orders with metrics for this group
         if 'order_id' in group_orders.columns:
-            group_orderids = group_orders['order_id'].values
+            group_orderids = group_orders[col.common.order_id].values
             orderid_col = 'orderid' if 'orderid' in orders_with_metrics.columns else 'order_id'
         else:
-            group_orderids = group_orders['orderid'].values
+            group_orderids = group_orders[col.common.orderid].values
             orderid_col = 'orderid'
         
         group_with_metrics = orders_with_metrics[
@@ -233,18 +243,18 @@ def _calculate_group_summary(group_name, group_df):
         'num_orders': len(group_df),
         
         # Real execution stats
-        'real_total_quantity': group_df['quantity'].sum(),
+        'real_total_quantity': group_df[col.common.quantity].sum(),
         'real_matched_quantity': group_df.get('totalmatchedquantity', pd.Series([0] * len(group_df))).sum(),
-        'real_avg_fill_ratio': group_df.get('totalmatchedquantity', pd.Series([0] * len(group_df))).sum() / group_df['quantity'].sum() if group_df['quantity'].sum() > 0 else 0,
+        'real_avg_fill_ratio': group_df.get('totalmatchedquantity', pd.Series([0] * len(group_df))).sum() / group_df[col.common.quantity].sum() if group_df[col.common.quantity].sum() > 0 else 0,
         
         # Simulated execution stats
-        'simulated_total_quantity': group_df['quantity'].sum(),
+        'simulated_total_quantity': group_df[col.common.quantity].sum(),
         'simulated_matched_quantity': group_df['simulated_matched_quantity'].sum(),
-        'simulated_avg_fill_ratio': group_df['simulated_matched_quantity'].sum() / group_df['quantity'].sum() if group_df['quantity'].sum() > 0 else 0,
+        'simulated_avg_fill_ratio': group_df['simulated_matched_quantity'].sum() / group_df[col.common.quantity].sum() if group_df[col.common.quantity].sum() > 0 else 0,
         
         # Comparison
         'quantity_difference': group_df['simulated_matched_quantity'].sum() - group_df.get('totalmatchedquantity', pd.Series([0] * len(group_df))).sum(),
-        'fill_ratio_difference': (group_df['simulated_matched_quantity'].sum() - group_df.get('totalmatchedquantity', pd.Series([0] * len(group_df))).sum()) / group_df['quantity'].sum() if group_df['quantity'].sum() > 0 else 0,
+        'fill_ratio_difference': (group_df['simulated_matched_quantity'].sum() - group_df.get('totalmatchedquantity', pd.Series([0] * len(group_df))).sum()) / group_df[col.common.quantity].sum() if group_df[col.common.quantity].sum() > 0 else 0,
     }
     
     # Count fill status changes
@@ -266,11 +276,11 @@ def _calculate_order_details(group_name, group_df):
     for _, order in group_df.iterrows():
         real_matched = order[real_matched_col] if real_matched_col else 0
         simulated_matched = order['simulated_matched_quantity']
-        quantity = order['quantity']
+        quantity = order[col.common.quantity]
         
         detail = {
             'group': group_name,
-            'orderid': order['orderid'],
+            'orderid': order[col.common.orderid],
             'quantity': quantity,
             'real_matched': real_matched,
             'simulated_matched': simulated_matched,
@@ -324,7 +334,7 @@ def _analyze_group_differences(group_name, group_df):
     }
     
     # Calculate total quantity impact
-    total_quantity = group_df['quantity'].sum()
+    total_quantity = group_df[col.common.quantity].sum()
     if total_quantity > 0:
         analysis['total_quantity_impact_pct'] = (differences.sum() / total_quantity) * 100
     else:
@@ -484,13 +494,13 @@ def compare_sweep_execution(sweep_order_summary, orders_after_matching, trades_a
             group_df_copy = group_df_copy.rename(columns={'order_id': 'orderid'})
         # Ensure orderid is int64
         if 'orderid' in group_df_copy.columns:
-            group_df_copy['orderid'] = group_df_copy['orderid'].astype('int64')
+            group_df_copy[col.common.orderid] = group_df_copy[col.common.orderid].astype('int64')
         standardized_groups[group_name] = group_df_copy
     groups = standardized_groups
     
     # Filter orders_after_matching for sweep orders only (type 2048)
     sweep_orders_real = orders_after_matching[
-        orders_after_matching['exchangeordertype'] == 2048
+        orders_after_matching[col.orders.order_type] == 2048
     ].copy()
     
     # Standardize column names
@@ -519,7 +529,7 @@ def compare_sweep_execution(sweep_order_summary, orders_after_matching, trades_a
         comparison['real_avg_price'] = 0.0
     
     # Calculate real execution metrics
-    comparison['real_matched_quantity'] = comparison['totalmatchedquantity'].fillna(0)
+    comparison['real_matched_quantity'] = comparison[col.orders.matched_quantity].fillna(0)
     comparison['real_fill_ratio'] = comparison['real_matched_quantity'] / comparison['quantity_real']
     comparison['real_fill_status'] = comparison.apply(
         lambda row: _determine_fill_status(row['real_matched_quantity'], row['quantity_real']),
@@ -549,7 +559,7 @@ def compare_sweep_execution(sweep_order_summary, orders_after_matching, trades_a
     comparison['size_category'] = comparison['available_quantity'].apply(_categorize_order_size)
     
     # Add group membership
-    comparison['group'] = comparison['orderid'].apply(lambda x: _find_order_group(x, groups))
+    comparison['group'] = comparison[col.common.orderid].apply(lambda x: _find_order_group(x, groups))
     
     # Generate comprehensive analyses
     sweep_comparison = comparison[[
@@ -651,7 +661,7 @@ def _calculate_sweep_group_summary(comparison_df):
     return pd.DataFrame(summaries)
 
 
-def _calculate_statistical_tests(comparison_df):
+def _calculate_statistical_tests(comparison_df, stats_engine=None):
     """
     Calculate paired t-tests comparing simulated vs real execution.
     
@@ -664,13 +674,22 @@ def _calculate_statistical_tests(comparison_df):
     - Overall
     - By group
     - By size category
+    
+    Args:
+        comparison_df: DataFrame with comparison data
+        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
+    
+    Returns:
+        DataFrame with statistical test results
     """
-    from scipy import stats
+    # Create default stats engine if not provided
+    if stats_engine is None:
+        stats_engine = StatisticsEngine(enable_stats=True)
     
     results = []
     
     # Overall tests
-    results.extend(_run_ttests(comparison_df, 'Overall', 'All'))
+    results.extend(_run_ttests(comparison_df, 'Overall', 'All', stats_engine))
     
     # Tests by group
     for group_name in comparison_df['group'].unique():
@@ -678,13 +697,13 @@ def _calculate_statistical_tests(comparison_df):
             continue
         group_data = comparison_df[comparison_df['group'] == group_name]
         if len(group_data) >= 2:  # Need at least 2 samples for t-test
-            results.extend(_run_ttests(group_data, 'Group', group_name))
+            results.extend(_run_ttests(group_data, 'Group', group_name, stats_engine))
     
     # Tests by size category
     for size_cat in comparison_df['size_category'].unique():
         size_data = comparison_df[comparison_df['size_category'] == size_cat]
         if len(size_data) >= 2:
-            results.extend(_run_ttests(size_data, 'Size', size_cat))
+            results.extend(_run_ttests(size_data, 'Size', size_cat, stats_engine))
     
     # Tests by group AND size
     for group_name in comparison_df['group'].unique():
@@ -696,16 +715,30 @@ def _calculate_statistical_tests(comparison_df):
                 (comparison_df['size_category'] == size_cat)
             ]
             if len(segment_data) >= 2:
-                results.extend(_run_ttests(segment_data, f'Group-Size', f'{group_name}_{size_cat}'))
+                results.extend(_run_ttests(segment_data, f'Group-Size', f'{group_name}_{size_cat}', stats_engine))
     
     return pd.DataFrame(results)
 
 
-def _run_ttests(data, segment_type, segment_name):
-    """Run paired t-tests on a data segment with proper NaN/Inf handling."""
-    from scipy import stats
+def _run_ttests(data, segment_type, segment_name, stats_engine=None):
+    """
+    Run paired t-tests on a data segment with proper NaN/Inf handling.
+    
+    Args:
+        data: DataFrame with comparison data
+        segment_type: Type of segment (Overall, Group, Size, etc.)
+        segment_name: Name of the segment
+        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
+    
+    Returns:
+        List of test result dictionaries
+    """
     import numpy as np
     import warnings
+    
+    # Create default stats engine if not provided
+    if stats_engine is None:
+        stats_engine = StatisticsEngine(enable_stats=True)
     
     results = []
     
@@ -713,132 +746,70 @@ def _run_ttests(data, segment_type, segment_name):
     if len(data) < 2:
         return results
     
-    # Test 1: Matched Quantity
-    real_matched = data['real_matched_quantity'].values
-    sim_matched = data['simulated_matched_quantity'].values
+    # Define metrics to test
+    metrics_to_test = [
+        ('Matched Quantity', 'real_matched_quantity', 'simulated_matched_quantity'),
+        ('Fill Ratio', 'real_fill_ratio', 'simulated_fill_ratio'),
+        ('Number of Matches', 'real_num_matches', 'simulated_num_matches')
+    ]
     
-    # Filter out NaN/Inf values
-    valid_mask = np.isfinite(real_matched) & np.isfinite(sim_matched)
-    real_matched_valid = real_matched[valid_mask]
-    sim_matched_valid = sim_matched[valid_mask]
-    
-    # Check for sufficient valid samples and non-zero variance
-    if len(real_matched_valid) >= 2 and real_matched_valid.std() > 0 and sim_matched_valid.std() > 0:
+    for metric_name, real_col, sim_col in metrics_to_test:
+        # Extract and validate data
+        real_values = data[real_col].values
+        sim_values = data[sim_col].values
+        
+        # Filter out NaN/Inf values
+        valid_mask = np.isfinite(real_values) & np.isfinite(sim_values)
+        real_valid = real_values[valid_mask]
+        sim_valid = sim_values[valid_mask]
+        
+        # Check for sufficient valid samples and non-zero variance
+        if len(real_valid) < 2 or real_valid.std() == 0 or sim_valid.std() == 0:
+            continue
+        
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', category=RuntimeWarning)
-                t_stat, p_value = stats.ttest_rel(sim_matched_valid, real_matched_valid)
-                mean_diff = (sim_matched_valid - real_matched_valid).mean()
-                std_diff = (sim_matched_valid - real_matched_valid).std()
-                ci_lower, ci_upper = stats.t.interval(
-                    0.95, 
-                    len(real_matched_valid) - 1,
-                    loc=mean_diff,
-                    scale=stats.sem(sim_matched_valid - real_matched_valid)
-                )
-            
-            results.append({
-                'segment_type': segment_type,
-                'segment_name': segment_name,
-                'metric': 'Matched Quantity',
-                'n_samples': len(real_matched_valid),
-                'mean_real': real_matched_valid.mean(),
-                'mean_simulated': sim_matched_valid.mean(),
-                'mean_difference': mean_diff,
-                'std_difference': std_diff,
-                't_statistic': t_stat,
-                'p_value': p_value,
-                'significant_5pct': p_value < 0.05,
-                'significant_1pct': p_value < 0.01,
-                'ci_95_lower': ci_lower,
-                'ci_95_upper': ci_upper
-            })
+                
+                # Calculate mean difference
+                differences = sim_valid - real_valid
+                mean_diff = differences.mean()
+                std_diff = differences.std()
+                
+                # Initialize statistical values
+                t_stat = p_value = np.nan
+                ci_lower = ci_upper = np.nan
+                
+                if stats_engine.is_enabled():
+                    # Run paired t-test
+                    ttest_result = stats_engine.ttest_rel(sim_valid, real_valid)
+                    if ttest_result:
+                        t_stat = ttest_result.statistic
+                        p_value = ttest_result.pvalue
+                    
+                    # Calculate confidence interval for differences
+                    ci_result = stats_engine.confidence_interval(differences, confidence=0.95)
+                    if ci_result:
+                        ci_lower, ci_upper = ci_result
+                
+                results.append({
+                    'segment_type': segment_type,
+                    'segment_name': segment_name,
+                    'metric': metric_name,
+                    'n_samples': len(real_valid),
+                    'mean_real': real_valid.mean(),
+                    'mean_simulated': sim_valid.mean(),
+                    'mean_difference': mean_diff,
+                    'std_difference': std_diff,
+                    't_statistic': t_stat,
+                    'p_value': p_value,
+                    'significant_5pct': (p_value < 0.05) if not np.isnan(p_value) else False,
+                    'significant_1pct': (p_value < 0.01) if not np.isnan(p_value) else False,
+                    'ci_95_lower': ci_lower,
+                    'ci_95_upper': ci_upper
+                })
         except Exception:
             # Skip test if calculation fails
-            pass
-    
-    # Test 2: Fill Ratio
-    real_fill = data['real_fill_ratio'].values
-    sim_fill = data['simulated_fill_ratio'].values
-    
-    # Filter out NaN/Inf values
-    valid_mask = np.isfinite(real_fill) & np.isfinite(sim_fill)
-    real_fill_valid = real_fill[valid_mask]
-    sim_fill_valid = sim_fill[valid_mask]
-    
-    if len(real_fill_valid) >= 2 and real_fill_valid.std() > 0 and sim_fill_valid.std() > 0:
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=RuntimeWarning)
-                t_stat, p_value = stats.ttest_rel(sim_fill_valid, real_fill_valid)
-                mean_diff = (sim_fill_valid - real_fill_valid).mean()
-                std_diff = (sim_fill_valid - real_fill_valid).std()
-                ci_lower, ci_upper = stats.t.interval(
-                    0.95, 
-                    len(real_fill_valid) - 1,
-                    loc=mean_diff,
-                    scale=stats.sem(sim_fill_valid - real_fill_valid)
-                )
-            
-            results.append({
-                'segment_type': segment_type,
-                'segment_name': segment_name,
-                'metric': 'Fill Ratio',
-                'n_samples': len(real_fill_valid),
-                'mean_real': real_fill_valid.mean(),
-                'mean_simulated': sim_fill_valid.mean(),
-                'mean_difference': mean_diff,
-                'std_difference': std_diff,
-                't_statistic': t_stat,
-                'p_value': p_value,
-                'significant_5pct': p_value < 0.05,
-                'significant_1pct': p_value < 0.01,
-                'ci_95_lower': ci_lower,
-                'ci_95_upper': ci_upper
-            })
-        except Exception:
-            pass
-    
-    # Test 3: Number of Matches
-    real_num = data['real_num_matches'].values
-    sim_num = data['simulated_num_matches'].values
-    
-    # Filter out NaN/Inf values
-    valid_mask = np.isfinite(real_num) & np.isfinite(sim_num)
-    real_num_valid = real_num[valid_mask]
-    sim_num_valid = sim_num[valid_mask]
-    
-    if len(real_num_valid) >= 2 and real_num_valid.std() > 0 and sim_num_valid.std() > 0:
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=RuntimeWarning)
-                t_stat, p_value = stats.ttest_rel(sim_num_valid, real_num_valid)
-                mean_diff = (sim_num_valid - real_num_valid).mean()
-                std_diff = (sim_num_valid - real_num_valid).std()
-                ci_lower, ci_upper = stats.t.interval(
-                    0.95, 
-                    len(real_num_valid) - 1,
-                    loc=mean_diff,
-                    scale=stats.sem(sim_num_valid - real_num_valid)
-                )
-            
-            results.append({
-                'segment_type': segment_type,
-                'segment_name': segment_name,
-                'metric': 'Number of Matches',
-                'n_samples': len(real_num_valid),
-                'mean_real': real_num_valid.mean(),
-                'mean_simulated': sim_num_valid.mean(),
-                'mean_difference': mean_diff,
-                'std_difference': std_diff,
-                't_statistic': t_stat,
-                'p_value': p_value,
-                'significant_5pct': p_value < 0.05,
-                'significant_1pct': p_value < 0.01,
-                'ci_95_lower': ci_lower,
-                'ci_95_upper': ci_upper
-            })
-        except Exception:
             pass
     
     return results
@@ -993,15 +964,15 @@ def calculate_real_trade_metrics(trades_by_partition, orders_by_partition, proce
         
         # Get sweep order IDs
         sweep_orderids = orders_before[
-            orders_before['exchangeordertype'] == SWEEP_ORDER_TYPE
-        ]['orderid'].unique()
+            orders_before[col.orders.order_type] == SWEEP_ORDER_TYPE
+        ][col.common.orderid].unique()
         
         if len(sweep_orderids) == 0:
             print(f"  {partition_key}: No sweep orders found")
             continue
         
         # Filter trades to only those involving sweep orders
-        sweep_trades = trades_df[trades_df['orderid'].isin(sweep_orderids)].copy()
+        sweep_trades = trades_df[trades_df[col.common.orderid].isin(sweep_orderids)].copy()
         
         if len(sweep_trades) == 0:
             print(f"  {partition_key}: No trades for sweep orders")
@@ -1038,15 +1009,15 @@ def _calculate_per_trade_metrics(trades_df, orders_df):
     trades_with_order = trades_with_order.sort_values(['orderid', 'tradetime'])
     
     # Calculate cumulative fill per order (use trade quantity)
-    trades_with_order['cumulative_fill'] = trades_with_order.groupby('orderid')['quantity'].cumsum()
+    trades_with_order['cumulative_fill'] = trades_with_order.groupby('orderid')[col.common.quantity].cumsum()
     
     # Identify first and last fills
-    trades_with_order['is_first_fill'] = ~trades_with_order.duplicated(subset=['orderid'], keep='first')
-    trades_with_order['is_last_fill'] = ~trades_with_order.duplicated(subset=['orderid'], keep='last')
+    trades_with_order['is_first_fill'] = ~trades_with_order.duplicated(subset=[col.common.orderid], keep='first')
+    trades_with_order['is_last_fill'] = ~trades_with_order.duplicated(subset=[col.common.orderid], keep='last')
     
     # Calculate price deviation from order price
     trades_with_order['price_vs_order_price'] = (
-        trades_with_order['tradeprice'] - trades_with_order['price']
+        trades_with_order['tradeprice'] - trades_with_order[col.common.price]
     )
     
     return trades_with_order

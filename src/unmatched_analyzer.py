@@ -5,11 +5,19 @@ Investigates liquidity availability, timing issues, and order characteristics.
 """
 
 import pandas as pd
+from column_schema import col
 import numpy as np
 from pathlib import Path
-from scipy import stats
 import json
 from datetime import datetime
+
+# Try to import scipy for backward compatibility
+try:
+    from scipy import stats as scipy_stats
+    SCIPY_AVAILABLE = True
+except ImportError:
+    scipy_stats = None
+    SCIPY_AVAILABLE = False
 
 import file_utils as fu
 
@@ -36,9 +44,9 @@ def load_all_centre_point_orders(partition_dir):
     df = fu.safe_read_csv(filepath, required=True, compression='gzip')
     
     # Filter to Centre Point orders only
-    df = df[df['exchangeordertype'] == 2048].copy()
+    df = df[df[col.orders.order_type] == 2048].copy()
     
-    print(f"  Loaded {len(df)} Centre Point orders ({df['order_id'].nunique()} unique)")
+    print(f"  Loaded {len(df)} Centre Point orders ({df[col.common.order_id].nunique()} unique)")
     return df
 
 
@@ -58,7 +66,7 @@ def build_order_index(all_orders_df):
     index_by_side = {}
     
     for side in [1, 2]:
-        side_orders = all_orders_df[all_orders_df['side'] == side].copy()
+        side_orders = all_orders_df[all_orders_df[col.common.side] == side].copy()
         # Sort by timestamp for binary search
         side_orders = side_orders.sort_values('timestamp').reset_index(drop=True)
         index_by_side[side] = side_orders
@@ -82,9 +90,9 @@ def analyze_liquidity_at_arrival(unmatched_order, order_index):
     - price_overlap: Whether limit prices are compatible
     - potential_fill_qty_at_arrival: Max quantity that could match immediately
     """
-    orderid = unmatched_order['orderid']
+    orderid = unmatched_order[col.common.orderid]
     arrival_time = int(unmatched_order['order_timestamp'])
-    side = int(unmatched_order['side'])
+    side = int(unmatched_order[col.common.side])
     limit_price = unmatched_order['arrival_bid'] if side == 1 else unmatched_order['arrival_offer']
     order_qty = unmatched_order['order_quantity']
     
@@ -97,7 +105,7 @@ def analyze_liquidity_at_arrival(unmatched_order, order_index):
     
     # Binary search to find index where timestamp <= arrival_time
     # searchsorted with side='right' gives us the rightmost position
-    idx = contra_orders_all['timestamp'].searchsorted(arrival_time, side='right')
+    idx = contra_orders_all[col.common.timestamp].searchsorted(arrival_time, side='right')
     
     # Get all orders up to and including arrival_time
     contra_orders = contra_orders_all.iloc[:idx].copy() if idx > 0 else pd.DataFrame()
@@ -108,7 +116,7 @@ def analyze_liquidity_at_arrival(unmatched_order, order_index):
         contra_orders = contra_orders.drop_duplicates(subset='order_id', keep='last')
     
     # Calculate metrics
-    contra_depth = contra_orders['quantity'].sum() if len(contra_orders) > 0 else 0
+    contra_depth = contra_orders[col.common.quantity].sum() if len(contra_orders) > 0 else 0
     contra_count = len(contra_orders)
     
     # Best contra price
@@ -116,9 +124,9 @@ def analyze_liquidity_at_arrival(unmatched_order, order_index):
         # For buys (side=1), we want the lowest sell price
         # For sells (side=2), we want the highest buy price
         if contra_side == 2:  # Looking for sellers
-            best_contra_price = contra_orders['price'].min()
+            best_contra_price = contra_orders[col.common.price].min()
         else:  # Looking for buyers
-            best_contra_price = contra_orders['price'].max()
+            best_contra_price = contra_orders[col.common.price].max()
     else:
         best_contra_price = None
     
@@ -132,15 +140,15 @@ def analyze_liquidity_at_arrival(unmatched_order, order_index):
             price_overlap = limit_price >= best_contra_price
             if price_overlap:
                 # Calculate potential fill quantity
-                compatible_orders = contra_orders[contra_orders['price'] <= limit_price]
-                potential_fill_qty = min(compatible_orders['quantity'].sum(), order_qty)
+                compatible_orders = contra_orders[contra_orders[col.common.price] <= limit_price]
+                potential_fill_qty = min(compatible_orders[col.common.quantity].sum(), order_qty)
         else:  # Sell order
             # Can match if sell limit <= buy price
             price_overlap = limit_price <= best_contra_price
             if price_overlap:
                 # Calculate potential fill quantity
-                compatible_orders = contra_orders[contra_orders['price'] >= limit_price]
-                potential_fill_qty = min(compatible_orders['quantity'].sum(), order_qty)
+                compatible_orders = contra_orders[contra_orders[col.common.price] >= limit_price]
+                potential_fill_qty = min(compatible_orders[col.common.quantity].sum(), order_qty)
     
     return {
         'orderid': orderid,
@@ -167,10 +175,10 @@ def analyze_liquidity_evolution(unmatched_order, order_index):
     - earliest_possible_dark_match_time: When could order have matched
     - dark_vs_lit_timing_advantage: Time difference
     """
-    orderid = unmatched_order['orderid']
+    orderid = unmatched_order[col.common.orderid]
     arrival_time = int(unmatched_order['order_timestamp'])
     first_lit_fill_time = int(unmatched_order['real_first_trade_time'])
-    side = int(unmatched_order['side'])
+    side = int(unmatched_order[col.common.side])
     limit_price = unmatched_order['arrival_bid'] if side == 1 else unmatched_order['arrival_offer']
     order_qty = unmatched_order['order_quantity']
     
@@ -185,8 +193,8 @@ def analyze_liquidity_evolution(unmatched_order, order_index):
     contra_orders_all = order_index[contra_side]
     
     # Binary search to find index range
-    start_idx = contra_orders_all['timestamp'].searchsorted(arrival_time, side='right')
-    end_idx = contra_orders_all['timestamp'].searchsorted(first_lit_fill_time, side='right')
+    start_idx = contra_orders_all[col.common.timestamp].searchsorted(arrival_time, side='right')
+    end_idx = contra_orders_all[col.common.timestamp].searchsorted(first_lit_fill_time, side='right')
     
     # Get orders in time range
     contra_arrivals = contra_orders_all.iloc[start_idx:end_idx].copy() if end_idx > start_idx else pd.DataFrame()
@@ -197,7 +205,7 @@ def analyze_liquidity_evolution(unmatched_order, order_index):
         contra_arrivals = contra_arrivals.drop_duplicates(subset='order_id', keep='first')
     
     contra_arrival_during_lifetime = len(contra_arrivals) > 0
-    contra_qty_arrived_during_lifetime = contra_arrivals['quantity'].sum() if len(contra_arrivals) > 0 else 0
+    contra_qty_arrived_during_lifetime = contra_arrivals[col.common.quantity].sum() if len(contra_arrivals) > 0 else 0
     
     # Find earliest possible dark match time
     earliest_possible_dark_match_time = None
@@ -206,8 +214,8 @@ def analyze_liquidity_evolution(unmatched_order, order_index):
     if len(contra_arrivals) > 0:
         # Check each contra arrival for price compatibility
         for _, contra_order in contra_arrivals.iterrows():
-            contra_price = contra_order['price']
-            contra_time = contra_order['timestamp']
+            contra_price = contra_order[col.common.price]
+            contra_time = contra_order[col.common.timestamp]
             
             # Check price compatibility
             can_match = False
@@ -244,7 +252,7 @@ def classify_root_cause(liquidity_at_arrival, liquidity_evolution):
     4. INSUFFICIENT_QUANTITY: Some liquidity but not enough
     5. INSTANT_LIT_EXECUTION: Order filled in lit market instantly (< 0.1s)
     """
-    orderid = liquidity_at_arrival['orderid']
+    orderid = liquidity_at_arrival[col.common.orderid]
     
     # Check metrics
     contra_at_arrival = liquidity_at_arrival['contra_depth_at_arrival'] > 0

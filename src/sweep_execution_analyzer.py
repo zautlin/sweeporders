@@ -5,11 +5,20 @@ Generates comprehensive statistics and outputs to stats/matched/ and stats/unmat
 """
 
 import pandas as pd
+from column_schema import col
 import numpy as np
 from pathlib import Path
-from scipy import stats
+from statistics_layer import StatisticsEngine
 import json
 from datetime import datetime
+
+# Try to import scipy for backward compatibility
+try:
+    from scipy import stats as scipy_stats
+    SCIPY_AVAILABLE = True
+except ImportError:
+    scipy_stats = None
+    SCIPY_AVAILABLE = False
 
 import file_utils as fu
 
@@ -24,7 +33,7 @@ def load_sweep_order_universe(partition_dir):
         print(f"  Loaded 0 sweep orders with executions")
         return set(), pd.DataFrame()
     
-    sweep_orderids = set(df['orderid'].unique())
+    sweep_orderids = set(df[col.common.orderid].unique())
     print(f"  Loaded {len(sweep_orderids)} sweep orders with executions")
     return sweep_orderids, df
 
@@ -39,7 +48,7 @@ def load_order_metadata(partition_dir, sweep_orderids):
     df = fu.safe_read_csv(filepath, required=True, compression='gzip')
     
     # Filter to sweep orders only
-    df = df[df['order_id'].isin(sweep_orderids) & (df['exchangeordertype'] == 2048)].copy()
+    df = df[df[col.common.order_id].isin(sweep_orderids) & (df[col.orders.order_type] == 2048)].copy()
     
     # Rename and select columns
     df = df.rename(columns={'order_id': 'orderid'})
@@ -75,7 +84,7 @@ def load_real_trades(partition_dir, sweep_orderids):
     df = fu.safe_read_csv(filepath, required=True, compression='gzip')
     
     # Filter to sweep orders
-    df = df[df['orderid'].isin(sweep_orderids)].copy()
+    df = df[df[col.common.orderid].isin(sweep_orderids)].copy()
     
     # Calculate trade midpoint
     df['trade_midpoint'] = (df['nationalbidpricesnapshot'] + df['nationalofferpricesnapshot']) / 2
@@ -107,7 +116,7 @@ def load_simulated_trades(partition_dir, sweep_orderids):
     
     # CRITICAL: Filter to sweep orders AND passive side only (passiveaggressive = 1)
     # The simulation creates paired trades: passive=sweep order, aggressive=counterparty
-    df = df[(df['orderid'].isin(sweep_orderids)) & (df['passiveaggressive'] == 1)].copy()
+    df = df[(df[col.common.orderid].isin(sweep_orderids)) & (df['passiveaggressive'] == 1)].copy()
     
     # Calculate trade midpoint
     df['trade_midpoint'] = (df['nationalbidpricesnapshot'] + df['nationalofferpricesnapshot']) / 2
@@ -128,8 +137,8 @@ def load_simulated_trades(partition_dir, sweep_orderids):
 
 def identify_order_sets(sweep_orderids, real_trades_df, sim_trades_df):
     """Identify Set A (paired) and Set B (unmatched) orders."""
-    real_orderids = set(real_trades_df['orderid'].unique())
-    sim_orderids = set(sim_trades_df['orderid'].unique())
+    real_orderids = set(real_trades_df[col.common.orderid].unique())
+    sim_orderids = set(sim_trades_df[col.common.orderid].unique())
     
     # Set A: Orders with BOTH real and simulated
     set_a_orderids = real_orderids & sim_orderids
@@ -155,7 +164,7 @@ def identify_order_sets(sweep_orderids, real_trades_df, sim_trades_df):
 
 def calculate_execution_metrics(trades_df, orderid, arrival_context):
     """Calculate all execution metrics for a single order."""
-    order_trades = trades_df[trades_df['orderid'] == orderid].copy()
+    order_trades = trades_df[trades_df[col.common.orderid] == orderid].copy()
     
     if len(order_trades) == 0:
         return None
@@ -165,17 +174,17 @@ def calculate_execution_metrics(trades_df, orderid, arrival_context):
     arrival_mid = float(arrival_context['arrival_midpoint'])
     arrival_spread = float(arrival_context['arrival_spread'])
     order_qty = float(arrival_context['order_quantity'])
-    side = int(arrival_context['side'])
+    side = int(arrival_context[col.common.side])
     side_multiplier = 1 if side == 1 else -1  # Buy=+1, Sell=-1
     
     # === GROUP A: FILL METRICS ===
-    qty_filled = order_trades['quantity'].sum()
+    qty_filled = order_trades[col.common.quantity].sum()
     fill_rate_pct = (qty_filled / order_qty) * 100 if order_qty > 0 else 0
     num_fills = len(order_trades)
     avg_fill_size = qty_filled / num_fills if num_fills > 0 else 0
     
     # === GROUP B: PRICE/COST METRICS ===
-    vwap = (order_trades['tradeprice'] * order_trades['quantity']).sum() / qty_filled if qty_filled > 0 else 0
+    vwap = (order_trades['tradeprice'] * order_trades[col.common.quantity]).sum() / qty_filled if qty_filled > 0 else 0
     
     # Execution cost - arrival based
     exec_cost_arrival_bps = side_multiplier * ((vwap - arrival_mid) / arrival_mid) * 10000 if arrival_mid > 0 else 0
@@ -186,7 +195,7 @@ def calculate_execution_metrics(trades_df, orderid, arrival_context):
         trade_mid = trade['trade_midpoint']
         if trade_mid > 0:
             trade_cost = side_multiplier * ((trade['tradeprice'] - trade_mid) / trade_mid) * 10000
-            weighted_cost = trade_cost * trade['quantity']
+            weighted_cost = trade_cost * trade[col.common.quantity]
             weighted_costs.append(weighted_cost)
     exec_cost_vw_bps = sum(weighted_costs) / qty_filled if qty_filled > 0 else 0
     
@@ -216,7 +225,7 @@ def calculate_execution_metrics(trades_df, orderid, arrival_context):
         time_from_arrival = (trade['tradetime'] - arrival_time) / 1e9
         # Ensure non-negative (handle timestamp issues)
         time_from_arrival = max(0.0, time_from_arrival)
-        weighted_time += trade['quantity'] * time_from_arrival
+        weighted_time += trade[col.common.quantity] * time_from_arrival
     
     vw_exec_time_sec = weighted_time / qty_filled if qty_filled > 0 else 0.0
     
@@ -298,7 +307,7 @@ def merge_and_calculate_differences(set_a_orderids, real_metrics, sim_metrics, o
         row = {
             'orderid': orderid,
             'order_timestamp': arrival_ctx['arrival_time'],
-            'side': arrival_ctx['side'],
+            'side': arrival_ctx[col.common.side],
             'order_quantity': arrival_ctx['order_quantity'],
             'arrival_bid': arrival_ctx['arrival_bid'],
             'arrival_offer': arrival_ctx['arrival_offer'],
@@ -335,7 +344,7 @@ def create_unmatched_dataframe(set_b_orderids, real_metrics, orders_df):
         row = {
             'orderid': orderid,
             'order_timestamp': arrival_ctx['arrival_time'],
-            'side': arrival_ctx['side'],
+            'side': arrival_ctx[col.common.side],
             'order_quantity': arrival_ctx['order_quantity'],
             'arrival_bid': arrival_ctx['arrival_bid'],
             'arrival_offer': arrival_ctx['arrival_offer'],
@@ -452,8 +461,21 @@ def calculate_summary_statistics(comparison_df):
     return summary_df
 
 
-def perform_statistical_tests(comparison_df):
-    """Perform statistical tests on paired data."""
+def perform_statistical_tests(comparison_df, stats_engine=None):
+    """
+    Perform statistical tests on paired data.
+    
+    Args:
+        comparison_df: DataFrame with paired real/sim data
+        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
+    
+    Returns:
+        DataFrame with statistical test results
+    """
+    # Create default stats engine if not provided
+    if stats_engine is None:
+        stats_engine = StatisticsEngine(enable_stats=True)
+    
     metrics_to_analyze = [
         'qty_filled',
         'fill_rate_pct',
@@ -486,46 +508,54 @@ def perform_statistical_tests(comparison_df):
         
         n_pairs = len(real_values)
         
-        # Paired t-test
-        if n_pairs >= 2:
-            t_stat, t_pvalue = stats.ttest_rel(real_values, sim_values)
-        else:
-            t_stat, t_pvalue = np.nan, np.nan
-        
-        # Wilcoxon signed-rank test
-        if n_pairs >= 10:
-            try:
-                w_stat, w_pvalue = stats.wilcoxon(real_values, sim_values)
-            except:
-                w_stat, w_pvalue = np.nan, np.nan
-        else:
-            w_stat, w_pvalue = np.nan, np.nan
-        
-        # Correlation
-        if n_pairs >= 3:
-            pearson_r, pearson_p = stats.pearsonr(real_values, sim_values)
-            spearman_r, spearman_p = stats.spearmanr(real_values, sim_values)
-        else:
-            pearson_r, pearson_p = np.nan, np.nan
-            spearman_r, spearman_p = np.nan, np.nan
-        
-        # Effect size (Cohen's d)
+        # Effect size (Cohen's d) - always calculate (descriptive)
         if n_pairs >= 2 and differences.std() > 0:
             cohens_d = differences.mean() / differences.std()
         else:
             cohens_d = np.nan
         
-        # Confidence interval
-        if n_pairs >= 2 and differences.std() > 0:
-            ci = stats.t.interval(
-                confidence=0.95,
-                df=n_pairs-1,
-                loc=differences.mean(),
-                scale=differences.std() / np.sqrt(n_pairs)
-            )
-            ci_lower, ci_upper = ci
-        else:
-            ci_lower, ci_upper = np.nan, np.nan
+        # Initialize variables
+        t_stat = t_pvalue = np.nan
+        w_stat = w_pvalue = np.nan
+        pearson_r = pearson_p = np.nan
+        spearman_r = spearman_p = np.nan
+        ci_lower = ci_upper = np.nan
+        
+        if stats_engine.is_enabled():
+            # Paired t-test
+            if n_pairs >= 2:
+                ttest_result = stats_engine.ttest_rel(real_values, sim_values)
+                if ttest_result:
+                    t_stat = ttest_result.statistic
+                    t_pvalue = ttest_result.pvalue
+            
+            # Wilcoxon signed-rank test
+            if n_pairs >= 10:
+                try:
+                    wilcoxon_result = stats_engine.wilcoxon(real_values, sim_values)
+                    if wilcoxon_result:
+                        w_stat = wilcoxon_result.statistic
+                        w_pvalue = wilcoxon_result.pvalue
+                except:
+                    pass  # Wilcoxon can fail for various reasons
+            
+            # Correlation
+            if n_pairs >= 3:
+                pearson_result = stats_engine.pearsonr(real_values, sim_values)
+                if pearson_result:
+                    pearson_r = pearson_result.statistic
+                    pearson_p = pearson_result.pvalue
+                
+                spearman_result = stats_engine.spearmanr(real_values, sim_values)
+                if spearman_result:
+                    spearman_r = spearman_result.statistic
+                    spearman_p = spearman_result.pvalue
+            
+            # Confidence interval
+            if n_pairs >= 2:
+                ci_result = stats_engine.confidence_interval(differences, confidence=0.95)
+                if ci_result:
+                    ci_lower, ci_upper = ci_result
         
         # Interpretation
         if not np.isnan(t_pvalue):
@@ -548,7 +578,7 @@ def perform_statistical_tests(comparison_df):
             interpretation = f"{direction} (p{significance})"
         else:
             significance = "N/A"
-            interpretation = "Insufficient data"
+            interpretation = "Insufficient data" if n_pairs > 0 else "Stats disabled"
         
         test_result = {
             'metric_name': metric,
@@ -807,10 +837,26 @@ def write_output_files(comparison_df, summary_df, tests_df, quantiles_df, unmatc
 
 # ===== MAIN ANALYSIS FUNCTION =====
 
-def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys):
-    """Main function to analyze sweep order execution."""
+def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys, stats_engine=None):
+    """
+    Main function to analyze sweep order execution.
+    
+    Args:
+        processed_dir: Path to processed data directory
+        outputs_dir: Path to outputs directory
+        partition_keys: List of partition keys to process
+        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
+    """
+    # Create default stats engine if not provided
+    if stats_engine is None:
+        stats_engine = StatisticsEngine(enable_stats=True)
+    
     print("\n" + "="*80)
     print("[13/13] SWEEP ORDER EXECUTION ANALYSIS")
+    print("="*80)
+    print(f"Statistics: {'ENABLED' if stats_engine.is_enabled() else 'DISABLED'}")
+    if stats_engine.is_enabled():
+        print(f"Statistics Tier: {stats_engine.get_tier_name()}")
     print("="*80)
     
     for partition_key in partition_keys:
@@ -862,7 +908,7 @@ def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys):
         # Phase 4: Statistical analysis
         print(f"\nPhase 4: Performing statistical analysis...")
         summary_df = calculate_summary_statistics(comparison_df)
-        tests_df = perform_statistical_tests(comparison_df)
+        tests_df = perform_statistical_tests(comparison_df, stats_engine)
         quantiles_df = calculate_quantile_comparison(comparison_df)
         
         # Phase 5: Output generation
