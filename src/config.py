@@ -39,6 +39,36 @@ MAX_PARALLEL_WORKERS = NUM_WORKERS  # Number of parallel workers for partition p
 TICKER = 'drr'           # Default ticker symbol
 DATE = '20240905'        # Default date in YYYYMMDD format
 
+# Legacy hardcoded tickers (for backward compatibility)
+# DEPRECATED: Use security auto-discovery instead
+LEGACY_TICKERS = ['drr', 'bhp', 'cba', 'wtc']
+
+# ============================================================================
+# SECURITY AUTO-DISCOVERY CONFIGURATION
+# ============================================================================
+
+# Enable automatic discovery of securities from raw files
+AUTO_DISCOVERY_ENABLED = True
+
+# Minimum thresholds for valid securities
+MIN_ORDERS_THRESHOLD = 100  # Ignore securities with < 100 orders
+MIN_TRADES_THRESHOLD = 10   # Ignore securities with < 10 trades
+
+# ============================================================================
+# STATISTICAL TESTING CONFIGURATION
+# ============================================================================
+
+# Enable statistical tests (t-tests, p-values, confidence intervals)
+# Default: False (only descriptive statistics)
+ENABLE_STATISTICAL_TESTS = False
+
+# Force use of simple statistics even if scipy is available
+# Useful for testing approximate methods
+FORCE_SIMPLE_STATS = False
+
+# Show warnings when using approximate statistics
+WARN_APPROXIMATE_STATS = True
+
 
 # ============================================================================
 # INPUT FILES
@@ -99,6 +129,7 @@ RAW_FOLDERS = {
 
 PROCESSED_DIR = str(PROJECT_ROOT / 'data/processed')  # Intermediate files: raw data, LOB states
 OUTPUTS_DIR = str(PROJECT_ROOT / 'data/outputs')      # Final outputs: simulation results, comparisons
+AGGREGATED_DIR = str(PROJECT_ROOT / 'data/aggregated')  # Aggregated cross-security results
 
 
 # ============================================================================
@@ -121,6 +152,10 @@ ORDER_SIDE = {
 # ============================================================================
 
 COLUMN_MAPPING = {
+    # ========================================================================
+    # INPUT FILE COLUMNS (from raw CSV files)
+    # ========================================================================
+    
     # Orders file columns
     'orders': {
         'order_id': 'order_id',
@@ -128,6 +163,7 @@ COLUMN_MAPPING = {
         'sequence': 'sequence',
         'order_type': 'exchangeordertype',
         'security_code': 'security_code',
+        'securitycode': 'securitycode',  # Alternative name
         'side': 'side',
         'quantity': 'quantity',
         'price': 'price',
@@ -137,7 +173,9 @@ COLUMN_MAPPING = {
         'matched_quantity': 'totalmatchedquantity',
         'order_status': 'orderstatus',
         'change_reason': 'changereason',
+        'participant_id': 'participantid',
     },
+    
     # Trades file columns
     'trades': {
         'order_id': 'orderid',
@@ -145,26 +183,170 @@ COLUMN_MAPPING = {
         'trade_price': 'tradeprice',
         'quantity': 'quantity',
     },
+    
     # NBBO file columns
     'nbbo': {
         'timestamp': 'timestamp',
         'security_code': 'orderbookid',
         'bid': 'bidprice',
         'offer': 'offerprice',
+        'bid_quantity': 'bidquantity',
+        'offer_quantity': 'offerquantity',
     },
+    
     # Session file columns
     'session': {
         'timestamp': 'TradeDate',
         'security_code': 'OrderBookId',
     },
+    
     # Reference file columns
     'reference': {
         'timestamp': 'TradeDate',
         'security_code': 'Id',
     },
+    
     # Participants file columns
     'participants': {
         'timestamp': 'TradeDate',
+    },
+    
+    # ========================================================================
+    # PROCESSED/CALCULATED COLUMNS (created during pipeline execution)
+    # ========================================================================
+    
+    # Sweep order analysis columns
+    'sweep': {
+        'sweep_orderid': 'sweep_orderid',
+        'orderid': 'orderid',
+        'order_quantity': 'order_quantity',
+        'orderbookid': 'orderbookid',
+        'ticker': 'ticker',
+        'date': 'date',
+        'timestamp': 'timestamp',
+        'side': 'side',
+        'price': 'price',
+        'arrival_bid': 'arrival_bid',
+        'arrival_offer': 'arrival_offer',
+    },
+    
+    # Metrics columns (calculated execution metrics)
+    'metrics': {
+        'qty_filled': 'qty_filled',
+        'fill_rate_pct': 'fill_rate_pct',
+        'fill_rate': 'fill_rate',
+        'num_fills': 'num_fills',
+        'avg_fill_size': 'avg_fill_size',
+        'vwap': 'vwap',
+        'exec_cost_arrival_bps': 'exec_cost_arrival_bps',
+        'exec_cost_vw_bps': 'exec_cost_vw_bps',
+        'effective_spread_pct': 'effective_spread_pct',
+        'exec_time_sec': 'exec_time_sec',
+        'time_to_first_fill_sec': 'time_to_first_fill_sec',
+        'vw_exec_time_sec': 'vw_exec_time_sec',
+        'first_execution': 'first_execution',
+        'last_execution': 'last_execution',
+    },
+    
+    # Simulation columns (dark pool simulation results)
+    'simulation': {
+        'simulated_qty_filled': 'simulated_qty_filled',
+        'simulated_fill_ratio': 'simulated_fill_ratio',
+        'simulated_fill_status': 'simulated_fill_status',
+        'simulated_matched_quantity': 'simulated_matched_quantity',
+        'simulated_num_fills': 'simulated_num_fills',
+        'simulated_vwap': 'simulated_vwap',
+        'simulated_exec_cost': 'simulated_exec_cost',
+        'match_status': 'match_status',
+        'match_details': 'match_details',
+    },
+    
+    # Comparison columns (real vs simulated)
+    'comparison': {
+        'real_matched_quantity': 'real_matched_quantity',
+        'simulated_matched_quantity': 'simulated_matched_quantity',
+        'matched_quantity_diff': 'matched_quantity_diff',
+        'qty_filled_diff': 'qty_filled_diff',
+        'fill_rate_diff': 'fill_rate_diff',
+        'vwap_diff': 'vwap_diff',
+        'exec_cost_diff': 'exec_cost_diff',
+        'exec_time_diff': 'exec_time_diff',
+        'exec_cost_arrival_diff_bps': 'exec_cost_arrival_diff_bps',
+        'exec_cost_vw_diff_bps': 'exec_cost_vw_diff_bps',
+        'exec_time_diff_sec': 'exec_time_diff_sec',
+        'better_execution': 'better_execution',
+        'price_error_pct': 'price_error_pct',
+    },
+    
+    # Statistical analysis columns
+    'stats': {
+        't_statistic': 't_statistic',
+        'p_value': 'p_value',
+        'mean_diff': 'mean_diff',
+        'effect_size': 'effect_size',
+        'cohens_d': 'cohens_d',
+        'confidence_interval_lower': 'ci_95_lower',
+        'confidence_interval_upper': 'ci_95_upper',
+        'significant': 'significant',
+        'significance': 'significance',
+        'f_statistic': 'f_statistic',
+        'pearson_correlation': 'pearson_correlation',
+        'spearman_correlation': 'spearman_correlation',
+    },
+    
+    # Volume analysis columns
+    'volume': {
+        'volume_bucket': 'volume_bucket',
+        'volume_bucket_label': 'volume_bucket_label',
+        'n_orders': 'n_orders',
+        'min_quantity': 'min_quantity',
+        'max_quantity': 'max_quantity',
+        'mean_quantity': 'mean_quantity',
+        'mean_exec_cost_diff_bps': 'mean_exec_cost_diff_bps',
+        'mean_exec_time_diff_sec': 'mean_exec_time_diff_sec',
+        'dark_pool_better_pct': 'dark_pool_better_pct',
+        'weighted_exec_cost_diff_bps': 'weighted_exec_cost_diff_bps',
+        'weighted_exec_time_diff_sec': 'weighted_exec_time_diff_sec',
+    },
+    
+    # Aggregated analysis columns (cross-security)
+    'aggregated': {
+        'ticker': 'ticker',
+        'date': 'date',
+        'orderbookid': 'orderbookid',
+        'security_code': 'security_code',
+        'metric': 'metric',
+        'metric_key': 'metric_key',
+        'unit': 'unit',
+        'n_orders': 'n_orders',
+        'mean': 'mean',
+        'median': 'median',
+        'std': 'std',
+        'count': 'count',
+        'better_count': 'better_count',
+        'better_pct': 'better_pct',
+    },
+    
+    # Unmatched analysis columns
+    'unmatched': {
+        'root_cause': 'root_cause',
+        'contra_depth': 'contra_depth',
+        'contra_orders_count': 'contra_orders_count',
+        'potential_fill_qty': 'potential_fill_qty',
+        'price_overlap': 'price_overlap',
+    },
+    
+    # Common identifiers (used across multiple contexts)
+    'common': {
+        'orderid': 'orderid',
+        'order_id': 'order_id',
+        'ticker': 'ticker',
+        'date': 'date',
+        'orderbookid': 'orderbookid',
+        'timestamp': 'timestamp',
+        'side': 'side',
+        'quantity': 'quantity',
+        'price': 'price',
     },
 }
 
@@ -374,6 +556,24 @@ def validate_columns(df: pd.DataFrame, required_columns: list, context: str = ""
 
 
 # ============================================================================
+# PIPELINE STAGES
+# ============================================================================
+
+# Stage names and descriptions
+STAGE_1_NAME = "Data Extraction & Preparation"
+STAGE_2_NAME = "Simulation & LOB States"
+STAGE_3_NAME = "Per-Security Analysis + Volume Analysis"
+STAGE_4_NAME = "Cross-Security Aggregation"
+
+# Volume analysis configuration
+VOLUME_BUCKET_METHOD = 'quartile'  # Options: 'quartile', 'quintile', 'custom'
+VOLUME_CUSTOM_THRESHOLDS = [100, 500, 1000, 5000]  # Used if method='custom'
+
+# DEPRECATED: Old aggregation directory (incorrect path)
+# Use AGGREGATED_DIR at top of file instead
+
+
+# ============================================================================
 # CONFIGURATION SUMMARY
 # ============================================================================
 
@@ -385,14 +585,22 @@ def print_config():
     print("\nDataset Configuration:")
     print(f"  Ticker:  {TICKER}")
     print(f"  Date:    {DATE}")
+    print("\nSecurity Discovery:")
+    print(f"  Auto-discovery enabled:  {AUTO_DISCOVERY_ENABLED}")
+    print(f"  Min orders threshold:    {MIN_ORDERS_THRESHOLD}")
+    print(f"  Min trades threshold:    {MIN_TRADES_THRESHOLD}")
+    print("\nStatistical Testing:")
+    print(f"  Tests enabled:           {ENABLE_STATISTICAL_TESTS}")
+    print(f"  Force simple stats:      {FORCE_SIMPLE_STATS}")
     print("\nSystem Configuration:")
     print(SYSTEM_CONFIG)
     print(f"\nInput Files:")
     for key, path in INPUT_FILES.items():
         print(f"  {key:15} -> {path}")
     print(f"\nDirectories:")
-    print(f"  Processed:  {PROCESSED_DIR}")
-    print(f"  Outputs:    {OUTPUTS_DIR}")
+    print(f"  Processed:   {PROCESSED_DIR}")
+    print(f"  Outputs:     {OUTPUTS_DIR}")
+    print(f"  Aggregated:  {AGGREGATED_DIR}")
     print(f"\nOrder Types:")
     print(f"  Centre Point: {CENTRE_POINT_ORDER_TYPES}")
     print(f"  Sweep:        {SWEEP_ORDER_TYPE}")
