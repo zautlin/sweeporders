@@ -9,6 +9,7 @@ import sweep_simulator as ss
 import metrics_generator as mg
 import file_utils as fu
 import data_utils as du
+from column_schema import col
 
 
 def process_single_partition(partition_key, processed_dir, outputs_dir, enable_trade_comparison=True):
@@ -98,7 +99,7 @@ def compare_trades_for_partition(partition_key, sim_results, processed_dir, outp
         return
     
     # Filter trades to only those involving sweep orders
-    sweep_trades = trades_df[trades_df['orderid'].isin(sweep_orderids)].copy()
+    sweep_trades = trades_df[trades_df[col.common.orderid].isin(sweep_orderids)].copy()
     
     if len(sweep_trades) == 0:
         return
