@@ -10,7 +10,7 @@ Focuses on two key metrics:
 """
 
 import pandas as pd
-from column_schema import col
+from config.column_schema import col
 import numpy as np
 from utils.statistics_layer import StatisticsEngine
 from pathlib import Path

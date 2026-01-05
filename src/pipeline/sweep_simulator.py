@@ -11,7 +11,7 @@ Handles all sweep order matching simulation logic:
 
 import pandas as pd
 import numpy as np
-from column_schema import col
+from config.column_schema import col
 
 # Constants
 SWEEP_ORDER_TYPE = 2048

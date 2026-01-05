@@ -15,8 +15,8 @@ Handles all data extraction, partitioning, and preprocessing operations:
 
 import pandas as pd
 from pathlib import Path
-from config import SWEEP_ORDER_TYPE
-from column_schema import col
+from config.config import SWEEP_ORDER_TYPE
+from config.column_schema import col
 
 
 def add_date_column(df, timestamp_col):

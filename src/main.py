@@ -9,7 +9,7 @@ import pipeline.partition_processor as pp
 import pipeline.metrics_generator as mg
 import analysis.sweep_execution_analyzer as sea
 import analysis.unmatched_analyzer as uma
-import config
+import config.config as config
 from discovery.security_discovery import SecurityDiscovery
 from utils.statistics_layer import StatisticsEngine, SCIPY_AVAILABLE
 

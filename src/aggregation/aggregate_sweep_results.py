@@ -13,7 +13,7 @@ Outputs:
 """
 
 import pandas as pd
-from column_schema import col
+from config.column_schema import col
 import os
 from pathlib import Path
 import logging

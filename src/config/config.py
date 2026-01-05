@@ -6,16 +6,16 @@ Includes column mappings, order types, file paths, and system configuration.
 """
 
 import pandas as pd
-import system_config as sc
 from pathlib import Path
+from . import system_config as sc
 
 
 # ============================================================================
 # PROJECT ROOT DIRECTORY
 # ============================================================================
 
-# Get the project root directory (parent of src/)
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+# Get the project root directory (parent of src/, grandparent of config/)
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 
 # ============================================================================

@@ -5,7 +5,7 @@ Generates comprehensive statistics and outputs to stats/matched/ and stats/unmat
 """
 
 import pandas as pd
-from column_schema import col
+from config.column_schema import col
 import numpy as np
 from pathlib import Path
 from utils.statistics_layer import StatisticsEngine

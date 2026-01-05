@@ -9,7 +9,7 @@ import pipeline.sweep_simulator as ss
 import pipeline.metrics_generator as mg
 import utils.file_utils as fu
 import utils.data_utils as du
-from column_schema import col
+from config.column_schema import col
 
 
 def process_single_partition(partition_key, processed_dir, outputs_dir, enable_trade_comparison=True):

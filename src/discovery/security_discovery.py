@@ -9,7 +9,7 @@ Date: 2026-01-05
 """
 
 import pandas as pd
-from column_schema import col
+from config.column_schema import col
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import logging
