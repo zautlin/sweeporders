@@ -379,8 +379,9 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
             recent_nbbo = nbbo_sorted[nbbo_sorted[col.common.timestamp] <= timestamp]
             if len(recent_nbbo) > 0:
                 latest_nbbo = recent_nbbo.iloc[-1]
-                bid_snapshot = latest_nbbo.get('bidprice', 0)
-                offer_snapshot = latest_nbbo.get('offerprice', 0)
+                # Use standardized column names (normalized in Stage 1)
+                bid_snapshot = latest_nbbo.get('bid', 0)
+                offer_snapshot = latest_nbbo.get('offer', 0)
         
         # Row 1: Aggressor (sweep order)
         rows.append({

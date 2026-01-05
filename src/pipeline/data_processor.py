@@ -414,7 +414,8 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
                 output_file = partition_dir / "nbbo.csv.gz"
                 partition_data_normalized.to_csv(output_file, index=False, compression='gzip')
                 
-                results['nbbo'][partition_key] = partition_data
+                # Store normalized data in memory (not raw data)
+                results['nbbo'][partition_key] = partition_data_normalized
                 size_kb = output_file.stat().st_size / 1024
                 print(f"    {partition_key}/nbbo.csv.gz: {len(partition_data):,} records ({size_kb:.1f} KB)")
             else:

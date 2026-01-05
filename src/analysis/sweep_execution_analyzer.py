@@ -47,8 +47,8 @@ def load_order_metadata(partition_dir, sweep_orderids):
     filepath = Path(partition_dir) / 'cp_orders_filtered.csv.gz'
     df = fu.safe_read_csv(filepath, required=True, compression='gzip')
     
-    # Filter to sweep orders only
-    df = df[df[col.common.order_id].isin(sweep_orderids) & (df[col.orders.order_type] == 2048)].copy()
+    # Filter to sweep orders only (use normalized column name)
+    df = df[df['orderid'].isin(sweep_orderids) & (df[col.orders.order_type] == 2048)].copy()
     
     # Rename and select columns
     df = df.rename(columns={'order_id': 'orderid'})

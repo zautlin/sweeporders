@@ -46,7 +46,8 @@ def load_all_centre_point_orders(partition_dir):
     # Filter to Centre Point orders only
     df = df[df[col.orders.order_type] == 2048].copy()
     
-    print(f"  Loaded {len(df)} Centre Point orders ({df[col.common.order_id].nunique()} unique)")
+    # Use normalized column name
+    print(f"  Loaded {len(df)} Centre Point orders ({df['orderid'].nunique()} unique)")
     return df
 
 
@@ -92,9 +93,9 @@ def analyze_liquidity_at_arrival(unmatched_order, order_index):
     contra_orders = contra_orders_all.iloc[:idx].copy() if idx > 0 else pd.DataFrame()
     
     if len(contra_orders) > 0:
-        # Get unique orderids and their latest state before arrival
+        # Get unique orderids and their latest state before arrival (use normalized column name)
         contra_orders = contra_orders.sort_values('timestamp')
-        contra_orders = contra_orders.drop_duplicates(subset='order_id', keep='last')
+        contra_orders = contra_orders.drop_duplicates(subset='orderid', keep='last')
     
     # Calculate metrics
     contra_depth = contra_orders[col.common.quantity].sum() if len(contra_orders) > 0 else 0
@@ -170,9 +171,9 @@ def analyze_liquidity_evolution(unmatched_order, order_index):
     contra_arrivals = contra_orders_all.iloc[start_idx:end_idx].copy() if end_idx > start_idx else pd.DataFrame()
     
     if len(contra_arrivals) > 0:
-        # Get first occurrence of each order (when it entered)
+        # Get first occurrence of each order (when it entered) - use normalized column name
         contra_arrivals = contra_arrivals.sort_values('timestamp')
-        contra_arrivals = contra_arrivals.drop_duplicates(subset='order_id', keep='first')
+        contra_arrivals = contra_arrivals.drop_duplicates(subset='orderid', keep='first')
     
     contra_arrival_during_lifetime = len(contra_arrivals) > 0
     contra_qty_arrived_during_lifetime = contra_arrivals[col.common.quantity].sum() if len(contra_arrivals) > 0 else 0
