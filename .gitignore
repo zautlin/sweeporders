@@ -42,6 +42,8 @@ htmlcov/
 data/processed/
 data/outputs/
 data/output/
+data/aggregated/
+data/exploration/
 
 # Logs
 *.log
@@ -54,6 +56,9 @@ logs/
 .backup/
 extract_partitioned_old.py
 extract_partitioned.py.backup
+
+# Archived code
+archive/old_multidataset_architecture/
 
 # Configuration
 .env
