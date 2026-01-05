@@ -488,9 +488,9 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
                    'nationalofferpricesnapshot', 'tradeprice', 'quantity', 
                    'side', 'participantid', 'passiveaggressive', 'row_num']
     
-    for col in int_columns:
-        if col in trades_df.columns:
-            trades_df[col] = trades_df[col].astype('int64')
+    for column_name in int_columns:
+        if column_name in trades_df.columns:
+            trades_df[column_name] = trades_df[column_name].astype('int64')
     
     return trades_df
 
