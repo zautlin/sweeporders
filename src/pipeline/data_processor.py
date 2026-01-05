@@ -84,8 +84,9 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     """Extract trades matching order_ids from partitions."""
     print(f"\n[2/11] Extracting matching trades from {input_file}...")
     
-    order_id_col_orders = col.orders.order_id
-    order_id_col_trades = col.trades.order_id
+    # NOTE: orders_by_partition now has normalized column names (orderid, not order_id)
+    order_id_col_orders = 'orderid'  # Normalized name
+    order_id_col_trades = col.trades.order_id  # Raw name from CSV
     trade_time_col = col.trades.trade_time
     
     # Collect all order IDs
@@ -150,10 +151,11 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
     """Aggregate trades by order_id per partition."""
     print(f"\n[3/11] Aggregating trades by order...")
     
-    order_id_col = col.trades.order_id
-    trade_time_col = col.trades.trade_time
-    trade_price_col = col.trades.trade_price
-    quantity_col = col.trades.quantity
+    # NOTE: trades_by_partition now has normalized column names
+    order_id_col = 'orderid'
+    trade_time_col = 'tradetime'
+    trade_price_col = 'tradeprice'
+    quantity_col = 'quantity'
     
     trades_agg_by_partition = {}
     
@@ -544,9 +546,10 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     """Extract before/after/final order states per partition."""
     print(f"\n[5/11] Extracting order states...")
     
-    order_id_col = col.orders.order_id
-    timestamp_col = col.orders.timestamp
-    sequence_col = col.orders.sequence
+    # NOTE: orders_by_partition now has normalized column names
+    order_id_col = 'orderid'
+    timestamp_col = 'timestamp'
+    sequence_col = 'sequence'
     
     order_states_by_partition = {}
     
@@ -631,16 +634,16 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
     """Extract first and last execution times for SWEEP ORDERS ONLY."""
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
     
-    # Get column names for ORDERS
-    order_id_col = col.orders.order_id
-    timestamp_col = col.orders.timestamp
-    order_type_col = col.orders.order_type
-    changereason_col = col.orders.change_reason
-    leavesqty_col = col.orders.leaves_quantity
+    # NOTE: Both orders_by_partition and trades_by_partition now have normalized column names
+    order_id_col = 'orderid'
+    timestamp_col = 'timestamp'
+    order_type_col = 'exchangeordertype'
+    changereason_col = 'changereason'
+    leavesqty_col = 'leavesquantity'
     
     # Get column names for TRADES
-    trade_orderid_col = col.trades.order_id
-    trade_time_col = col.trades.trade_time
+    trade_orderid_col = 'orderid'
+    trade_time_col = 'tradetime'
     
     execution_times_by_partition = {}
     
@@ -823,9 +826,10 @@ def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
     """Classify SWEEP ORDERS ONLY (type 2048) into groups based on REAL execution (f..."""
     print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     
-    order_type_col = col.orders.order_type
-    leaves_qty_col = col.orders.leaves_quantity
-    matched_qty_col = col.orders.matched_quantity
+    # NOTE: orders_after_matching.csv now has normalized column names
+    order_type_col = 'exchangeordertype'
+    leaves_qty_col = 'leavesquantity'
+    matched_qty_col = 'matched_quantity'
     
     groups_by_partition = {}
     
