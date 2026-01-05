@@ -60,10 +60,12 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
     partitions = {}
     for (date, security_code), group_df in orders.groupby(['date', 'security_code']):
         partition_key = f"{date}/{security_code}"
-        partitions[partition_key] = group_df
         
         # Normalize column names to standard before saving
         group_df_normalized = normalize_to_standard_names(group_df, 'orders')
+        
+        # Store normalized version for downstream use
+        partitions[partition_key] = group_df_normalized
         
         # Save to processed directory
         partition_dir = Path(processed_dir) / date / str(security_code)
@@ -123,10 +125,11 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
         partition_trades = all_trades[all_trades[order_id_col_trades].isin(order_ids)].copy()
         
         if len(partition_trades) > 0:
-            trades_by_partition[partition_key] = partition_trades
-            
             # Normalize column names to standard before saving
             partition_trades_normalized = normalize_to_standard_names(partition_trades, 'trades')
+            
+            # Store normalized version for downstream use
+            trades_by_partition[partition_key] = partition_trades_normalized
             
             # Save to processed directory
             date, security_code = partition_key.split('/')
