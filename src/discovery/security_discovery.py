@@ -35,6 +35,7 @@ class SecurityInfo:
     trade_file: Optional[str]
     
     def __str__(self):
+        """Return string representation of security info."""
         status = []
         if self.in_orders:
             status.append(f"Orders: {self.order_count:,}")
@@ -93,15 +94,7 @@ class SecurityDiscovery:
         return sorted(list(dates))
     
     def _extract_date_from_filename(self, filename: str) -> Optional[str]:
-        """
-        Extract date from filename like 'drr_20240905_orders.csv'
-        
-        Args:
-            filename: Filename to parse
-            
-        Returns:
-            Date string in YYYYMMDD format, or None if not found
-        """
+        """Extract date from filename like 'drr_20240905_orders.csv'"""
         # Pattern: {ticker}_{YYYYMMDD}_{orders|trades}.csv
         pattern = r'_(\d{8})_(?:orders|trades)\.csv$'
         match = re.search(pattern, filename)
@@ -110,15 +103,7 @@ class SecurityDiscovery:
         return None
     
     def _extract_ticker_from_filename(self, filename: str) -> Optional[str]:
-        """
-        Extract ticker from filename like 'drr_20240905_orders.csv'
-        
-        Args:
-            filename: Filename to parse
-            
-        Returns:
-            Ticker string, or None if not found
-        """
+        """Extract ticker from filename like 'drr_20240905_orders.csv'"""
         # Pattern: {ticker}_{YYYYMMDD}_{orders|trades}.csv
         pattern = r'^([a-zA-Z]+)_\d{8}_(?:orders|trades)\.csv$'
         match = re.match(pattern, filename)
@@ -171,15 +156,7 @@ class SecurityDiscovery:
             return {}
     
     def discover_securities_for_date(self, date: str) -> List[SecurityInfo]:
-        """
-        Discover all securities available for a specific date
-        
-        Args:
-            date: Date string in YYYYMMDD format
-            
-        Returns:
-            List of SecurityInfo objects
-        """
+        """Discover all securities available for a specific date"""
         securities = {}  # orderbookid -> SecurityInfo
         
         # Scan order files
@@ -239,15 +216,7 @@ class SecurityDiscovery:
         return list(securities.values())
     
     def get_valid_securities(self, date: str) -> List[SecurityInfo]:
-        """
-        Get all valid securities (meeting minimum thresholds) for a date
-        
-        Args:
-            date: Date string in YYYYMMDD format
-            
-        Returns:
-            List of SecurityInfo objects that meet thresholds
-        """
+        """Get all valid securities (meeting minimum thresholds) for a date"""
         all_securities = self.discover_securities_for_date(date)
         
         valid_securities = []
@@ -271,16 +240,7 @@ class SecurityDiscovery:
         return sorted(valid_securities, key=lambda x: x.orderbookid)
     
     def get_orderbookid_from_ticker(self, ticker: str, date: str) -> Optional[int]:
-        """
-        Get orderbookid for a given ticker and date
-        
-        Args:
-            ticker: Ticker symbol (e.g., 'drr', 'bhp')
-            date: Date string in YYYYMMDD format
-            
-        Returns:
-            Orderbookid, or None if not found
-        """
+        """Get orderbookid for a given ticker and date"""
         securities = self.discover_securities_for_date(date)
         
         ticker_lower = ticker.lower()

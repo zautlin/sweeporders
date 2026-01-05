@@ -134,16 +134,7 @@ def interpret_effect_size(d):
 
 
 def overall_paired_tests(df, stats_engine=None):
-    """
-    Perform paired t-tests on all orders combined (real vs simulated).
-    
-    Args:
-        df: Aggregated data DataFrame
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        DataFrame with test results for each metric
-    """
+    """Perform paired t-tests on all orders combined (real vs simulated)."""
     logger.info("\n" + "="*80)
     logger.info("OVERALL PAIRED T-TESTS (All Securities Combined)")
     logger.info("="*80)
@@ -242,16 +233,7 @@ def overall_paired_tests(df, stats_engine=None):
 
 
 def per_security_paired_tests(df, stats_engine=None):
-    """
-    Perform paired t-tests for each security individually.
-    
-    Args:
-        df: Aggregated data DataFrame
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        DataFrame with test results for each metric and security
-    """
+    """Perform paired t-tests for each security individually."""
     logger.info("\n" + "="*80)
     logger.info("PER-SECURITY PAIRED T-TESTS")
     logger.info("="*80)
@@ -341,18 +323,7 @@ def per_security_paired_tests(df, stats_engine=None):
 
 
 def cross_security_comparison_tests(df, stats_engine=None):
-    """
-    Perform cross-security comparison tests (ANOVA and pairwise t-tests).
-    
-    Tests whether the performance differences vary significantly across securities.
-    
-    Args:
-        df: Aggregated data DataFrame
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        Tuple of (anova_results_df, pairwise_results_df)
-    """
+    """Perform cross-security comparison tests (ANOVA and pairwise t-tests)."""
     logger.info("\n" + "="*80)
     logger.info("CROSS-SECURITY COMPARISON TESTS")
     logger.info("="*80)
@@ -467,23 +438,7 @@ def cross_security_comparison_tests(df, stats_engine=None):
 
 
 def cross_orderbookid_date_tests(df, stats_engine=None):
-    """
-    Focused t-tests on execution cost and execution time differences
-    across all orderbookids and dates (PRIMARY FOCUS).
-    
-    This function highlights the two key metrics:
-    1. Execution Cost difference (real - sim)
-    2. Execution Time difference (real - sim)
-    
-    Tests whether differences are significant when pooled across all securities/dates.
-    
-    Args:
-        df: Aggregated data DataFrame
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        DataFrame with focused test results
-    """
+    """Focused t-tests on execution cost and execution time differences"""
     logger.info("\n" + "="*80)
     logger.info("CROSS-ORDERBOOKID/DATE T-TESTS (PRIMARY FOCUS)")
     logger.info("="*80)
@@ -618,6 +573,7 @@ def generate_text_report(df, overall_df, per_security_df, anova_df, pairwise_df,
     report_lines = []
     
     def add_line(line=""):
+        """Append line to report."""
         report_lines.append(line)
     
     add_line("="*80)
@@ -791,13 +747,7 @@ def generate_text_report(df, overall_df, per_security_df, anova_df, pairwise_df,
 
 
 def main(stats_engine=None):
-    """
-    Main execution function.
-    
-    Args:
-        stats_engine: StatisticsEngine instance (optional). If not provided,
-                     will create one based on command-line arguments.
-    """
+    """Main execution function."""
     # If stats_engine not provided, parse command-line arguments
     if stats_engine is None:
         import argparse

@@ -46,27 +46,14 @@ class StatisticsEngine:
     """
     
     def __init__(self, enable_stats: bool = False, force_simple: bool = False):
-        """
-        Initialize statistics engine
-        
-        Args:
-            enable_stats: Whether to enable statistical tests (default: False)
-            force_simple: Force Tier 2 even if scipy available (for testing)
-        """
+        """Initialize statistics engine"""
         self.enable_stats = enable_stats
         self.force_simple = force_simple
         self.tier = self._determine_tier()
         self._warning_shown = False
         
     def _determine_tier(self) -> int:
-        """
-        Determine which tier to use
-        
-        Returns:
-            1: Descriptive only
-            2: Simple stats (approximate)
-            3: Full stats (scipy)
-        """
+        """Determine which tier to use"""
         if not self.enable_stats:
             return 1  # Descriptive only
         
@@ -104,18 +91,7 @@ class StatisticsEngine:
     
     def ttest_1samp(self, data: Union[pd.Series, np.ndarray], 
                     popmean: float = 0) -> Optional[StatResult]:
-        """
-        One-sample t-test
-        
-        Tests whether the mean of a sample differs from a population mean
-        
-        Args:
-            data: Sample data
-            popmean: Population mean to test against (default: 0)
-            
-        Returns:
-            StatResult with (statistic, pvalue) or None if stats disabled
-        """
+        """One-sample t-test comparing sample mean against population mean."""
         if self.tier == 1:
             return None
         
@@ -160,18 +136,7 @@ class StatisticsEngine:
     
     def ttest_rel(self, a: Union[pd.Series, np.ndarray], 
                   b: Union[pd.Series, np.ndarray]) -> Optional[StatResult]:
-        """
-        Paired t-test (related samples)
-        
-        Tests whether the mean difference between paired samples is zero
-        
-        Args:
-            a: First sample
-            b: Second sample
-            
-        Returns:
-            StatResult with (statistic, pvalue) or None if stats disabled
-        """
+        """Paired t-test comparing mean difference between related samples."""
         if self.tier == 1:
             return None
         
@@ -199,19 +164,7 @@ class StatisticsEngine:
     def ttest_ind(self, a: Union[pd.Series, np.ndarray], 
                   b: Union[pd.Series, np.ndarray],
                   equal_var: bool = True) -> Optional[StatResult]:
-        """
-        Independent t-test (unrelated samples)
-        
-        Tests whether the means of two independent samples differ
-        
-        Args:
-            a: First sample
-            b: Second sample
-            equal_var: Assume equal variances (default: True)
-            
-        Returns:
-            StatResult with (statistic, pvalue) or None if stats disabled
-        """
+        """Independent t-test comparing means of two unrelated samples."""
         if self.tier == 1:
             return None
         
@@ -269,17 +222,7 @@ class StatisticsEngine:
     # =================================================================
     
     def f_oneway(self, *args) -> Optional[StatResult]:
-        """
-        One-way ANOVA
-        
-        Tests whether means of multiple groups are equal
-        
-        Args:
-            *args: Variable number of sample arrays
-            
-        Returns:
-            StatResult with (statistic, pvalue) or None if stats disabled or scipy unavailable
-        """
+        """One-way ANOVA"""
         if self.tier == 1:
             return None
         
@@ -315,20 +258,7 @@ class StatisticsEngine:
                  y: Optional[Union[pd.Series, np.ndarray]] = None,
                  zero_method: str = 'wilcox',
                  alternative: str = 'two-sided') -> Optional[StatResult]:
-        """
-        Wilcoxon signed-rank test
-        
-        Non-parametric test for paired samples
-        
-        Args:
-            x: First sample or differences
-            y: Second sample (optional)
-            zero_method: How to handle zeros
-            alternative: 'two-sided', 'less', or 'greater'
-            
-        Returns:
-            StatResult with (statistic, pvalue) or None if stats disabled or scipy unavailable
-        """
+        """Wilcoxon signed-rank test for paired samples (non-parametric)."""
         if self.tier == 1:
             return None
         
@@ -361,18 +291,7 @@ class StatisticsEngine:
     
     def pearsonr(self, x: Union[pd.Series, np.ndarray], 
                  y: Union[pd.Series, np.ndarray]) -> Optional[StatResult]:
-        """
-        Pearson correlation coefficient and p-value
-        
-        Measures linear correlation between two variables
-        
-        Args:
-            x: First variable
-            y: Second variable
-            
-        Returns:
-            StatResult with (correlation, pvalue) or None if stats disabled
-        """
+        """Pearson correlation coefficient measuring linear relationship between variables."""
         if self.tier == 1:
             return None
         
@@ -409,18 +328,7 @@ class StatisticsEngine:
     
     def spearmanr(self, x: Union[pd.Series, np.ndarray], 
                   y: Union[pd.Series, np.ndarray]) -> Optional[StatResult]:
-        """
-        Spearman rank correlation coefficient and p-value
-        
-        Measures monotonic correlation between two variables
-        
-        Args:
-            x: First variable
-            y: Second variable
-            
-        Returns:
-            StatResult with (correlation, pvalue) or None if stats disabled
-        """
+        """Spearman rank correlation coefficient measuring monotonic relationship."""
         if self.tier == 1:
             return None
         
@@ -458,16 +366,7 @@ class StatisticsEngine:
     
     def confidence_interval(self, data: Union[pd.Series, np.ndarray], 
                            confidence: float = 0.95) -> Optional[Tuple[float, float]]:
-        """
-        Calculate confidence interval for the mean
-        
-        Args:
-            data: Sample data
-            confidence: Confidence level (default: 0.95)
-            
-        Returns:
-            Tuple of (lower, upper) bounds or None if stats disabled
-        """
+        """Calculate confidence interval for the mean at specified confidence level."""
         if self.tier == 1:
             return None
         
@@ -505,16 +404,7 @@ class StatisticsEngine:
     # =================================================================
     
     def _normal_pvalue(self, z: float, two_tailed: bool = True) -> float:
-        """
-        Calculate p-value using standard normal distribution
-        
-        Args:
-            z: Z-score or t-statistic
-            two_tailed: Whether to calculate two-tailed p-value
-            
-        Returns:
-            P-value
-        """
+        """Calculate p-value using standard normal distribution"""
         # Standard normal CDF using error function
         # CDF(z) = 0.5 * (1 + erf(z / sqrt(2)))
         from math import erf, sqrt
@@ -529,15 +419,7 @@ class StatisticsEngine:
             return p_one_tail
     
     def _rankdata(self, data: np.ndarray) -> np.ndarray:
-        """
-        Rank data (helper for Spearman correlation)
-        
-        Args:
-            data: Array to rank
-            
-        Returns:
-            Ranked array
-        """
+        """Rank data (helper for Spearman correlation)"""
         # Simple ranking using argsort
         sorter = np.argsort(data)
         ranks = np.empty_like(sorter, dtype=float)
@@ -548,16 +430,7 @@ class StatisticsEngine:
 # Convenience function for backward compatibility
 def create_stats_engine(enable_stats: bool = False, 
                        force_simple: bool = False) -> StatisticsEngine:
-    """
-    Create a statistics engine instance
-    
-    Args:
-        enable_stats: Whether to enable statistical tests
-        force_simple: Force Tier 2 even if scipy available
-        
-    Returns:
-        StatisticsEngine instance
-    """
+    """Create statistics engine with specified tier configuration."""
     return StatisticsEngine(enable_stats=enable_stats, force_simple=force_simple)
 
 

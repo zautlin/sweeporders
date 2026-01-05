@@ -462,16 +462,7 @@ def calculate_summary_statistics(comparison_df):
 
 
 def perform_statistical_tests(comparison_df, stats_engine=None):
-    """
-    Perform statistical tests on paired data.
-    
-    Args:
-        comparison_df: DataFrame with paired real/sim data
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        DataFrame with statistical test results
-    """
+    """Perform statistical tests on paired data."""
     # Create default stats engine if not provided
     if stats_engine is None:
         stats_engine = StatisticsEngine(enable_stats=True)
@@ -838,15 +829,7 @@ def write_output_files(comparison_df, summary_df, tests_df, quantiles_df, unmatc
 # ===== MAIN ANALYSIS FUNCTION =====
 
 def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys, stats_engine=None):
-    """
-    Main function to analyze sweep order execution.
-    
-    Args:
-        processed_dir: Path to processed data directory
-        outputs_dir: Path to outputs directory
-        partition_keys: List of partition keys to process
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    """
+    """Main function to analyze sweep order execution."""
     # Create default stats engine if not provided
     if stats_engine is None:
         stats_engine = StatisticsEngine(enable_stats=True)

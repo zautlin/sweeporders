@@ -51,15 +51,7 @@ def load_all_centre_point_orders(partition_dir):
 
 
 def build_order_index(all_orders_df):
-    """
-    Pre-sort and index orders by side and timestamp for fast lookups.
-    
-    This optimization reduces complexity from O(N*M) to O(M log M + N log M)
-    where N = unmatched orders, M = all orders.
-    
-    Returns:
-        dict: {side: DataFrame} with orders sorted by timestamp
-    """
+    """Pre-sort and index orders by side and timestamp for fast lookups."""
     print(f"  Building order index for fast lookups...")
     
     # Create separate DataFrames for each side, sorted by timestamp
@@ -78,18 +70,7 @@ def build_order_index(all_orders_df):
 # ===== PHASE 2: LIQUIDITY AT ARRIVAL ANALYSIS =====
 
 def analyze_liquidity_at_arrival(unmatched_order, order_index):
-    """
-    Analyze contra-side liquidity at the moment the unmatched order arrived.
-    
-    OPTIMIZED: Uses pre-sorted index with binary search instead of full table scan.
-    
-    Returns metrics:
-    - contra_depth_at_arrival: Total quantity available on contra side
-    - contra_orders_count_at_arrival: Number of contra orders
-    - best_contra_price_at_arrival: Best available contra price
-    - price_overlap: Whether limit prices are compatible
-    - potential_fill_qty_at_arrival: Max quantity that could match immediately
-    """
+    """Analyze contra-side liquidity at the moment the unmatched order arrived."""
     orderid = unmatched_order[col.common.orderid]
     arrival_time = int(unmatched_order['order_timestamp'])
     side = int(unmatched_order[col.common.side])
@@ -163,18 +144,7 @@ def analyze_liquidity_at_arrival(unmatched_order, order_index):
 # ===== PHASE 3: TEMPORAL LIQUIDITY EVOLUTION =====
 
 def analyze_liquidity_evolution(unmatched_order, order_index):
-    """
-    Track contra-side liquidity arrivals during order lifetime.
-    
-    OPTIMIZED: Uses pre-sorted index with binary search instead of full table scan.
-    
-    Returns metrics:
-    - time_to_lit_execution: How long order waited before lit execution
-    - contra_arrival_during_lifetime: Whether contra orders arrived while live
-    - contra_qty_arrived_during_lifetime: Total contra quantity that arrived
-    - earliest_possible_dark_match_time: When could order have matched
-    - dark_vs_lit_timing_advantage: Time difference
-    """
+    """Track contra-side liquidity arrivals during order lifetime."""
     orderid = unmatched_order[col.common.orderid]
     arrival_time = int(unmatched_order['order_timestamp'])
     first_lit_fill_time = int(unmatched_order['real_first_trade_time'])
@@ -242,16 +212,7 @@ def analyze_liquidity_evolution(unmatched_order, order_index):
 # ===== PHASE 4: ROOT CAUSE CLASSIFICATION =====
 
 def classify_root_cause(liquidity_at_arrival, liquidity_evolution):
-    """
-    Classify why the order didn't match in dark pool.
-    
-    Categories:
-    1. NO_LIQUIDITY_AT_ALL: No contra orders at arrival or during lifetime
-    2. TIMING_MISMATCH: Contra arrived after lit execution
-    3. PRICE_INCOMPATIBLE: Contra existed but prices didn't overlap
-    4. INSUFFICIENT_QUANTITY: Some liquidity but not enough
-    5. INSTANT_LIT_EXECUTION: Order filled in lit market instantly (< 0.1s)
-    """
+    """Classify why the order didn't match in dark pool."""
     orderid = liquidity_at_arrival[col.common.orderid]
     
     # Check metrics

@@ -47,15 +47,7 @@ SECURITY_MAPPING = {
 
 
 def find_volume_analysis_files(outputs_dir: str = 'data/outputs') -> List[Tuple[str, str, str, str]]:
-    """
-    Scan the outputs directory for all volume_bucket_summary.csv files.
-    
-    Args:
-        outputs_dir: Path to outputs directory
-        
-    Returns:
-        List of tuples (file_path, date, orderbookid, ticker)
-    """
+    """Scan the outputs directory for all volume_bucket_summary.csv files."""
     outputs_path = Path(outputs_dir)
     found_files = []
     
@@ -95,18 +87,7 @@ def find_volume_analysis_files(outputs_dir: str = 'data/outputs') -> List[Tuple[
 
 
 def load_and_tag_volume_file(file_path: str, date_str: str, orderbookid: str, ticker: str) -> pd.DataFrame:
-    """
-    Load a volume bucket summary CSV and add identifying columns.
-    
-    Args:
-        file_path: Path to CSV file
-        date_str: Date string (YYYY-MM-DD)
-        orderbookid: Order book ID
-        ticker: Security ticker symbol
-        
-    Returns:
-        DataFrame with added columns: ticker, orderbookid, date
-    """
+    """Load a volume bucket summary CSV and add identifying columns."""
     try:
         df = pd.read_csv(file_path)
         
@@ -124,15 +105,7 @@ def load_and_tag_volume_file(file_path: str, date_str: str, orderbookid: str, ti
 
 
 def aggregate_volume_summaries(outputs_dir: str = 'data/outputs') -> pd.DataFrame:
-    """
-    Aggregate all volume bucket summaries into a single DataFrame.
-    
-    Args:
-        outputs_dir: Path to outputs directory
-        
-    Returns:
-        Aggregated DataFrame with all volume bucket summaries
-    """
+    """Aggregate all volume bucket summaries into a single DataFrame."""
     logger.info("=" * 80)
     logger.info("AGGREGATING VOLUME BUCKET SUMMARIES")
     logger.info("=" * 80)
@@ -168,19 +141,7 @@ def aggregate_volume_summaries(outputs_dir: str = 'data/outputs') -> pd.DataFram
 
 
 def cross_security_volume_tests(df: pd.DataFrame, stats_engine=None) -> pd.DataFrame:
-    """
-    Perform statistical tests comparing volume buckets across securities.
-    
-    Tests each volume bucket (Q1, Q2, Q3, Q4) across all securities to see
-    if there are significant differences in execution cost and time differences.
-    
-    Args:
-        df: Aggregated volume bucket summary DataFrame
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-        
-    Returns:
-        DataFrame with test results
-    """
+    """Perform statistical tests comparing volume buckets across securities."""
     # Create default stats engine if not provided
     if stats_engine is None:
         stats_engine = StatisticsEngine(enable_stats=True)
@@ -268,15 +229,7 @@ def cross_security_volume_tests(df: pd.DataFrame, stats_engine=None) -> pd.DataF
 
 
 def per_security_volume_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Create per-security summary statistics across all volume buckets.
-    
-    Args:
-        df: Aggregated volume bucket summary DataFrame
-        
-    Returns:
-        DataFrame with per-security summaries
-    """
+    """Create per-security summary statistics across all volume buckets."""
     logger.info("Creating per-security volume summaries...")
     
     summaries = []
@@ -461,13 +414,7 @@ def generate_volume_report(
 
 
 def main(stats_engine=None):
-    """
-    Main execution function for aggregating volume analysis.
-    
-    Args:
-        stats_engine: StatisticsEngine instance (optional). If not provided,
-                     will create one based on command-line arguments.
-    """
+    """Main execution function for aggregating volume analysis."""
     # If stats_engine not provided, parse command-line arguments
     if stats_engine is None:
         import argparse

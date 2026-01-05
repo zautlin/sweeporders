@@ -31,16 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_volume_buckets(df, method='quartile'):
-    """
-    Create volume buckets for orders based on order_quantity.
-    
-    Args:
-        df: DataFrame with order_quantity column
-        method: 'quartile' (4 buckets), 'quintile' (5 buckets), or 'custom'
-        
-    Returns:
-        DataFrame with added columns: volume_bucket, volume_bucket_label
-    """
+    """Create volume buckets for orders based on order_quantity."""
     if method == 'quartile':
         # Split into 4 buckets (Q1, Q2, Q3, Q4)
         df[col.volume.volume_bucket] = pd.qcut(df['order_quantity'], q=4, labels=False, duplicates='drop')
@@ -72,14 +63,7 @@ def create_volume_buckets(df, method='quartile'):
 
 
 def calculate_volume_bucket_stats(df):
-    """
-    Calculate statistics for each volume bucket.
-    
-    Focuses on exec_cost_arrival_diff_bps and exec_time_diff_sec.
-    
-    Returns:
-        DataFrame with statistics by bucket
-    """
+    """Calculate statistics for each volume bucket."""
     results = []
     
     for bucket in sorted(df[col.volume.volume_bucket].unique()):
@@ -129,18 +113,7 @@ def calculate_volume_bucket_stats(df):
 
 
 def volume_bucket_statistical_tests(df, stats_engine=None):
-    """
-    Run paired t-tests for each volume bucket.
-    
-    Tests if the mean difference is significantly different from 0 within each bucket.
-    
-    Args:
-        df: DataFrame with volume bucket analysis
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        DataFrame with t-test results by bucket
-    """
+    """Run paired t-tests for each volume bucket."""
     # Create default stats engine if not provided
     if stats_engine is None:
         stats_engine = StatisticsEngine(enable_stats=True)
@@ -220,18 +193,7 @@ def volume_bucket_statistical_tests(df, stats_engine=None):
 
 
 def compare_across_volume_buckets(df, stats_engine=None):
-    """
-    Compare differences across volume buckets using ANOVA and pairwise tests.
-    
-    Tests whether execution performance varies by order size.
-    
-    Args:
-        df: DataFrame with volume bucket analysis
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        Tuple of (anova_results_df, pairwise_results_df)
-    """
+    """Compare differences across volume buckets using ANOVA and pairwise tests."""
     # Create default stats engine if not provided
     if stats_engine is None:
         stats_engine = StatisticsEngine(enable_stats=True)
@@ -363,6 +325,7 @@ def generate_volume_analysis_report(stats_df, tests_df, anova_df, pairwise_df, v
     report_lines = []
     
     def add_line(line=""):
+        """Append line to report."""
         report_lines.append(line)
     
     add_line("="*80)
@@ -464,18 +427,7 @@ def generate_volume_analysis_report(stats_df, tests_df, anova_df, pairwise_df, v
 
 
 def analyze_by_volume(outputs_dir, partition_keys, method='quartile', stats_engine=None):
-    """
-    Main function: Analyze sweep order execution by volume buckets.
-    
-    Args:
-        outputs_dir: Path to outputs directory
-        partition_keys: List of partition keys (format: 'date/orderbookid')
-        method: Volume bucketing method ('quartile', 'quintile', or 'custom')
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-        
-    Returns:
-        Dict with summary of analysis results
-    """
+    """Main function: Analyze sweep order execution by volume buckets."""
     # Create default stats engine if not provided
     if stats_engine is None:
         stats_engine = StatisticsEngine(enable_stats=True)

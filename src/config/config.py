@@ -477,16 +477,7 @@ OUTPUT_FILES = {
 # ============================================================================
 
 def get_input_column_name(data_type: str, standard_name: str) -> str:
-    """
-    Get the actual input column name for a given standard column name.
-    
-    Args:
-        data_type: Type of input data ('orders', 'trades')
-        standard_name: Standard column name
-        
-    Returns:
-        Actual column name from input file
-    """
+    """Get the actual input column name for a given standard column name."""
     if data_type not in INPUT_COLUMNS:
         raise ValueError(f"Unknown data type: {data_type}")
     
@@ -497,15 +488,7 @@ def get_input_column_name(data_type: str, standard_name: str) -> str:
 
 
 def get_standard_column_name(column: str) -> str:
-    """
-    Get the standard column name, or return as-is if already standard.
-    
-    Args:
-        column: Column name
-        
-    Returns:
-        Standard column name
-    """
+    """Get the standard column name, or return as-is if already standard."""
     for standard, actual in STANDARD_COLUMNS.items():
         if actual == column:
             return standard
@@ -513,16 +496,7 @@ def get_standard_column_name(column: str) -> str:
 
 
 def rename_columns_to_standard(df: pd.DataFrame, data_type: str) -> pd.DataFrame:
-    """
-    Rename input columns to standard column names.
-    
-    Args:
-        df: Input DataFrame
-        data_type: Type of input data ('orders', 'trades')
-        
-    Returns:
-        DataFrame with standard column names
-    """
+    """Rename input columns to standard column names."""
     if data_type not in INPUT_COLUMNS:
         raise ValueError(f"Unknown data type: {data_type}")
     
@@ -535,20 +509,7 @@ def rename_columns_to_standard(df: pd.DataFrame, data_type: str) -> pd.DataFrame
 
 
 def validate_columns(df: pd.DataFrame, required_columns: list, context: str = "") -> bool:
-    """
-    Validate that required columns exist in DataFrame.
-    
-    Args:
-        df: DataFrame to validate
-        required_columns: List of required column names
-        context: Context string for error messages
-        
-    Returns:
-        True if all columns exist
-        
-    Raises:
-        ValueError if any required column is missing
-    """
+    """Validate that required columns exist in DataFrame."""
     missing = set(required_columns) - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns in {context}: {missing}")

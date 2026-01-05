@@ -74,17 +74,7 @@ ORDER_TYPE_MAP = {
 
 
 def load_orders(ticker: Optional[str], date: str, orderbookid: Optional[int] = None) -> Tuple[pd.DataFrame, str]:
-    """
-    Load order data from raw files.
-    
-    Args:
-        ticker: Security ticker (e.g., 'drr', 'bhp') - optional if orderbookid provided
-        date: Date string YYYYMMDD
-        orderbookid: OrderbookID - optional if ticker provided
-        
-    Returns:
-        Tuple of (orders DataFrame, orderbookid)
-    """
+    """Load order data from raw files."""
     if orderbookid is None:
         # Use ticker to find orderbookid
         if ticker is None:
@@ -136,17 +126,7 @@ def load_orders(ticker: Optional[str], date: str, orderbookid: Optional[int] = N
 
 
 def load_trades(ticker: Optional[str], date: str, orderbookid: Optional[int] = None) -> pd.DataFrame:
-    """
-    Load trade data from raw files.
-    
-    Args:
-        ticker: Security ticker (e.g., 'drr', 'bhp') - optional if orderbookid provided
-        date: Date string YYYYMMDD
-        orderbookid: OrderbookID - optional if ticker provided
-        
-    Returns:
-        Trades DataFrame
-    """
+    """Load trade data from raw files."""
     if orderbookid is None and ticker is None:
         raise ValueError("Either ticker or orderbookid must be provided")
     

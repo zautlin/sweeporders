@@ -21,6 +21,7 @@ class SystemConfig:
     enable_parallel: bool
     
     def __str__(self):
+        """Format configuration as human-readable string."""
         return (
             f"SystemConfig(\n"
             f"  CPU Cores: {self.cpu_count}\n"
@@ -95,20 +96,7 @@ def detect_system_config(
 
 
 def _calculate_optimal_workers(cpu_count: int) -> int:
-    """
-    Calculate optimal number of workers based on CPU count.
-    
-    Strategy:
-    - Leave 1-2 cores free for system operations
-    - Cap at reasonable maximum (16) to avoid overhead
-    - Minimum of 1 worker
-    
-    Args:
-        cpu_count: Number of CPU cores
-    
-    Returns:
-        Optimal number of workers
-    """
+    """Calculate optimal number of workers based on CPU count."""
     if cpu_count <= 2:
         return 1  # Single core or dual core: no parallelization
     elif cpu_count <= 4:
@@ -120,20 +108,7 @@ def _calculate_optimal_workers(cpu_count: int) -> int:
 
 
 def _calculate_optimal_chunk_size(available_memory: int) -> int:
-    """
-    Calculate optimal chunk size based on available memory.
-    
-    Strategy:
-    - Target 5% of available memory per chunk
-    - Estimate ~1KB per row (conservative estimate)
-    - Apply safety constraints: min 10K, max 500K
-    
-    Args:
-        available_memory: Available memory in bytes
-    
-    Returns:
-        Optimal chunk size (number of rows)
-    """
+    """Calculate optimal chunk size based on available memory."""
     # Target 5% of available memory per chunk
     target_memory_per_chunk = available_memory * 0.05
     

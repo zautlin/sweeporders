@@ -20,24 +20,7 @@ ORDER_TYPE_COLUMN = 'exchangeordertype'
 
 
 def get_midpoint(nbbo_data, timestamp, orderbookid, fallback_bid, fallback_offer):
-    """
-    Get midpoint price at given timestamp.
-    
-    Priority:
-    1. NBBO file data (if available)
-    2. Fallback to bid/offer from orders
-    
-    Args:
-        nbbo_data: DataFrame from nbbo.csv (or None if not available), 
-                   should be sorted by timestamp
-        timestamp: Order timestamp (nanoseconds)
-        orderbookid: Security code
-        fallback_bid: Bid price from order (fallback)
-        fallback_offer: Offer price from order (fallback)
-    
-    Returns:
-        Midpoint price or None
-    """
+    """Get midpoint price at given timestamp."""
     
     # Try NBBO data first
     if nbbo_data is not None and len(nbbo_data) > 0:
@@ -86,18 +69,7 @@ def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
 
 
 def load_and_prepare_orders(partition_data):
-    """
-    Load and prepare sweep orders and all matching-eligible orders for simulation.
-    
-    Args:
-        partition_data: Dictionary containing:
-            - 'orders_before': DataFrame from orders_before_matching.csv
-            - 'orders_after': DataFrame from orders_after_matching.csv
-            - 'last_execution': DataFrame from last_execution_time.csv
-    
-    Returns:
-        Tuple of (sweep_orders, all_orders)
-    """
+    """Load and prepare sweep orders and all matching-eligible orders for simulation."""
     
     sweep_orders = _prepare_sweep_orders(partition_data)
     all_orders = _prepare_all_orders_for_matching(partition_data)
@@ -106,29 +78,7 @@ def load_and_prepare_orders(partition_data):
 
 
 def _prepare_sweep_orders(partition_data):
-    """
-    Prepare sweep orders (type 2048) from ONLY qualifying orders in last_execution.
-    
-    Strategy:
-    1. Start with last_execution (ONLY 3-level filtered sweep orders)
-    2. INNER JOIN with orders_after to get ALL order data
-    
-    NOTE: Only sweep orders from last_execution participate (3-level filtering)
-    NOTE: Uses orders_after (Option A: MIN timestamp + MAX sequence) for all order fields
-    
-    Returns:
-        DataFrame with columns:
-            - orderid
-            - timestamp (placement time from orders_after)
-            - sequence (placement sequence from orders_after)
-            - side (from orders_after)
-            - leavesquantity (from orders_after - Option A)
-            - totalmatchedquantity (from orders_after - Option A)
-            - price (from orders_after - Option A)
-            - first_execution_time (from last_execution)
-            - last_execution_time (from last_execution)
-            - orderbookid (from orders_after)
-    """
+    """Prepare sweep orders (type 2048) from ONLY qualifying orders in last_execution."""
     orders_after = partition_data['orders_after']
     last_execution = partition_data['last_execution']
     
@@ -183,23 +133,7 @@ def _prepare_sweep_orders(partition_data):
 
 
 def _prepare_all_orders_for_matching(partition_data):
-    """
-    Prepare ALL Centre Point orders for matching (including sweeps).
-    
-    This represents the pool of orders that can match with sweeps.
-    Uses orders_before_matching.csv to get original timestamp/sequence.
-    
-    Returns:
-        DataFrame with columns:
-            - orderid
-            - timestamp
-            - sequence
-            - side (1=BUY, 2=SELL)
-            - quantity
-            - orderbookid
-            - bid (for fallback midpoint)
-            - offer (for fallback midpoint)
-    """
+    """Prepare ALL Centre Point orders for matching (including sweeps)."""
     orders_before = partition_data['orders_before']
     
     # Standardize column names first
@@ -232,23 +166,7 @@ def _prepare_all_orders_for_matching(partition_data):
 
 
 def simulate_partition(partition_key, partition_data):
-    """
-    Simulate sweep matching for a partition.
-    
-    Args:
-        partition_key: Partition identifier (e.g., "2024-09-05/110621")
-        partition_data: Dictionary containing:
-            - 'orders_before': DataFrame
-            - 'orders_after': DataFrame
-            - 'last_execution': DataFrame
-            - 'nbbo': DataFrame or None
-    
-    Returns:
-        Dictionary containing:
-            - 'match_details': All individual matches
-            - 'order_summary': Per incoming order summary
-            - 'sweep_utilization': Per sweep order utilization
-    """
+    """Simulate sweep matching for a partition."""
     
     # Load and prepare orders
     sweep_orders, all_orders = load_and_prepare_orders(partition_data)
@@ -277,31 +195,7 @@ def simulate_partition(partition_key, partition_data):
 
 
 def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
-    """
-    Simulate sweep matching with CORRECT sweep-centric algorithm.
-    
-    CORRECT Algorithm:
-        1. Process SWEEP orders chronologically by timestamp+sequence (placement time)
-        2. For each sweep order:
-            a. Get execution time window [first_execution_time, last_execution_time]
-            b. Find ALL orders that arrived in that time window
-            c. Exclude the sweep itself from matching candidates
-            d. Filter for opposite side and same orderbookid
-            e. Sort eligible orders by timestamp+sequence (time priority)
-            f. Match sequentially until sweep is filled or no more eligible orders
-            g. Record matches at midpoint price
-    
-    Args:
-        sweep_orders: DataFrame of sweep orders (sorted by timestamp, sequence)
-        all_orders: DataFrame of ALL Centre Point orders (including sweeps)
-        nbbo_data: DataFrame with NBBO data (or None)
-    
-    Returns:
-        Dictionary containing:
-            - 'match_details': All individual matches
-            - 'order_summary': Per sweep order summary
-            - 'sweep_utilization': Per sweep order utilization
-    """
+    """Simulate sweep matching with CORRECT sweep-centric algorithm."""
     
     # Initialize tracking structures
     all_matches = []
@@ -602,22 +496,7 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
 
 
 def _generate_sweep_utilization(sweep_orders, sweep_usage):
-    """
-    Generate utilization report for sweep orders.
-    
-    Args:
-        sweep_orders: DataFrame of sweep orders
-        sweep_usage: Dict tracking usage per sweep order
-    
-    Returns:
-        DataFrame with columns:
-            - orderid
-            - leavesquantity (available)
-            - matched_quantity
-            - remaining_quantity
-            - utilization_ratio
-            - num_matches
-    """
+    """Generate utilization report for sweep orders."""
     utilization = []
     
     for _, sweep in sweep_orders.iterrows():

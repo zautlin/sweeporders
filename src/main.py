@@ -317,15 +317,8 @@ def extract_and_prepare_data(input_files):
 
 
 def run_simulations_and_lob(data, enable_parallel):
-    """Stage 2: Run simulations and create LOB states (steps 7-12).
-    
-    Args:
-        data: Dict containing orders, trades, order_states, etc from Stage 1
-        enable_parallel: Whether to use parallel processing
-        
-    Returns:
-        Dict with simulation results
-    """
+    """Run simulations and create LOB states for all partitions (steps 7-12).
+    Uses parallel or sequential processing based on enable_parallel flag."""
     print(f"\n{'='*80}")
     print(f"STAGE 2: SIMULATION & LOB STATES (Steps 7-12)")
     print(f"{'='*80}")
@@ -444,16 +437,7 @@ def print_summary(data, runtime_config, execution_time):
 
 
 def run_per_security_analysis(processed_dir, outputs_dir, partition_keys, stats_engine=None):
-    """Stage 3: Run sweep execution and unmatched orders analysis (steps 13-14) + volume analysis.
-    
-    Args:
-        processed_dir: Directory containing processed data
-        outputs_dir: Directory for output files
-        partition_keys: List of partition keys to process
-        stats_engine: StatisticsEngine instance for statistical tests (optional, for future use)
-    
-    Note: stats_engine integration into analysis modules is pending
-    """
+    """Run sweep execution and unmatched order analysis (steps 13-14) plus volume analysis for single security."""
     print(f"\n{'='*80}")
     print(f"STAGE 3: PER-SECURITY ANALYSIS (Steps 13-14 + Volume Analysis)")
     print(f"{'='*80}")
@@ -490,12 +474,7 @@ def run_per_security_analysis(processed_dir, outputs_dir, partition_keys, stats_
 
 
 def run_cross_security_aggregation(runtime_config):
-    """
-    Stage 4: Cross-security aggregation and statistical analysis.
-    
-    Args:
-        runtime_config: Dictionary containing runtime configuration including stats_engine
-    """
+    """Aggregate sweep and volume results across all securities with statistical analysis."""
     print(f"\n{'='*80}")
     print(f"STAGE 4: CROSS-SECURITY AGGREGATION")
     print(f"{'='*80}")

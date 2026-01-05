@@ -24,23 +24,7 @@ except ImportError:
 
 
 def calculate_simulated_metrics(all_orders, order_summary, match_details):
-    """
-    Calculate simulated execution metrics for orders.
-    
-    Args:
-        all_orders: DataFrame with all orders (from orders_before_lob.csv)
-        order_summary: DataFrame with per-order simulation summary
-        match_details: DataFrame with all individual matches
-    
-    Returns:
-        DataFrame with original orders plus simulated metric columns:
-            - simulated_matched_quantity: Total quantity matched in simulation
-            - simulated_fill_ratio: Fraction of quantity filled (0.0 to 1.0)
-            - simulated_fill_status: 'Fully Filled', 'Partially Filled', 'Unfilled'
-            - simulated_num_matches: Number of matches with sweep orders
-            - simulated_avg_price: Average execution price (weighted by quantity)
-            - simulated_total_value: Total value of matched quantity
-    """
+    """Calculate simulated execution metrics for orders."""
     
     # Start with all orders
     result = all_orders.copy()
@@ -113,16 +97,7 @@ def calculate_simulated_metrics(all_orders, order_summary, match_details):
 
 
 def _determine_fill_status(matched_qty, total_qty):
-    """
-    Determine fill status based on matched vs total quantity.
-    
-    Args:
-        matched_qty: Quantity matched in simulation
-        total_qty: Total order quantity
-    
-    Returns:
-        Fill status: 'Fully Filled', 'Partially Filled', or 'Unfilled'
-    """
+    """Determine fill status based on matched vs total quantity."""
     if matched_qty == 0:
         return 'Unfilled'
     elif matched_qty >= total_qty:
@@ -132,21 +107,7 @@ def _determine_fill_status(matched_qty, total_qty):
 
 
 def _calculate_price_metrics(match_details):
-    """
-    Calculate average price and total value per order from match details.
-    
-    Args:
-        match_details: DataFrame with columns:
-            - incoming_orderid
-            - matched_quantity
-            - price
-    
-    Returns:
-        DataFrame with columns:
-            - orderid
-            - simulated_avg_price
-            - simulated_total_value
-    """
+    """Calculate average price and total value per order from match details."""
     # Calculate total value per match
     match_details = match_details.copy()
     match_details['match_value'] = match_details['matched_quantity'] * match_details[col.common.price]
@@ -177,24 +138,7 @@ def _calculate_price_metrics(match_details):
 
 
 def compare_by_group(orders_with_metrics, groups):
-    """
-    Compare real vs simulated metrics across all groups.
-    
-    Groups are defined based on REAL execution:
-        - Group 1: Fully Filled (leavesquantity == 0)
-        - Group 2: Partially Filled (leavesquantity > 0 AND totalmatchedquantity > 0)
-        - Group 3: Unfilled (leavesquantity > 0 AND totalmatchedquantity == 0)
-    
-    Args:
-        orders_with_metrics: DataFrame with both real and simulated metrics
-        groups: Dictionary mapping group names to order DataFrames
-    
-    Returns:
-        Dictionary containing:
-            - 'group_summary': Group-level comparison statistics
-            - 'order_details': Order-level comparison details
-            - 'group_analysis': Detailed group analysis
-    """
+    """Compare real vs simulated metrics across all groups."""
     
     group_summaries = []
     all_order_details = []
@@ -344,20 +288,7 @@ def _analyze_group_differences(group_name, group_df):
 
 
 def generate_comparison_reports(partition_key, comparison_data, output_dir):
-    """
-    Generate comparison reports for a partition.
-    
-    Args:
-        partition_key: Partition identifier (e.g., "2024-09-05/110621")
-        comparison_data: Dictionary containing:
-            - 'group_summary': Group-level comparison
-            - 'order_details': Order-level details
-            - 'group_analysis': Detailed group analysis
-        output_dir: Directory to write report files
-    
-    Returns:
-        Dictionary mapping report type to file path
-    """
+    """Generate comparison reports for a partition."""
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -469,22 +400,7 @@ def _generate_statistical_summary(comparison_data, output_dir):
 # ============================================================================
 
 def compare_sweep_execution(sweep_order_summary, orders_after_matching, trades_agg, groups):
-    """
-    Compare simulated vs real execution for SWEEP ORDERS ONLY.
-    
-    Args:
-        sweep_order_summary: DataFrame from simulation (per sweep order)
-        orders_after_matching: DataFrame with real final state of orders
-        trades_agg: DataFrame with aggregated trade data
-        groups: Dictionary mapping group names to sweep order DataFrames
-    
-    Returns:
-        Dictionary containing:
-            - 'sweep_comparison': Per-order comparison (sweep orders only)
-            - 'group_summary': Summary statistics by group
-            - 'statistical_tests': T-test results
-            - 'size_analysis': Analysis segmented by order size
-    """
+    """Compare simulated vs real execution for SWEEP ORDERS ONLY."""
     
     # Standardize column names in groups dictionary
     standardized_groups = {}
@@ -662,26 +578,7 @@ def _calculate_sweep_group_summary(comparison_df):
 
 
 def _calculate_statistical_tests(comparison_df, stats_engine=None):
-    """
-    Calculate paired t-tests comparing simulated vs real execution.
-    
-    Tests are performed on:
-    - Matched quantity
-    - Fill ratio
-    - Number of matches
-    
-    Segmented by:
-    - Overall
-    - By group
-    - By size category
-    
-    Args:
-        comparison_df: DataFrame with comparison data
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        DataFrame with statistical test results
-    """
+    """Calculate paired t-tests comparing simulated vs real execution."""
     # Create default stats engine if not provided
     if stats_engine is None:
         stats_engine = StatisticsEngine(enable_stats=True)
@@ -721,18 +618,7 @@ def _calculate_statistical_tests(comparison_df, stats_engine=None):
 
 
 def _run_ttests(data, segment_type, segment_name, stats_engine=None):
-    """
-    Run paired t-tests on a data segment with proper NaN/Inf handling.
-    
-    Args:
-        data: DataFrame with comparison data
-        segment_type: Type of segment (Overall, Group, Size, etc.)
-        segment_name: Name of the segment
-        stats_engine: StatisticsEngine instance (optional, defaults to enabled)
-    
-    Returns:
-        List of test result dictionaries
-    """
+    """Run paired t-tests on a data segment with proper NaN/Inf handling."""
     import numpy as np
     import warnings
     
@@ -870,17 +756,7 @@ def _calculate_size_analysis(comparison_df):
 
 
 def generate_sweep_comparison_reports(partition_key, comparison_results, output_dir):
-    """
-    Generate comprehensive comparison reports for sweep orders.
-    
-    Args:
-        partition_key: Partition identifier
-        comparison_results: Dictionary from compare_sweep_execution()
-        output_dir: Directory to save reports
-    
-    Returns:
-        Dictionary mapping report type to file path
-    """
+    """Generate comprehensive comparison reports for sweep orders."""
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -923,20 +799,7 @@ def generate_sweep_comparison_reports(partition_key, comparison_results, output_
 # ============================================================================
 
 def calculate_real_trade_metrics(trades_by_partition, orders_by_partition, processed_dir, column_mapping):
-    """
-    Calculate comprehensive metrics from real trades for sweep orders.
-    
-    Focuses only on trades involving sweep orders (type 2048).
-    
-    Args:
-        trades_by_partition: Dictionary of trade DataFrames by partition
-        orders_by_partition: Dictionary of order DataFrames by partition
-        processed_dir: Directory with processed data
-        column_mapping: Column name mapping dictionary
-    
-    Returns:
-        Dictionary mapping partition_key to real trade metrics DataFrame
-    """
+    """Calculate comprehensive metrics from real trades for sweep orders."""
     print(f"\n[11/11] Calculating real trade metrics for sweep orders...")
     
     SWEEP_ORDER_TYPE = 2048
@@ -1056,21 +919,7 @@ def _aggregate_trade_metrics_per_order(trades_df):
 
 
 def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_results_by_partition, output_dir):
-    """
-    Compare real trades with simulated trades at trade level.
-    
-    Generates detailed comparison focusing on:
-    - Trade-level comparison (trade by trade)
-    - Overall accuracy summary
-    
-    Args:
-        real_metrics_by_partition: Dictionary from calculate_real_trade_metrics()
-        simulation_results_by_partition: Dictionary from simulate_sweep_matching()
-        output_dir: Directory to save comparison reports
-    
-    Returns:
-        Dictionary mapping partition_key to comparison results
-    """
+    """Compare real trades with simulated trades at trade level."""
     print(f"\n[12/11] Comparing real vs simulated trades...")
     
     trade_comparison_by_partition = {}
@@ -1268,17 +1117,7 @@ def _calculate_trade_accuracy_summary(comparison):
 
 
 def generate_trade_comparison_reports(trade_comparison_by_partition, output_dir, include_accuracy_summary=True):
-    """
-    Generate trade-level comparison reports.
-    
-    Args:
-        trade_comparison_by_partition: Dictionary from compare_real_vs_simulated_trades()
-        output_dir: Directory to save reports
-        include_accuracy_summary: If False, skip generating trade_accuracy_summary.csv
-    
-    Returns:
-        Dictionary mapping partition_key to generated report files
-    """
+    """Generate trade-level comparison reports."""
     print(f"\n  Generating trade-level comparison reports...")
     
     report_files_by_partition = {}

@@ -35,15 +35,7 @@ SECURITY_MAPPING = {
 
 
 def find_detailed_comparison_files(outputs_dir='data/outputs'):
-    """
-    Scan the outputs directory for all sweep_order_comparison_detailed.csv files.
-    
-    Args:
-        outputs_dir: Path to outputs directory
-        
-    Returns:
-        List of tuples (file_path, date, orderbookid, ticker)
-    """
+    """Scan the outputs directory for all sweep_order_comparison_detailed.csv files."""
     outputs_path = Path(outputs_dir)
     found_files = []
     
@@ -83,18 +75,7 @@ def find_detailed_comparison_files(outputs_dir='data/outputs'):
 
 
 def load_and_tag_file(file_path, date_str, orderbookid, ticker):
-    """
-    Load a detailed comparison CSV and add identifying columns.
-    
-    Args:
-        file_path: Path to CSV file
-        date_str: Date string (YYYY-MM-DD)
-        orderbookid: Order book ID
-        ticker: Security ticker symbol
-        
-    Returns:
-        DataFrame with added columns: date, orderbookid, ticker
-    """
+    """Load a detailed comparison CSV and add identifying columns."""
     try:
         df = pd.read_csv(file_path)
         
@@ -112,15 +93,7 @@ def load_and_tag_file(file_path, date_str, orderbookid, ticker):
 
 
 def aggregate_results(outputs_dir='data/outputs'):
-    """
-    Aggregate all sweep order comparison results into a single dataset.
-    
-    Args:
-        outputs_dir: Path to outputs directory
-        
-    Returns:
-        Aggregated DataFrame with all securities
-    """
+    """Aggregate all sweep order comparison results into a single dataset."""
     logger.info("Starting aggregation of sweep order results...")
     
     # Find all comparison files

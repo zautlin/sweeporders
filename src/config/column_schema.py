@@ -36,29 +36,12 @@ class ColumnAccessor:
     """
     
     def __init__(self, data_type: str, mapping: Dict[str, str]):
-        """
-        Initialize column accessor.
-        
-        Args:
-            data_type: Type of data (e.g., 'orders', 'trades')
-            mapping: Dictionary mapping standard names to actual column names
-        """
+        """Initialize column accessor."""
         self._data_type = data_type
         self._mapping = mapping
         
     def __getattr__(self, name: str) -> str:
-        """
-        Get actual column name for a standard column name.
-        
-        Args:
-            name: Standard column name (e.g., 'order_id')
-            
-        Returns:
-            Actual column name from config (e.g., 'orderid')
-            
-        Raises:
-            AttributeError: If column name not found in mapping
-        """
+        """Get actual column name for a standard column name."""
         if name.startswith('_'):
             # Internal attributes
             raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
@@ -77,28 +60,11 @@ class ColumnAccessor:
         return sorted(self._mapping.keys())
     
     def get(self, name: str, default: str = None) -> str:
-        """
-        Get column name with optional default.
-        
-        Args:
-            name: Standard column name
-            default: Default value if not found
-            
-        Returns:
-            Actual column name or default
-        """
+        """Get column name with optional default."""
         return self._mapping.get(name, default)
     
     def has(self, name: str) -> bool:
-        """
-        Check if column exists in mapping.
-        
-        Args:
-            name: Standard column name
-            
-        Returns:
-            True if column exists
-        """
+        """Check if column exists in mapping."""
         return name in self._mapping
     
     def all(self) -> Dict[str, str]:
@@ -156,18 +122,7 @@ class ColumnSchema:
             self._accessors[data_type] = ColumnAccessor(data_type, mapping)
     
     def __getattr__(self, name: str) -> ColumnAccessor:
-        """
-        Get column accessor for a data type.
-        
-        Args:
-            name: Data type (e.g., 'orders', 'trades')
-            
-        Returns:
-            ColumnAccessor for that data type
-            
-        Raises:
-            AttributeError: If data type not found in mapping
-        """
+        """Get column accessor for a data type."""
         if name.startswith('_'):
             # Internal attributes
             raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
@@ -186,27 +141,11 @@ class ColumnSchema:
         return sorted(self._accessors.keys())
     
     def get_accessor(self, data_type: str) -> ColumnAccessor:
-        """
-        Get column accessor for a data type.
-        
-        Args:
-            data_type: Type of data (e.g., 'orders', 'trades')
-            
-        Returns:
-            ColumnAccessor for that data type
-        """
+        """Get column accessor for a data type."""
         return self._accessors.get(data_type)
     
     def has_data_type(self, data_type: str) -> bool:
-        """
-        Check if data type exists in mapping.
-        
-        Args:
-            data_type: Type of data
-            
-        Returns:
-            True if data type exists
-        """
+        """Check if data type exists in mapping."""
         return data_type in self._accessors
     
     def data_types(self) -> list:
@@ -219,19 +158,7 @@ class ColumnSchema:
         return list(self._accessors.keys())
     
     def validate(self, data_type: str, required_columns: list) -> bool:
-        """
-        Validate that required columns exist for a data type.
-        
-        Args:
-            data_type: Type of data
-            required_columns: List of required column names
-            
-        Returns:
-            True if all columns exist
-            
-        Raises:
-            ValueError: If any required column is missing
-        """
+        """Validate that required columns exist for a data type."""
         if data_type not in self._accessors:
             raise ValueError(f"Data type '{data_type}' not found in column mapping")
         
@@ -273,16 +200,7 @@ col = ColumnSchema()
 
 # Helper functions for backward compatibility
 def get_column(data_type: str, column_name: str) -> str:
-    """
-    Get actual column name for a standard column name.
-    
-    Args:
-        data_type: Type of data (e.g., 'orders', 'trades')
-        column_name: Standard column name
-        
-    Returns:
-        Actual column name from config
-    """
+    """Get actual column name for a standard column name."""
     accessor = col.get_accessor(data_type)
     if accessor is None:
         raise ValueError(f"Data type '{data_type}' not found")
@@ -291,16 +209,7 @@ def get_column(data_type: str, column_name: str) -> str:
 
 
 def validate_columns(data_type: str, required_columns: list) -> bool:
-    """
-    Validate that required columns exist.
-    
-    Args:
-        data_type: Type of data
-        required_columns: List of required column names
-        
-    Returns:
-        True if all columns exist
-    """
+    """Validate that required columns exist."""
     return col.validate(data_type, required_columns)
 
 

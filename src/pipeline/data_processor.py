@@ -29,19 +29,7 @@ def add_date_column(df, timestamp_col):
 
 
 def extract_orders(input_file, processed_dir, order_types, chunk_size, column_mapping):
-    """
-    Extract Centre Point orders and partition by date/security.
-    
-    Args:
-        input_file: Path to orders CSV file
-        processed_dir: Directory to save processed partitions
-        order_types: List of order types to extract (e.g., [64, 256, 2048, 4096, 4098])
-        chunk_size: Chunk size for reading large files
-        column_mapping: Column name mapping dictionary (DEPRECATED - uses column_schema)
-    
-    Returns:
-        Dictionary mapping partition_key (date/security) to DataFrame
-    """
+    """Extract Centre Point orders and partition by date/security."""
     print(f"\n[1/11] Extracting Centre Point orders from {input_file}...")
     
     order_type_col = col.orders.order_type
@@ -88,19 +76,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
 
 
 def extract_trades(input_file, orders_by_partition, processed_dir, column_mapping, chunk_size):
-    """
-    Extract trades matching order_ids from partitions.
-    
-    Args:
-        input_file: Path to trades CSV file
-        orders_by_partition: Dictionary of orders DataFrames by partition
-        processed_dir: Directory to save processed trades
-        column_mapping: Column name mapping dictionary (DEPRECATED - uses column_schema)
-        chunk_size: Chunk size for reading CSV (from config.CHUNK_SIZE)
-    
-    Returns:
-        Dictionary mapping partition_key to trades DataFrame
-    """
+    """Extract trades matching order_ids from partitions."""
     print(f"\n[2/11] Extracting matching trades from {input_file}...")
     
     order_id_col_orders = col.orders.order_id
@@ -162,18 +138,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
 
 
 def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
-    """
-    Aggregate trades by order_id per partition.
-    
-    Args:
-        orders_by_partition: Dictionary of orders DataFrames
-        trades_by_partition: Dictionary of trades DataFrames
-        processed_dir: Directory to save aggregated trades
-        column_mapping: Column name mapping dictionary
-    
-    Returns:
-        Dictionary mapping partition_key to aggregated trades DataFrame
-    """
+    """Aggregate trades by order_id per partition."""
     print(f"\n[3/11] Aggregating trades by order...")
     
     order_id_col = col.trades.order_id
@@ -245,26 +210,7 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
 
 
 def process_reference_data(raw_folders, processed_dir, orders_by_partition, column_mapping):
-    """
-    Process and partition all reference data files (session, reference, participants, nbbo).
-    
-    Output structure:
-    - Session: processed/{date}/session.csv.gz
-    - Reference: processed/{date}/reference.csv.gz
-    - Participants: processed/{date}/participants.csv.gz
-    - NBBO: processed/{date}/{orderbookid}/nbbo.csv.gz
-    
-    All timestamps converted to AEST and date column added.
-    
-    Args:
-        raw_folders: Dictionary with keys 'session', 'reference', 'participants', 'nbbo'
-        processed_dir: Directory to save processed files
-        orders_by_partition: Dictionary of orders (to get dates and securities)
-        column_mapping: Column name mapping dictionary
-    
-    Returns:
-        Dictionary with processing results
-    """
+    """Process and partition all reference data files (session, reference, participa..."""
     print(f"\n[4/11] Processing reference data files...")
     
     # Get unique dates and securities from orders
@@ -475,18 +421,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
 
 
 def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping):
-    """
-    Extract and partition NBBO data by date/security.
-    
-    Args:
-        input_file: Path to NBBO CSV file
-        orders_by_partition: Dictionary of orders (to get partition keys)
-        processed_dir: Directory to save NBBO partitions
-        column_mapping: Column name mapping dictionary
-    
-    Returns:
-        Dictionary mapping partition_key to NBBO DataFrame
-    """
+    """Extract and partition NBBO data by date/security."""
     print(f"\n[4/11] Extracting NBBO data from {input_file}...")
     
     if not Path(input_file).exists():
@@ -538,15 +473,7 @@ def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping)
 
 
 def extract_reference_data(input_files, unique_dates, orders_by_partition, processed_dir):
-    """
-    Extract and partition session, reference, and participants data by date.
-    
-    Args:
-        input_files: Dictionary with keys 'session', 'reference', 'participants'
-        unique_dates: List of unique dates to extract
-        orders_by_partition: Dictionary of orders (unused, for consistency)
-        processed_dir: Directory to save reference data
-    """
+    """Extract and partition session, reference, and participants data by date."""
     print(f"\n[5/11] Extracting reference data for {len(unique_dates)} dates...")
     
     # Extract Session data
@@ -602,23 +529,7 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
 
 
 def get_orders_state(orders_by_partition, processed_dir, column_mapping):
-    """
-    Extract before/after/final order states per partition.
-    
-    - orders_before_matching: MIN sequence at MIN timestamp per order (entry)
-    - orders_after_matching: MAX sequence at MIN timestamp per order (Option A)
-    - orders_final_state: MAX sequence at MAX timestamp per order (final state - for debugging)
-    
-    Uses only timestamp and sequence for ordering (no orderstatus filtering).
-    
-    Args:
-        orders_by_partition: Dictionary of orders DataFrames
-        processed_dir: Directory to save order states
-        column_mapping: Column name mapping dictionary
-    
-    Returns:
-        Dictionary mapping partition_key to {'before': DataFrame, 'after': DataFrame, 'final': DataFrame}
-    """
+    """Extract before/after/final order states per partition."""
     print(f"\n[5/11] Extracting order states...")
     
     order_id_col = col.orders.order_id
@@ -705,35 +616,7 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
 
 
 def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
-    """
-    Extract first and last execution times for SWEEP ORDERS ONLY.
-    
-    Three-level filtering:
-    
-    LEVEL 1 - Order Filter (cp_orders_filtered.csv):
-        1. exchangeordertype == SWEEP_ORDER_TYPE
-        2. changereason == 3 at max(timestamp)
-        3. leavesquantity == 0 at max(timestamp)
-        4. At least one record has changereason == 6 (new order)
-    
-    LEVEL 2 - Trade Filter (cp_trades_matched.csv):
-        1. Order must have at least one trade
-        2. ALL trades must have dealsource == 1
-    
-    Output Times:
-        - first_execution_time: min(timestamp) from order file
-        - last_execution_time: max(tradetime) from trades file
-    
-    Args:
-        orders_by_partition: Dictionary of orders DataFrames (cp_orders_filtered.csv)
-        trades_by_partition: Dictionary of trades DataFrames (cp_trades_matched.csv)
-        processed_dir: Directory to save execution times
-        column_mapping: Column name mapping dictionary
-    
-    Returns:
-        Dictionary mapping partition_key to execution times DataFrame
-        (Only includes orders meeting ALL criteria)
-    """
+    """Extract first and last execution times for SWEEP ORDERS ONLY."""
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
     
     # Get column names for ORDERS
@@ -892,20 +775,7 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
 
 
 def load_partition_data(partition_key, processed_dir):
-    """
-    Load all necessary data for a partition for simulation.
-    
-    Args:
-        partition_key: Partition identifier (e.g., "2024-09-05/110621")
-        processed_dir: Directory containing processed data
-    
-    Returns:
-        Dictionary containing:
-            - 'orders_before': DataFrame from orders_before_matching.csv
-            - 'orders_after': DataFrame from orders_after_matching.csv
-            - 'orders_final': DataFrame from orders_final_state.csv
-            - 'last_execution': DataFrame from last_execution_time.csv
-    """
+    """Load all necessary data for a partition for simulation."""
     date, security_code = partition_key.split('/')
     partition_dir = Path(processed_dir) / date / security_code
     
@@ -938,21 +808,7 @@ def load_partition_data(partition_key, processed_dir):
 
 
 def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
-    """
-    Classify SWEEP ORDERS ONLY (type 2048) into groups based on REAL execution (from final state).
-    
-    Group 1: Fully Filled (leavesquantity == 0)
-    Group 2: Partially Filled (leavesquantity > 0 AND totalmatchedquantity > 0)
-    Group 3: Unfilled (leavesquantity > 0 AND totalmatchedquantity == 0)
-    
-    Args:
-        orders_by_partition: Dictionary of orders (partition keys only, NOT USED for data)
-        processed_dir: Directory containing orders_after_matching.csv
-        column_mapping: Column name mapping dictionary
-    
-    Returns:
-        Dictionary mapping partition_key to groups dictionary
-    """
+    """Classify SWEEP ORDERS ONLY (type 2048) into groups based on REAL execution (f..."""
     print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     
     order_type_col = col.orders.order_type
