@@ -204,7 +204,7 @@ def process_partitions_sequential_mode(data):
     return simulation_results_by_partition
 
 
-def run_final_analysis(partition_keys):
+def run_final_analysis(processed_dir, outputs_dir, partition_keys):
     """Run sweep execution and unmatched orders analysis (steps 13-14 FINAL)."""
     print(f"\n{'='*80}")
     print(f"FINAL ANALYSIS (Steps 13-14)")
@@ -213,14 +213,16 @@ def run_final_analysis(partition_keys):
     # Step 13: Sweep order execution analysis
     print("\n[Step 13] Analyzing sweep order execution...")
     sea.analyze_sweep_execution(
-        config.PROCESSED_DIR,
+        processed_dir,
+        outputs_dir,
         partition_keys
     )
     
     # Step 14: Unmatched orders root cause analysis (FINAL STEP)
     print("\n[Step 14] Analyzing unmatched orders (FINAL STEP)...")
     uma.analyze_unmatched_orders(
-        config.PROCESSED_DIR,
+        processed_dir,
+        outputs_dir,
         partition_keys
     )
     
@@ -300,7 +302,7 @@ def main():
         process_partitions_sequential_mode(data)
     
     # Run final analysis (steps 13-14)
-    run_final_analysis(data['partition_keys'])
+    run_final_analysis(config.PROCESSED_DIR, config.OUTPUTS_DIR, data['partition_keys'])
     
     # Print summary
     execution_time = time.time() - start_time

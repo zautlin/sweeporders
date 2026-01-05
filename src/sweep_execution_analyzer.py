@@ -735,11 +735,11 @@ def print_statistical_summary(summary_df, tests_df, n_matched, n_unmatched):
         print(f"{'='*90}")
 
 
-def create_output_directories(partition_dir):
-    """Create stats/matched/ and stats/unmatched/ directories."""
-    stats_dir = Path(partition_dir) / 'stats'
-    matched_dir = stats_dir / 'matched'
-    unmatched_dir = stats_dir / 'unmatched'
+def create_output_directories(outputs_dir, partition_key):
+    """Create matched/ and unmatched/ directories in outputs/{date}/{orderbookid}/."""
+    output_partition_dir = Path(outputs_dir) / partition_key
+    matched_dir = output_partition_dir / 'matched'
+    unmatched_dir = output_partition_dir / 'unmatched'
     
     matched_dir.mkdir(parents=True, exist_ok=True)
     unmatched_dir.mkdir(parents=True, exist_ok=True)
@@ -807,7 +807,7 @@ def write_output_files(comparison_df, summary_df, tests_df, quantiles_df, unmatc
 
 # ===== MAIN ANALYSIS FUNCTION =====
 
-def analyze_sweep_execution(processed_dir, partition_keys):
+def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys):
     """Main function to analyze sweep order execution."""
     print("\n" + "="*80)
     print("[13/13] SWEEP ORDER EXECUTION ANALYSIS")
@@ -867,7 +867,7 @@ def analyze_sweep_execution(processed_dir, partition_keys):
         
         # Phase 5: Output generation
         print(f"\nPhase 5: Generating outputs...")
-        matched_dir, unmatched_dir = create_output_directories(partition_dir)
+        matched_dir, unmatched_dir = create_output_directories(outputs_dir, partition_key)
         write_output_files(
             comparison_df, summary_df, tests_df, quantiles_df, unmatched_df,
             matched_dir, unmatched_dir, partition_key

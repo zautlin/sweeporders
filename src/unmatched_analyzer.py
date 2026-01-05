@@ -16,9 +16,10 @@ import file_utils as fu
 
 # ===== PHASE 1: DATA LOADING =====
 
-def load_unmatched_orders(partition_dir):
-    """Load unmatched orders from Step 13 output."""
-    filepath = Path(partition_dir) / 'stats' / 'unmatched' / 'sweep_order_unexecuted_in_dark.csv'
+def load_unmatched_orders(outputs_dir, partition_key):
+    """Load unmatched orders from Step 13 output (now in outputs/{date}/{orderbookid}/unmatched/)."""
+    output_partition_dir = Path(outputs_dir) / partition_key
+    filepath = output_partition_dir / 'unmatched' / 'sweep_order_unexecuted_in_dark.csv'
     df = fu.safe_read_csv(filepath, required=False)
     
     if df is None or len(df) == 0:
@@ -305,9 +306,10 @@ def classify_root_cause(liquidity_at_arrival, liquidity_evolution):
 
 # ===== PHASE 5: OUTPUT GENERATION =====
 
-def create_output_directory(partition_dir):
-    """Create stats/unmatched_analysis/ directory."""
-    analysis_dir = Path(partition_dir) / 'stats' / 'unmatched_analysis'
+def create_output_directory(outputs_dir, partition_key):
+    """Create unmatched_analysis/ directory in outputs/{date}/{orderbookid}/."""
+    output_partition_dir = Path(outputs_dir) / partition_key
+    analysis_dir = output_partition_dir / 'unmatched_analysis'
     analysis_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"\n  Created output directory:")
@@ -381,7 +383,7 @@ def write_output_files(unmatched_df, liquidity_analysis_df, root_causes_df, anal
 
 # ===== MAIN ANALYSIS FUNCTION =====
 
-def analyze_unmatched_orders(processed_dir, partition_keys):
+def analyze_unmatched_orders(processed_dir, outputs_dir, partition_keys):
     """Main function to analyze unmatched orders."""
     print("\n" + "="*80)
     print("[14/14] UNMATCHED ORDERS ROOT CAUSE ANALYSIS")
@@ -393,7 +395,7 @@ def analyze_unmatched_orders(processed_dir, partition_keys):
         
         # Phase 1: Load data
         print(f"\nPhase 1: Loading data...")
-        unmatched_df = load_unmatched_orders(partition_dir)
+        unmatched_df = load_unmatched_orders(outputs_dir, partition_key)
         
         if len(unmatched_df) == 0:
             print(f"  ⏭️  Skipping partition (no unmatched orders)")
@@ -454,7 +456,7 @@ def analyze_unmatched_orders(processed_dir, partition_keys):
         
         # Phase 5: Output generation
         print(f"\nPhase 5: Generating outputs...")
-        analysis_dir = create_output_directory(partition_dir)
+        analysis_dir = create_output_directory(outputs_dir, partition_key)
         write_output_files(unmatched_df, liquidity_analysis_df, root_causes_df, analysis_dir)
         
         # Print summary

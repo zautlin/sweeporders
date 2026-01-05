@@ -55,9 +55,9 @@ def get_input_files(ticker=None, date=None):
         'orders': str(base / f'orders/{ticker}_{date}_orders.csv'),
         'trades': str(base / f'trades/{ticker}_{date}_trades.csv'),
         'nbbo': str(base / f'nbbo/{ticker}_{date}_nbbo.csv'),
-        'session': str(base / f'session/{ticker}_{date}_session.csv'),
-        'reference': str(base / f'reference/{ticker}_{date}_ob.csv'),
-        'participants': str(base / f'participants/{ticker}_{date}_par.csv'),
+        'session': str(base / f'session/{date}_session.csv'),
+        'reference': str(base / f'reference/{date}_ob.csv'),
+        'participants': str(base / f'participants/{date}_par.csv'),
     }
 
 
