@@ -19,7 +19,7 @@ except ImportError:
     scipy_stats = None
     SCIPY_AVAILABLE = False
 
-import file_utils as fu
+import utils.file_utils as fu
 
 
 # ===== PHASE 1: DATA LOADING =====

@@ -4,11 +4,11 @@ import pandas as pd
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-import data_processor as dp
-import sweep_simulator as ss
-import metrics_generator as mg
-import file_utils as fu
-import data_utils as du
+import pipeline.data_processor as dp
+import pipeline.sweep_simulator as ss
+import pipeline.metrics_generator as mg
+import utils.file_utils as fu
+import utils.data_utils as du
 from column_schema import col
 
 

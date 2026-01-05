@@ -4,14 +4,14 @@ import argparse
 import time
 from pathlib import Path
 
-import data_processor as dp
-import partition_processor as pp
-import metrics_generator as mg
-import sweep_execution_analyzer as sea
-import unmatched_analyzer as uma
+import pipeline.data_processor as dp
+import pipeline.partition_processor as pp
+import pipeline.metrics_generator as mg
+import analysis.sweep_execution_analyzer as sea
+import analysis.unmatched_analyzer as uma
 import config
-from security_discovery import SecurityDiscovery
-from statistics_layer import StatisticsEngine, SCIPY_AVAILABLE
+from discovery.security_discovery import SecurityDiscovery
+from utils.statistics_layer import StatisticsEngine, SCIPY_AVAILABLE
 
 
 def parse_arguments():
@@ -477,7 +477,7 @@ def run_per_security_analysis(processed_dir, outputs_dir, partition_keys, stats_
     
     # Volume-based analysis (NEW)
     print("\n[Volume Analysis] Analyzing execution by order volume...")
-    import volume_analyzer as va
+    import analysis.volume_analyzer as va
     volume_summary = va.analyze_by_volume(
         outputs_dir,
         partition_keys,
@@ -503,9 +503,9 @@ def run_cross_security_aggregation(runtime_config):
     print("\n[Stage 4] Aggregating results across all securities...")
     
     # Import aggregation modules
-    import aggregate_sweep_results as agg
-    import analyze_aggregated_results as analyze
-    import aggregate_volume_analysis as vol_agg
+    import aggregation.aggregate_sweep_results as agg
+    import aggregation.analyze_aggregated_results as analyze
+    import aggregation.aggregate_volume_analysis as vol_agg
     
     # Get stats engine from runtime config
     stats_engine = runtime_config.get('stats_engine')

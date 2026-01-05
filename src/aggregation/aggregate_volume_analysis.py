@@ -19,7 +19,7 @@ from column_schema import col
 import numpy as np
 from pathlib import Path
 import logging
-from statistics_layer import StatisticsEngine
+from utils.statistics_layer import StatisticsEngine
 from typing import List, Tuple, Dict, Any
 
 # Try to import scipy for backward compatibility

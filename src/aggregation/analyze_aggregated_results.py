@@ -26,7 +26,7 @@ from column_schema import col
 import numpy as np
 import logging
 from pathlib import Path
-from statistics_layer import StatisticsEngine
+from utils.statistics_layer import StatisticsEngine
 
 # Try to import scipy for backward compatibility
 try:

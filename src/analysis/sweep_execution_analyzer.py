@@ -8,7 +8,7 @@ import pandas as pd
 from column_schema import col
 import numpy as np
 from pathlib import Path
-from statistics_layer import StatisticsEngine
+from utils.statistics_layer import StatisticsEngine
 import json
 from datetime import datetime
 
@@ -20,7 +20,7 @@ except ImportError:
     scipy_stats = None
     SCIPY_AVAILABLE = False
 
-import file_utils as fu
+import utils.file_utils as fu
 
 
 # ===== PHASE 1: DATA LOADING =====
