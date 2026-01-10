@@ -28,6 +28,223 @@ def add_date_column(df, timestamp_col):
     return df
 
 
+def _read_csv_files_concat(file_list):
+    """Read and concatenate multiple CSV files into single DataFrame."""
+    if not file_list:
+        return None
+    
+    dfs = []
+    for file in file_list:
+        df = pd.read_csv(file)
+        dfs.append(df)
+    
+    if not dfs:
+        return None
+    
+    return pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+
+
+def _partition_by_date_and_save(df, unique_dates, processed_dir, filename, date_col):
+    """Partition DataFrame by date and save each partition as compressed CSV."""
+    results = {}
+    
+    for date in unique_dates:
+        date_data = df[df[date_col] == date].copy()
+        
+        if len(date_data) > 0:
+            date_dir = Path(processed_dir) / date
+            date_dir.mkdir(parents=True, exist_ok=True)
+            
+            output_file = date_dir / filename
+            date_data.to_csv(output_file, index=False, compression='gzip')
+            
+            results[date] = date_data
+            size_kb = output_file.stat().st_size / 1024
+            print(f"    {date}/{filename}: {len(date_data):,} records ({size_kb:.1f} KB)")
+        else:
+            print(f"    {date}/{filename}: NO DATA (missing in raw files)")
+    
+    return results
+
+
+def _partition_by_date_security_and_save(df, orders_by_partition, processed_dir, filename, date_col, security_col):
+    """Partition DataFrame by date/security and save each partition as compressed CSV."""
+    results = {}
+    
+    for partition_key in orders_by_partition.keys():
+        date, orderbookid = partition_key.split('/')
+        orderbookid_int = int(orderbookid)
+        
+        partition_data = df[
+            (df[date_col] == date) & 
+            (df[security_col] == orderbookid_int)
+        ].copy()
+        
+        if len(partition_data) > 0:
+            partition_data_normalized = normalize_to_standard_names(partition_data, 'nbbo')
+            
+            partition_dir = Path(processed_dir) / date / orderbookid
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            
+            output_file = partition_dir / filename
+            partition_data_normalized.to_csv(output_file, index=False, compression='gzip')
+            
+            results[partition_key] = partition_data_normalized
+            size_kb = output_file.stat().st_size / 1024
+            print(f"    {partition_key}/{filename}: {len(partition_data):,} records ({size_kb:.1f} KB)")
+        else:
+            print(f"    {partition_key}/{filename}: NO DATA (missing in raw files)")
+    
+    return results
+
+
+def _process_single_reference_type(file_list, timestamp_col, unique_dates, processed_dir, filename):
+    """Process single reference data type: read files, add date, partition, save."""
+    if not file_list:
+        return {}
+    
+    df = _read_csv_files_concat(file_list)
+    if df is None or len(df) == 0:
+        return {}
+    
+    df = add_date_column(df, timestamp_col)
+    return _partition_by_date_and_save(df, unique_dates, processed_dir, filename, col.common.date)
+
+
+def _process_participants_with_fallback(file_list, timestamp_col, unique_dates, processed_dir):
+    """Process participants data with latest-date fallback for missing dates."""
+    if not file_list:
+        return {}
+    
+    df = _read_csv_files_concat(file_list)
+    if df is None or len(df) == 0:
+        return {}
+    
+    df = add_date_column(df, timestamp_col)
+    
+    all_participant_dates = df[col.common.date].unique()
+    print(f"    Available dates in participants: {sorted(all_participant_dates)}")
+    
+    results = {}
+    
+    for date in unique_dates:
+        date_data = df[df[col.common.date] == date].copy()
+        
+        if len(date_data) > 0:
+            date_dir = Path(processed_dir) / date
+            date_dir.mkdir(parents=True, exist_ok=True)
+            
+            output_file = date_dir / "participants.csv.gz"
+            date_data.to_csv(output_file, index=False, compression='gzip')
+            
+            results[date] = date_data
+            size_kb = output_file.stat().st_size / 1024
+            print(f"    {date}/participants.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
+        else:
+            latest_date = max(all_participant_dates)
+            fallback_data = df[df[col.common.date] == latest_date].copy()
+            
+            date_dir = Path(processed_dir) / date
+            date_dir.mkdir(parents=True, exist_ok=True)
+            
+            output_file = date_dir / "participants.csv.gz"
+            fallback_data.to_csv(output_file, index=False, compression='gzip')
+            
+            results[date] = fallback_data
+            size_kb = output_file.stat().st_size / 1024
+            print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records ({size_kb:.1f} KB) [FALLBACK from {latest_date}]")
+    
+    return results
+
+
+def _process_nbbo_data(file_list, timestamp_col, orders_by_partition, processed_dir, security_col):
+    """Process NBBO data partitioned by date and security."""
+    if not file_list:
+        return {}
+    
+    df = _read_csv_files_concat(file_list)
+    if df is None or len(df) == 0:
+        return {}
+    
+    df = add_date_column(df, timestamp_col)
+    return _partition_by_date_security_and_save(df, orders_by_partition, processed_dir, "nbbo.csv.gz", col.common.date, security_col)
+
+
+def _filter_sweep_orders_by_execution(orders_df):
+    """Filter sweep orders that completed execution."""
+    order_id_col = col.common.orderid
+    timestamp_col = col.common.timestamp
+    order_type_col = col.common.exchangeordertype
+    changereason_col = col.common.changereason
+    leavesqty_col = col.common.leavesquantity
+    
+    sweep_orders = orders_df[orders_df[order_type_col] == SWEEP_ORDER_TYPE].copy()
+    
+    if len(sweep_orders) == 0:
+        return []
+    
+    sweep_orders_sorted = sweep_orders.sort_values([order_id_col, timestamp_col])
+    
+    qualifying_order_ids = []
+    
+    for order_id, group in sweep_orders_sorted.groupby(order_id_col):
+        final_state = group.iloc[-1]
+        
+        if final_state[changereason_col] == 3 and final_state[leavesqty_col] == 0:
+            if (group[changereason_col] == 6).any():
+                qualifying_order_ids.append(order_id)
+    
+    return qualifying_order_ids
+
+
+def _filter_orders_with_valid_trades(order_ids, trades_df):
+    """Filter orders that have trades with dealsource=1."""
+    trade_orderid_col = col.common.orderid
+    
+    qualifying_trades = trades_df[trades_df[trade_orderid_col].isin(order_ids)].copy()
+    
+    orders_with_valid_trades = {}
+    
+    for order_id in order_ids:
+        order_trades = qualifying_trades[qualifying_trades[trade_orderid_col] == order_id]
+        
+        if len(order_trades) == 0:
+            continue
+        
+        dealsources = order_trades['dealsource'].unique()
+        if not (len(dealsources) == 1 and dealsources[0] == 1):
+            continue
+        
+        orders_with_valid_trades[order_id] = order_trades
+    
+    return orders_with_valid_trades
+
+
+def _extract_execution_time_dict(order_id, order_df, trades_df):
+    """Extract first execution time from orders and last execution time from trades."""
+    timestamp_col = col.common.timestamp
+    trade_time_col = col.common.tradetime
+    
+    first_time = order_df[timestamp_col].min()
+    last_time = trades_df[trade_time_col].max()
+    
+    return {
+        'orderid': order_id,
+        'first_execution_time': first_time,
+        'last_execution_time': last_time
+    }
+
+
+def _save_execution_times(partition_key, execution_times_df, processed_dir):
+    """Save execution times DataFrame to partition directory."""
+    date, security_code = partition_key.split('/')
+    partition_dir = Path(processed_dir) / date / security_code
+    partition_dir.mkdir(parents=True, exist_ok=True)
+    
+    exec_file = partition_dir / "last_execution_time.csv"
+    execution_times_df.to_csv(exec_file, index=False)
+
+
 def extract_orders(input_file, processed_dir, order_types, chunk_size, column_mapping):
     """Extract Centre Point orders and partition by date/security."""
     print(f"\n[1/11] Extracting Centre Point orders from {input_file}...")
@@ -45,7 +262,6 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
         
         if len(cp_chunk) > 0:
             cp_chunk = add_date_column(cp_chunk, timestamp_col)
-            # No rename needed - use raw column name from accessor
             orders_list.append(cp_chunk)
     
     if not orders_list:
@@ -83,9 +299,8 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     """Extract trades matching order_ids from partitions."""
     print(f"\n[2/11] Extracting matching trades from {input_file}...")
     
-    # NOTE: orders_by_partition now has normalized column names (orderid, not order_id)
-    order_id_col_orders = 'orderid'  # Normalized name
-    order_id_col_trades = col.trades.order_id  # Raw name from CSV
+    order_id_col_orders = 'orderid'
+    order_id_col_trades = col.trades.order_id
     trade_time_col = col.trades.trade_time
     
     # Collect all order IDs
@@ -150,7 +365,6 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
     """Aggregate trades by order_id per partition."""
     print(f"\n[3/11] Aggregating trades by order...")
     
-    # NOTE: trades_by_partition now has normalized column names
     order_id_col = col.common.orderid
     trade_time_col = col.common.tradetime
     trade_price_col = col.common.tradeprice
@@ -220,12 +434,11 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
 
 
 def process_reference_data(raw_folders, processed_dir, orders_by_partition, column_mapping):
-    """Process and partition all reference data files (session, reference, participa..."""
+    """Process and partition all reference data files."""
     print(f"\n[4/11] Processing reference data files...")
     
-    # Get unique dates and securities from orders
     unique_dates = sorted(set(pk.split('/')[0] for pk in orders_by_partition.keys()))
-    unique_securities = {}  # date -> [securities]
+    unique_securities = {}
     for pk in orders_by_partition.keys():
         date, security = pk.split('/')
         if date not in unique_securities:
@@ -235,195 +448,44 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
     print(f"  Target dates: {unique_dates}")
     print(f"  Target securities by date: {unique_securities}")
     
-    results = {
-        'session': {},
-        'reference': {},
-        'participants': {},
-        'nbbo': {}
-    }
+    results = {'session': {}, 'reference': {}, 'participants': {}, 'nbbo': {}}
     
-    # ========================================================================
-    # PROCESS SESSION DATA
-    # ========================================================================
     session_files = list(Path(raw_folders['session']).glob('*.csv'))
     if session_files:
         print(f"\n  Processing Session data from {len(session_files)} file(s)...")
-        
-        session_dfs = []
-        for file in session_files:
-            df = pd.read_csv(file)
-            session_dfs.append(df)
-        
-        session_df = pd.concat(session_dfs, ignore_index=True) if len(session_dfs) > 1 else session_dfs[0]
-        
-        # Convert timestamp to AEST and add date column
-        timestamp_col = col.session.timestamp
-        session_df = add_date_column(session_df, timestamp_col)
-        
-        # Partition by date
-        for date in unique_dates:
-            date_data = session_df[session_df[col.common.date] == date].copy()
-            
-            if len(date_data) > 0:
-                date_dir = Path(processed_dir) / date
-                date_dir.mkdir(parents=True, exist_ok=True)
-                
-                output_file = date_dir / "session.csv.gz"
-                date_data.to_csv(output_file, index=False, compression='gzip')
-                
-                results['session'][date] = date_data
-                size_kb = output_file.stat().st_size / 1024
-                print(f"    {date}/session.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
-            else:
-                print(f"    {date}/session.csv.gz: NO DATA (missing in raw files)")
+        results['session'] = _process_single_reference_type(
+            session_files, col.session.timestamp, unique_dates, processed_dir, 'session.csv.gz'
+        )
     else:
-        print(f"  No session files found in {raw_folders['session']}")
+        print(f"\n  Processing Session data from 0 file(s)...")
     
-    # ========================================================================
-    # PROCESS REFERENCE DATA
-    # ========================================================================
     reference_files = list(Path(raw_folders['reference']).glob('*.csv'))
     if reference_files:
         print(f"\n  Processing Reference data from {len(reference_files)} file(s)...")
-        
-        reference_dfs = []
-        for file in reference_files:
-            df = pd.read_csv(file)
-            reference_dfs.append(df)
-        
-        reference_df = pd.concat(reference_dfs, ignore_index=True) if len(reference_dfs) > 1 else reference_dfs[0]
-        
-        # Convert timestamp to AEST and add date column
-        timestamp_col = col.reference.timestamp
-        reference_df = add_date_column(reference_df, timestamp_col)
-        
-        # Partition by date
-        for date in unique_dates:
-            date_data = reference_df[reference_df[col.common.date] == date].copy()
-            
-            if len(date_data) > 0:
-                date_dir = Path(processed_dir) / date
-                date_dir.mkdir(parents=True, exist_ok=True)
-                
-                output_file = date_dir / "reference.csv.gz"
-                date_data.to_csv(output_file, index=False, compression='gzip')
-                
-                results['reference'][date] = date_data
-                size_kb = output_file.stat().st_size / 1024
-                print(f"    {date}/reference.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
-            else:
-                print(f"    {date}/reference.csv.gz: NO DATA (missing in raw files)")
+        results['reference'] = _process_single_reference_type(
+            reference_files, col.reference.timestamp, unique_dates, processed_dir, 'reference.csv.gz'
+        )
     else:
-        print(f"  No reference files found in {raw_folders['reference']}")
+        print(f"\n  Processing Reference data from 0 file(s)...")
     
-    # ========================================================================
-    # PROCESS PARTICIPANTS DATA
-    # ========================================================================
     participants_files = list(Path(raw_folders['participants']).glob('*.csv'))
     if participants_files:
         print(f"\n  Processing Participants data from {len(participants_files)} file(s)...")
-        
-        participants_dfs = []
-        for file in participants_files:
-            df = pd.read_csv(file)
-            participants_dfs.append(df)
-        
-        participants_df = pd.concat(participants_dfs, ignore_index=True) if len(participants_dfs) > 1 else participants_dfs[0]
-        
-        # Convert timestamp to AEST and add date column
-        timestamp_col = col.participants.timestamp
-        participants_df = add_date_column(participants_df, timestamp_col)
-        
-        # Get all unique dates in participants data
-        all_participant_dates = participants_df[col.common.date].unique()
-        print(f"    Available dates in participants: {sorted(all_participant_dates)}")
-        
-        # Partition by date (use latest available if exact date missing)
-        for date in unique_dates:
-            date_data = participants_df[participants_df[col.common.date] == date].copy()
-            
-            if len(date_data) > 0:
-                # Exact match found
-                date_dir = Path(processed_dir) / date
-                date_dir.mkdir(parents=True, exist_ok=True)
-                
-                output_file = date_dir / "participants.csv.gz"
-                date_data.to_csv(output_file, index=False, compression='gzip')
-                
-                results['participants'][date] = date_data
-                size_kb = output_file.stat().st_size / 1024
-                print(f"    {date}/participants.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
-            else:
-                # Use latest available date as fallback
-                latest_date = max(all_participant_dates)
-                fallback_data = participants_df[participants_df[col.common.date] == latest_date].copy()
-                
-                date_dir = Path(processed_dir) / date
-                date_dir.mkdir(parents=True, exist_ok=True)
-                
-                output_file = date_dir / "participants.csv.gz"
-                fallback_data.to_csv(output_file, index=False, compression='gzip')
-                
-                results['participants'][date] = fallback_data
-                size_kb = output_file.stat().st_size / 1024
-                print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records ({size_kb:.1f} KB) [FALLBACK from {latest_date}]")
+        results['participants'] = _process_participants_with_fallback(
+            participants_files, col.participants.timestamp, unique_dates, processed_dir
+        )
     else:
-        print(f"  No participants files found in {raw_folders['participants']}")
+        print(f"\n  Processing Participants data from 0 file(s)...")
     
-    # ========================================================================
-    # PROCESS NBBO DATA
-    # ========================================================================
     nbbo_files = list(Path(raw_folders['nbbo']).glob('*.csv'))
     if nbbo_files:
         print(f"\n  Processing NBBO data from {len(nbbo_files)} file(s)...")
-        
-        nbbo_dfs = []
-        for file in nbbo_files:
-            df = pd.read_csv(file)
-            nbbo_dfs.append(df)
-        
-        nbbo_df = pd.concat(nbbo_dfs, ignore_index=True) if len(nbbo_dfs) > 1 else nbbo_dfs[0]
-        
-        # Convert timestamp to AEST and add date column
-        timestamp_col = col.nbbo.timestamp
-        nbbo_df = add_date_column(nbbo_df, timestamp_col)
-        
-        # Standardize security_code column
-        security_col = col.nbbo.security_code
-        # No rename needed - use raw column name from accessor
-        
-        # Partition by date and orderbookid
-        for partition_key in orders_by_partition.keys():
-            date, orderbookid = partition_key.split('/')
-            orderbookid_int = int(orderbookid)
-            
-            partition_data = nbbo_df[
-                (nbbo_df[col.common.date] == date) & 
-                (nbbo_df[security_col] == orderbookid_int)
-            ].copy()
-            
-            if len(partition_data) > 0:
-                # Normalize column names to standard before saving
-                partition_data_normalized = normalize_to_standard_names(partition_data, 'nbbo')
-                
-                partition_dir = Path(processed_dir) / date / orderbookid
-                partition_dir.mkdir(parents=True, exist_ok=True)
-                
-                output_file = partition_dir / "nbbo.csv.gz"
-                partition_data_normalized.to_csv(output_file, index=False, compression='gzip')
-                
-                # Store normalized data in memory (not raw data)
-                results['nbbo'][partition_key] = partition_data_normalized
-                size_kb = output_file.stat().st_size / 1024
-                print(f"    {partition_key}/nbbo.csv.gz: {len(partition_data):,} records ({size_kb:.1f} KB)")
-            else:
-                print(f"    {partition_key}/nbbo.csv.gz: NO DATA (missing in raw files)")
+        results['nbbo'] = _process_nbbo_data(
+            nbbo_files, col.nbbo.timestamp, orders_by_partition, processed_dir, col.nbbo.security_code
+        )
     else:
-        print(f"  No NBBO files found in {raw_folders['nbbo']}")
+        print(f"\n  Processing NBBO data from 0 file(s)...")
     
-    # ========================================================================
-    # SUMMARY
-    # ========================================================================
     print(f"\n  Summary:")
     print(f"    Session: {len(results['session'])} dates processed")
     print(f"    Reference: {len(results['reference'])} dates processed")
@@ -433,117 +495,10 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
     return results
 
 
-def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping):
-    """Extract and partition NBBO data by date/security."""
-    print(f"\n[4/11] Extracting NBBO data from {input_file}...")
-    
-    if not Path(input_file).exists():
-        print(f"  File not found, skipping")
-        return {}
-    
-    timestamp_col = col.nbbo.timestamp
-    security_col = col.nbbo.security_code
-    
-    # Read NBBO file
-    nbbo_df = pd.read_csv(input_file)
-    print(f"  Total NBBO records: {len(nbbo_df):,}")
-    
-    # Add date column
-    if 'date' not in nbbo_df.columns:
-        nbbo_df = add_date_column(nbbo_df, timestamp_col)
-    
-    # No rename needed - use raw column name from accessor
-    
-    nbbo_by_partition = {}
-    
-    for partition_key in orders_by_partition.keys():
-        date, security_code = partition_key.split('/')
-        security_code_int = int(security_code)
-        
-        # Filter NBBO for this partition
-        partition_nbbo = nbbo_df[
-            (nbbo_df[col.common.date] == date) & 
-            (nbbo_df[security_col] == security_code_int)
-        ].copy()
-        
-        if len(partition_nbbo) > 0:
-            nbbo_by_partition[partition_key] = partition_nbbo
-            
-            # Save to processed directory
-            partition_dir = Path(processed_dir) / date / security_code
-            partition_dir.mkdir(parents=True, exist_ok=True)
-            
-            partition_file = partition_dir / "nbbo.csv.gz"
-            partition_nbbo.to_csv(partition_file, index=False, compression='gzip')
-            
-            size_mb = partition_file.stat().st_size / (1024 * 1024)
-            print(f"  {partition_key}: {len(partition_nbbo):,} records ({size_mb:.2f} MB)")
-    
-    print(f"  Total: {len(nbbo_by_partition)} partitions with NBBO data")
-    return nbbo_by_partition
-
-
-def extract_reference_data(input_files, unique_dates, orders_by_partition, processed_dir):
-    """Extract and partition session, reference, and participants data by date."""
-    print(f"\n[5/11] Extracting reference data for {len(unique_dates)} dates...")
-    
-    # Extract Session data
-    session_file = input_files['session']
-    if Path(session_file).exists():
-        session_df = pd.read_csv(session_file)
-        if 'date' not in session_df.columns:
-            session_df = add_date_column(session_df, 'TradeDate')
-        
-        for date in unique_dates:
-            date_session = session_df[session_df[col.common.date] == date].copy()
-            if len(date_session) > 0:
-                date_dir = Path(processed_dir) / date
-                date_dir.mkdir(parents=True, exist_ok=True)
-                
-                date_file = date_dir / "session.csv.gz"
-                date_session.to_csv(date_file, index=False, compression='gzip')
-                print(f"  {date}/session.csv.gz: {len(date_session):,} records")
-    
-    # Extract Reference data
-    reference_file = input_files['reference']
-    if Path(reference_file).exists():
-        ref_df = pd.read_csv(reference_file)
-        if 'date' not in ref_df.columns:
-            ref_df = add_date_column(ref_df, 'TradeDate')
-        
-        for date in unique_dates:
-            date_ref = ref_df[ref_df[col.common.date] == date].copy()
-            if len(date_ref) > 0:
-                date_dir = Path(processed_dir) / date
-                date_dir.mkdir(parents=True, exist_ok=True)
-                
-                date_file = date_dir / "reference.csv.gz"
-                date_ref.to_csv(date_file, index=False, compression='gzip')
-                print(f"  {date}/reference.csv.gz: {len(date_ref):,} records")
-    
-    # Extract Participants data
-    participants_file = input_files['participants']
-    if Path(participants_file).exists():
-        par_df = pd.read_csv(participants_file)
-        if 'date' not in par_df.columns:
-            par_df = add_date_column(par_df, 'TradeDate')
-        
-        for date in unique_dates:
-            date_par = par_df[par_df[col.common.date] == date].copy()
-            if len(date_par) > 0:
-                date_dir = Path(processed_dir) / date
-                date_dir.mkdir(parents=True, exist_ok=True)
-                
-                date_file = date_dir / "participants.csv.gz"
-                date_par.to_csv(date_file, index=False, compression='gzip')
-                print(f"  {date}/participants.csv.gz: {len(date_par):,} records")
-
-
 def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     """Extract before/after/final order states per partition."""
     print(f"\n[5/11] Extracting order states...")
     
-    # NOTE: orders_by_partition now has normalized column names
     order_id_col = col.common.orderid
     timestamp_col = col.common.timestamp
     sequence_col = col.common.sequence
@@ -631,156 +586,33 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
     """Extract first and last execution times for SWEEP ORDERS ONLY."""
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
     
-    # NOTE: Both orders_by_partition and trades_by_partition now have normalized column names
-    order_id_col = col.common.orderid
-    timestamp_col = col.common.timestamp
-    order_type_col = col.common.exchangeordertype
-    changereason_col = col.common.changereason
-    leavesqty_col = col.common.leavesquantity
-    
-    # Get column names for TRADES
-    trade_orderid_col = col.common.orderid
-    trade_time_col = col.common.tradetime
-    
     execution_times_by_partition = {}
     
     for partition_key, orders_df in orders_by_partition.items():
-
-
         if len(orders_df) == 0:
             continue
         
-        # =====================================================================
-        # LEVEL 1: FILTER ORDERS
-        # =====================================================================
+        qualifying_order_ids = _filter_sweep_orders_by_execution(orders_df)
         
-        # Filter 1.1: Sweep orders only
-        sweep_orders = orders_df[orders_df[order_type_col] == SWEEP_ORDER_TYPE].copy()
-        
-        if len(sweep_orders) == 0:
-            # No sweep orders - create empty DataFrame with headers
+        if not qualifying_order_ids or partition_key not in trades_by_partition:
             execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
             execution_times_by_partition[partition_key] = execution_times_df
-            
-            # Save empty file
-            date, security_code = partition_key.split('/')
-            partition_dir = Path(processed_dir) / date / security_code
-            partition_dir.mkdir(parents=True, exist_ok=True)
-            exec_file = partition_dir / "last_execution_time.csv"
-            execution_times_df.to_csv(exec_file, index=False)
-            
-            print(f"  {partition_key}: 0 qualifying sweep orders")
-            continue
-        
-        # Sort by timestamp for chronological processing
-        sweep_orders_sorted = sweep_orders.sort_values([order_id_col, timestamp_col])
-        
-        # Filter 1.2, 1.3, 1.4: Get orders with changereason=3 and leavesquantity=0 at max(timestamp)
-        # AND at least one changereason=6 (new order)
-        qualifying_order_ids = []
-        
-        for order_id, group in sweep_orders_sorted.groupby(order_id_col):
-            # Get final state (max timestamp)
-            final_state = group.iloc[-1]
-            
-            # Check 1: changereason == 3 AND leavesquantity == 0 at final state
-            if final_state[changereason_col] == 3 and final_state[leavesqty_col] == 0:
-                # Check 2: At least one record has changereason == 6 (new order)
-                if (group[changereason_col] == 6).any():
-                    qualifying_order_ids.append(order_id)
-        
-        if len(qualifying_order_ids) == 0:
-            # No orders pass Level 1 filters - create empty DataFrame
-            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
-            execution_times_by_partition[partition_key] = execution_times_df
-            
-            # Save empty file
-            date, security_code = partition_key.split('/')
-            partition_dir = Path(processed_dir) / date / security_code
-            partition_dir.mkdir(parents=True, exist_ok=True)
-            exec_file = partition_dir / "last_execution_time.csv"
-            execution_times_df.to_csv(exec_file, index=False)
-            
-            print(f"  {partition_key}: 0 qualifying sweep orders")
-            continue
-        
-        # =====================================================================
-        # LEVEL 2: FILTER TRADES
-        # =====================================================================
-        
-        # Check if trades exist for this partition
-        if partition_key not in trades_by_partition:
-            # No trades - create empty DataFrame
-            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
-            execution_times_by_partition[partition_key] = execution_times_df
-            
-            # Save empty file
-            date, security_code = partition_key.split('/')
-            partition_dir = Path(processed_dir) / date / security_code
-            partition_dir.mkdir(parents=True, exist_ok=True)
-            exec_file = partition_dir / "last_execution_time.csv"
-            execution_times_df.to_csv(exec_file, index=False)
-            
+            _save_execution_times(partition_key, execution_times_df, processed_dir)
             print(f"  {partition_key}: 0 qualifying sweep orders")
             continue
         
         trades_df = trades_by_partition[partition_key]
-        
-        # Filter trades for qualifying order IDs
-        qualifying_trades = trades_df[trades_df[trade_orderid_col].isin(qualifying_order_ids)].copy()
+        orders_with_valid_trades = _filter_orders_with_valid_trades(qualifying_order_ids, trades_df)
         
         execution_times = []
+        for order_id, order_trades in orders_with_valid_trades.items():
+            order_data = orders_df[orders_df[col.common.orderid] == order_id]
+            exec_time = _extract_execution_time_dict(order_id, order_data, order_trades)
+            execution_times.append(exec_time)
         
-        # Process each qualifying order
-        for order_id in qualifying_order_ids:
-            # Get trades for this order
-            order_trades = qualifying_trades[qualifying_trades[trade_orderid_col] == order_id]
-            
-            # Filter 2.1: Must have at least one trade
-            if len(order_trades) == 0:
-                continue  # EXCLUDE: no trades
-            
-            # Filter 2.2: ALL trades must have dealsource == 1
-            dealsources = order_trades['dealsource'].unique()
-            if not (len(dealsources) == 1 and dealsources[0] == 1):
-                continue  # EXCLUDE: not all trades are dealsource=1
-            
-            # ORDER QUALIFIES - Extract timestamps
-            # Get order data for this order_id
-            order_data = sweep_orders_sorted[sweep_orders_sorted[order_id_col] == order_id]
-            
-            # first_execution_time: min(timestamp) from ORDER file
-            first_time = order_data[timestamp_col].min()
-            
-            # last_execution_time: max(tradetime) from TRADES file
-            last_time = order_trades[trade_time_col].max()
-            
-            execution_times.append({
-                'orderid': order_id,
-                'first_execution_time': first_time,
-                'last_execution_time': last_time
-            })
-        
-        # =====================================================================
-        # CREATE OUTPUT AND SAVE
-        # =====================================================================
-        
-        if len(execution_times) > 0:
-            execution_times_df = pd.DataFrame(execution_times)
-        else:
-            # No orders pass all filters - create empty DataFrame with headers
-            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
-        
+        execution_times_df = pd.DataFrame(execution_times) if execution_times else pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
         execution_times_by_partition[partition_key] = execution_times_df
-        
-        # Save to file
-        date, security_code = partition_key.split('/')
-        partition_dir = Path(processed_dir) / date / security_code
-        partition_dir.mkdir(parents=True, exist_ok=True)
-        
-        exec_file = partition_dir / "last_execution_time.csv"
-        execution_times_df.to_csv(exec_file, index=False)
-        
+        _save_execution_times(partition_key, execution_times_df, processed_dir)
         print(f"  {partition_key}: {len(execution_times_df):,} qualifying sweep orders")
     
     return execution_times_by_partition
@@ -820,10 +652,9 @@ def load_partition_data(partition_key, processed_dir):
 
 
 def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
-    """Classify SWEEP ORDERS ONLY (type 2048) into groups based on REAL execution (f..."""
+    """Classify sweep orders into groups based on real execution results."""
     print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     
-    # NOTE: orders_after_matching.csv now has normalized column names
     order_type_col = col.common.exchangeordertype
     leaves_qty_col = col.common.leavesquantity
     matched_qty_col = col.common.matched_quantity
@@ -842,7 +673,7 @@ def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
         orders_after = pd.read_csv(after_file)
         
         # Filter for sweep orders ONLY (type 2048)
-        sweep_orders = orders_after[orders_after[order_type_col] == 2048].copy()
+        sweep_orders = orders_after[orders_after[order_type_col] == SWEEP_ORDER_TYPE].copy()
         
         if len(sweep_orders) == 0:
             print(f"  {partition_key}: No sweep orders found")
