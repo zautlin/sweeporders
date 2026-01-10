@@ -500,17 +500,14 @@ def get_orders_state(orders_by_partition, processed_dir):
         # Sort by timestamp, then sequence (ascending)
         orders_sorted = orders_df.sort_values([col.common.timestamp, col.common.sequence])
         
-        # Get minimum and maximum timestamps per order
+        # Get minimum timestamp per order
         min_timestamps = orders_sorted.groupby(col.common.orderid)[col.common.timestamp].min()
-        max_timestamps = orders_sorted.groupby(col.common.orderid)[col.common.timestamp].max()
         
         orders_before_list = []
         orders_after_list = []
-        orders_final_list = []
         
         for order_id in min_timestamps.index:
             min_ts = min_timestamps[order_id]
-            max_ts = max_timestamps[order_id]
             
             # Filter to records at minimum timestamp for this order
             records_at_min_ts = orders_sorted[
@@ -523,24 +520,13 @@ def get_orders_state(orders_by_partition, processed_dir):
             
             # AFTER: Last record at min timestamp (max sequence)
             orders_after_list.append(records_at_min_ts.iloc[-1])
-            
-            # Filter to records at maximum timestamp for this order
-            records_at_max_ts = orders_sorted[
-                (orders_sorted[col.common.orderid] == order_id) & 
-                (orders_sorted[col.common.timestamp] == max_ts)
-            ]
-            
-            # FINAL: Last record at max timestamp (max sequence) - for debugging
-            orders_final_list.append(records_at_max_ts.iloc[-1])
         
         orders_before = pd.DataFrame(orders_before_list).reset_index(drop=True)
         orders_after = pd.DataFrame(orders_after_list).reset_index(drop=True)
-        orders_final = pd.DataFrame(orders_final_list).reset_index(drop=True)
         
         order_states_by_partition[partition_key] = {
             'before': orders_before,
-            'after': orders_after,
-            'final': orders_final
+            'after': orders_after
         }
         
         # Save to processed directory
@@ -549,17 +535,11 @@ def get_orders_state(orders_by_partition, processed_dir):
         
         before_file = partition_dir / "orders_before_matching.csv"
         after_file = partition_dir / "orders_after_matching.csv"
-        final_file = partition_dir / "orders_final_state.csv"
         
         orders_before.to_csv(before_file, index=False)
         orders_after.to_csv(after_file, index=False)
-        orders_final.to_csv(final_file, index=False)
         
-        # Save to DEBUG directory with naming convention: orders_final_{date}_{orderbookid}.csv
-        debug_file = debug_dir / f"orders_final_{date}_{security_code}.csv"
-        orders_final.to_csv(debug_file, index=False)
-        
-        print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after, {len(orders_final):,} final")
+        print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after")
     
     return order_states_by_partition
 
@@ -616,11 +596,6 @@ def load_partition_data(partition_key, processed_dir):
     after_file = partition_dir / "orders_after_matching.csv"
     if after_file.exists():
         partition_data['orders_after'] = pd.read_csv(after_file)
-    
-    # Load orders_final_state
-    final_file = partition_dir / "orders_final_state.csv"
-    if final_file.exists():
-        partition_data['orders_final'] = pd.read_csv(final_file)
     
     # Load last_execution_time
     exec_file = partition_dir / "last_execution_time.csv"
