@@ -449,7 +449,7 @@ def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping)
     print(f"  Total NBBO records: {len(nbbo_df):,}")
     
     # Add date column
-    if 'date' not in df.columns:
+    if 'date' not in nbbo_df.columns:
         nbbo_df = add_date_column(nbbo_df, timestamp_col)
     
     # No rename needed - use raw column name from accessor
@@ -491,7 +491,7 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
     session_file = input_files['session']
     if Path(session_file).exists():
         session_df = pd.read_csv(session_file)
-        if 'date' not in df.columns:
+        if 'date' not in session_df.columns:
             session_df = add_date_column(session_df, 'TradeDate')
         
         for date in unique_dates:
@@ -508,7 +508,7 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
     reference_file = input_files['reference']
     if Path(reference_file).exists():
         ref_df = pd.read_csv(reference_file)
-        if 'date' not in df.columns:
+        if 'date' not in ref_df.columns:
             ref_df = add_date_column(ref_df, 'TradeDate')
         
         for date in unique_dates:
@@ -525,7 +525,7 @@ def extract_reference_data(input_files, unique_dates, orders_by_partition, proce
     participants_file = input_files['participants']
     if Path(participants_file).exists():
         par_df = pd.read_csv(participants_file)
-        if 'date' not in df.columns:
+        if 'date' not in par_df.columns:
             par_df = add_date_column(par_df, 'TradeDate')
         
         for date in unique_dates:
