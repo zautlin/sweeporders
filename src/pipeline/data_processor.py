@@ -211,7 +211,7 @@ def _filter_orders_with_valid_trades(order_ids, trades_df):
         if len(order_trades) == 0:
             continue
         
-        dealsources = order_trades['dealsource'].unique()
+        dealsources = order_trades[col.trades.dealsource].unique()
         if not (len(dealsources) == 1 and dealsources[0] == 1):
             continue
         

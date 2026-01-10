@@ -59,12 +59,12 @@ def load_order_metadata(partition_dir, sweep_orderids):
     df = df.drop_duplicates(subset='orderid', keep='first')
     
     # Calculate arrival metrics
-    df['arrival_midpoint'] = (df['national_bid'] + df['national_offer']) / 2
-    df['arrival_spread'] = df['national_offer'] - df['national_bid']
+    df['arrival_midpoint'] = (df[col.orders.national_bid] + df[col.orders.national_offer]) / 2
+    df['arrival_spread'] = df[col.orders.national_offer] - df[col.orders.national_bid]
     
     # Select final columns
     orders_df = df[['orderid', 'timestamp', 'side', 'quantity', 'price', 
-                     'national_bid', 'national_offer', 'arrival_midpoint', 'arrival_spread']].copy()
+                     col.orders.national_bid, col.orders.national_offer, 'arrival_midpoint', 'arrival_spread']].copy()
     orders_df.columns = ['orderid', 'arrival_time', 'side', 'order_quantity', 'limit_price',
                          'arrival_bid', 'arrival_offer', 'arrival_midpoint', 'arrival_spread']
     
@@ -87,11 +87,11 @@ def load_real_trades(partition_dir, sweep_orderids):
     df = df[df[col.common.orderid].isin(sweep_orderids)].copy()
     
     # Calculate trade midpoint
-    df['trade_midpoint'] = (df['nationalbidpricesnapshot'] + df['nationalofferpricesnapshot']) / 2
+    df['trade_midpoint'] = (df[col.trades.national_bid_snapshot] + df[col.trades.national_offer_snapshot]) / 2
     
     # Select columns
     trades_df = df[['orderid', 'tradetime', 'tradeprice', 'quantity', 'side',
-                     'nationalbidpricesnapshot', 'nationalofferpricesnapshot', 
+                     col.trades.national_bid_snapshot, col.trades.national_offer_snapshot, 
                      'trade_midpoint', 'matchgroupid']].copy()
     
     # Sort by orderid and time
@@ -116,15 +116,15 @@ def load_simulated_trades(partition_dir, sweep_orderids):
     
     # CRITICAL: Filter to sweep orders AND passive side only (passiveaggressive = 1)
     # The simulation creates paired trades: passive=sweep order, aggressive=counterparty
-    df = df[(df[col.common.orderid].isin(sweep_orderids)) & (df['passiveaggressive'] == 1)].copy()
+    df = df[(df[col.common.orderid].isin(sweep_orderids)) & (df[col.trades.passive_aggressive] == 1)].copy()
     
     # Calculate trade midpoint
-    df['trade_midpoint'] = (df['nationalbidpricesnapshot'] + df['nationalofferpricesnapshot']) / 2
+    df['trade_midpoint'] = (df[col.trades.national_bid_snapshot] + df[col.trades.national_offer_snapshot]) / 2
     
     # Select columns
     trades_df = df[['orderid', 'tradetime', 'tradeprice', 'quantity', 'side',
-                     'nationalbidpricesnapshot', 'nationalofferpricesnapshot',
-                     'trade_midpoint', 'matchgroupid', 'passiveaggressive']].copy()
+                     col.trades.national_bid_snapshot, col.trades.national_offer_snapshot,
+                     'trade_midpoint', 'matchgroupid', col.trades.passive_aggressive]].copy()
     
     # Sort by orderid and time
     trades_df = trades_df.sort_values(['orderid', 'tradetime'])

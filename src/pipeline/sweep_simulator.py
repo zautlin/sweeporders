@@ -320,10 +320,12 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
     """Generate simulated trades in 19-column format matching real trade files (2 rows per match)."""
     if len(match_details) == 0:
         return pd.DataFrame(columns=[
-            'EXCHANGE', 'sequence', 'tradedate', 'tradetime', 'securitycode', 'orderid',
-            'dealsource', 'dealsourcedecoded', 'exchangeinfo', 'matchgroupid',
-            'nationalbidpricesnapshot', 'nationalofferpricesnapshot', 'tradeprice', 'quantity',
-            'side', 'sidedecoded', 'participantid', 'passiveaggressive', 'row_num'
+            col.trades.exchange, col.common.sequence, col.trades.trade_date, col.trades.trade_time, 
+            col.trades.security_code, col.common.orderid, col.trades.dealsource, 
+            col.trades.dealsource_decoded, col.trades.exchange_info, col.trades.match_group_id,
+            col.trades.national_bid_snapshot, col.trades.national_offer_snapshot, 
+            col.common.tradeprice, col.common.quantity, col.common.side, col.trades.side_decoded, 
+            col.trades.participant_id, col.trades.passive_aggressive, col.trades.row_num
         ])
     
     # Extract date from first match timestamp
@@ -377,49 +379,49 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
         
         # Row 1: Aggressor (sweep order)
         rows.append({
-            'EXCHANGE': 3,
-            'sequence': row_counter,
-            'tradedate': tradedate,
-            'tradetime': timestamp,
-            'securitycode': security_code,
-            'orderid': sweep_orderid,
-            'dealsource': 99,
-            'dealsourcedecoded': 'Simulated',
-            'exchangeinfo': '',
-            'matchgroupid': matchgroupid,
-            'nationalbidpricesnapshot': int(bid_snapshot),
-            'nationalofferpricesnapshot': int(offer_snapshot),
-            'tradeprice': int(price),
-            'quantity': int(quantity),
-            'side': int(aggressor_side),
-            'sidedecoded': 'Buy' if aggressor_side == 1 else 'Sell',
-            'participantid': 0,
-            'passiveaggressive': 1,
-            'row_num': row_counter
+            col.trades.exchange: 3,
+            col.common.sequence: row_counter,
+            col.trades.trade_date: tradedate,
+            col.trades.trade_time: timestamp,
+            col.trades.security_code: security_code,
+            col.common.orderid: sweep_orderid,
+            col.trades.dealsource: 99,
+            col.trades.dealsource_decoded: 'Simulated',
+            col.trades.exchange_info: '',
+            col.trades.match_group_id: matchgroupid,
+            col.trades.national_bid_snapshot: int(bid_snapshot),
+            col.trades.national_offer_snapshot: int(offer_snapshot),
+            col.common.tradeprice: int(price),
+            col.common.quantity: int(quantity),
+            col.common.side: int(aggressor_side),
+            col.trades.side_decoded: 'Buy' if aggressor_side == 1 else 'Sell',
+            col.trades.participant_id: 0,
+            col.trades.passive_aggressive: 1,
+            col.trades.row_num: row_counter
         })
         row_counter += 1
         
         # Row 2: Passive (incoming order)
         rows.append({
-            'EXCHANGE': 3,
-            'sequence': row_counter,
-            'tradedate': tradedate,
-            'tradetime': timestamp,
-            'securitycode': security_code,
-            'orderid': incoming_orderid,
-            'dealsource': 99,
-            'dealsourcedecoded': 'Simulated',
-            'exchangeinfo': '',
-            'matchgroupid': matchgroupid,
-            'nationalbidpricesnapshot': int(bid_snapshot),
-            'nationalofferpricesnapshot': int(offer_snapshot),
-            'tradeprice': int(price),
-            'quantity': int(quantity),
-            'side': int(passive_side),
-            'sidedecoded': 'Buy' if passive_side == 1 else 'Sell',
-            'participantid': 0,
-            'passiveaggressive': 0,
-            'row_num': row_counter
+            col.trades.exchange: 3,
+            col.common.sequence: row_counter,
+            col.trades.trade_date: tradedate,
+            col.trades.trade_time: timestamp,
+            col.trades.security_code: security_code,
+            col.common.orderid: incoming_orderid,
+            col.trades.dealsource: 99,
+            col.trades.dealsource_decoded: 'Simulated',
+            col.trades.exchange_info: '',
+            col.trades.match_group_id: matchgroupid,
+            col.trades.national_bid_snapshot: int(bid_snapshot),
+            col.trades.national_offer_snapshot: int(offer_snapshot),
+            col.common.tradeprice: int(price),
+            col.common.quantity: int(quantity),
+            col.common.side: int(passive_side),
+            col.trades.side_decoded: 'Buy' if passive_side == 1 else 'Sell',
+            col.trades.participant_id: 0,
+            col.trades.passive_aggressive: 0,
+            col.trades.row_num: row_counter
         })
         row_counter += 1
     
@@ -427,10 +429,12 @@ def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
     trades_df = pd.DataFrame(rows)
     
     # Ensure correct data types (prevent scientific notation)
-    int_columns = ['EXCHANGE', 'sequence', 'tradetime', 'securitycode', 'orderid', 
-                   'dealsource', 'matchgroupid', 'nationalbidpricesnapshot', 
-                   'nationalofferpricesnapshot', 'tradeprice', 'quantity', 
-                   'side', 'participantid', 'passiveaggressive', 'row_num']
+    int_columns = [col.trades.exchange, col.common.sequence, col.trades.trade_time, 
+                   col.trades.security_code, col.common.orderid, col.trades.dealsource, 
+                   col.trades.match_group_id, col.trades.national_bid_snapshot, 
+                   col.trades.national_offer_snapshot, col.common.tradeprice, col.common.quantity, 
+                   col.common.side, col.trades.participant_id, col.trades.passive_aggressive, 
+                   col.trades.row_num]
     
     for column_name in int_columns:
         if column_name in trades_df.columns:

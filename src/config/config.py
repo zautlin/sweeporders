@@ -169,6 +169,8 @@ COLUMN_MAPPING = {
         'price': 'price',
         'bid': 'bid',
         'offer': 'offer',
+        'national_bid': 'national_bid',
+        'national_offer': 'national_offer',
         'leaves_quantity': 'leavesquantity',
         'matched_quantity': 'totalmatchedquantity',
         'order_status': 'orderstatus',
@@ -182,6 +184,19 @@ COLUMN_MAPPING = {
         'trade_time': 'tradetime',
         'trade_price': 'tradeprice',
         'quantity': 'quantity',
+        'dealsource': 'dealsource',
+        'dealsource_decoded': 'dealsourcedecoded',
+        'passive_aggressive': 'passiveaggressive',
+        'match_group_id': 'matchgroupid',
+        'national_bid_snapshot': 'nationalbidpricesnapshot',
+        'national_offer_snapshot': 'nationalofferpricesnapshot',
+        'participant_id': 'participantid',
+        'exchange_info': 'exchangeinfo',
+        'side_decoded': 'sidedecoded',
+        'exchange': 'EXCHANGE',
+        'security_code': 'securitycode',
+        'trade_date': 'tradedate',
+        'row_num': 'row_num',
     },
     
     # NBBO file columns
@@ -192,6 +207,8 @@ COLUMN_MAPPING = {
         'offer': 'offerprice',
         'bid_quantity': 'bidquantity',
         'offer_quantity': 'offerquantity',
+        'national_bid': 'bid',  # After normalization, bidprice -> bid
+        'national_offer': 'offer',  # After normalization, offerprice -> offer
     },
     
     # Session file columns
@@ -358,6 +375,44 @@ COLUMN_MAPPING = {
         'bid': 'bid',
         'offer': 'offer',
     },
+}
+
+
+# ============================================================================
+# CALCULATED/INTERMEDIATE COLUMNS
+# ============================================================================
+# These columns are created during pipeline processing and are not part of
+# the raw input data. They are documented here for reference but do not use
+# the col.* accessor system since they're internal calculations.
+
+CALCULATED_COLUMNS = {
+    # Execution analysis calculations
+    'price_qty_product': 'Price × Quantity (intermediate for VWAP calculation)',
+    'vwap': 'Volume-weighted average price of executions',
+    'cumulative_fill': 'Running total of filled quantity',
+    
+    # NBBO-derived metrics
+    'arrival_midpoint': 'NBBO midpoint at order arrival time',
+    'arrival_spread': 'NBBO spread at order arrival time (offer - bid)',
+    'arrival_bid': 'NBBO bid price at order arrival',
+    'arrival_offer': 'NBBO offer price at order arrival',
+    'trade_midpoint': 'NBBO midpoint at trade execution time',
+    
+    # Execution timing
+    'execution_duration_sec': 'Time from first to last fill (seconds)',
+    'time_to_first_fill_sec': 'Time from order arrival to first fill (seconds)',
+    'is_first_fill': 'Boolean flag: Is this the first fill for the order?',
+    'is_last_fill': 'Boolean flag: Is this the last fill for the order?',
+    
+    # Price metrics
+    'price_vs_order_price': 'Difference between execution price and order limit price',
+    'exec_cost_arrival_bps': 'Execution cost vs arrival midpoint (basis points)',
+    'exec_cost_vw_bps': 'Execution cost vs VWAP (basis points)',
+    
+    # Matching/simulation
+    'match_value': 'Value used for trade matching logic',
+    'match_status': 'Status of simulated match (matched/unmatched)',
+    'match_details': 'Detailed information about match results',
 }
 
 
