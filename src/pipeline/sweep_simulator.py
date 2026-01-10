@@ -89,23 +89,30 @@ def _prepare_sweep_orders(partition_data):
         how='inner'  # INNER JOIN - only keep qualifying orders
     )
     
-    # Select required columns (include all available)
-    base_columns = [
-        'orderid', 'timestamp', 'sequence', 'side', 'leavesquantity', 
-        'first_execution_time', 'last_execution_time', 'orderbookid'
+    # Define required columns using col.* accessors for schema independence
+    # Note: After normalization, 'totalmatchedquantity' becomes 'matched_quantity'
+    required_columns = [
+        col.common.orderid,
+        col.common.timestamp,
+        col.common.sequence,
+        col.common.side,
+        col.orders.leaves_quantity,
+        'matched_quantity',  # Required for metrics comparison (normalized from 'totalmatchedquantity')
+        col.common.price,  # Required for trade generation
+        'first_execution_time',  # Calculated in data_processor
+        'last_execution_time',   # Calculated in data_processor
+        col.common.orderbookid,
     ]
     
-    # Add optional columns if they exist
-    optional_columns = []
-    if 'totalmatchedquantity' in sweep_orders.columns:
-        optional_columns.append('totalmatchedquantity')
-    if 'price' in sweep_orders.columns:
-        optional_columns.append('price')
+    # Validate all required columns exist
+    missing = set(required_columns) - set(sweep_orders.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns for sweep order simulation: {missing}\n"
+            f"Available columns: {sorted(sweep_orders.columns)}"
+        )
     
-    # Insert optional columns after leavesquantity
-    final_columns = base_columns[:5] + optional_columns + base_columns[5:]
-    
-    sweep_orders = sweep_orders[final_columns].copy()
+    sweep_orders = sweep_orders[required_columns].copy()
     
     # Ensure orderid is int64
     sweep_orders[col.common.orderid] = sweep_orders[col.common.orderid].astype('int64')
@@ -127,10 +134,27 @@ def _prepare_all_orders_for_matching(partition_data):
         orders_before[ORDER_TYPE_COLUMN].isin(ELIGIBLE_MATCHING_ORDER_TYPES)
     ].copy()
     
-    # Select required columns
-    all_orders = all_orders[[
-        'orderid', 'timestamp', 'sequence', 'side', 'quantity', 'orderbookid', 'bid', 'offer'
-    ]].copy()
+    # Define required columns using col.* accessors for schema independence
+    required_columns = [
+        col.common.orderid,
+        col.common.timestamp,
+        col.common.sequence,
+        col.common.side,
+        col.common.quantity,
+        col.common.orderbookid,
+        col.orders.bid,
+        col.orders.offer,
+    ]
+    
+    # Validate all required columns exist
+    missing = set(required_columns) - set(all_orders.columns)
+    if missing:
+        raise ValueError(
+            f"Missing required columns for matching orders: {missing}\n"
+            f"Available columns: {sorted(all_orders.columns)}"
+        )
+    
+    all_orders = all_orders[required_columns].copy()
     
     # Ensure orderid is int64
     all_orders[col.common.orderid] = all_orders[col.common.orderid].astype('int64')
