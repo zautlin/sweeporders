@@ -99,8 +99,8 @@ def _partition_by_date_security_and_save(df, orders_by_partition, processed_dir,
     return results
 
 
-def _process_single_reference_type(file_list, timestamp_col, unique_dates, processed_dir, filename):
-    """Process single reference data type: read files, add date, partition, save."""
+def _process_single_reference_type(file_list, timestamp_col, unique_dates, processed_dir, filename, data_type):
+    """Process single reference data type: read files, add date, normalize, partition, save."""
     if not file_list:
         return {}
     
@@ -109,6 +109,10 @@ def _process_single_reference_type(file_list, timestamp_col, unique_dates, proce
         return {}
     
     df = add_date_column(df, timestamp_col)
+    
+    # Normalize column names AFTER adding date column
+    df = normalize_column_names(df, data_type)
+    
     return _partition_by_date_and_save(df, unique_dates, processed_dir, filename, col.common.date)
 
 
@@ -122,6 +126,9 @@ def _process_participants_with_fallback(file_list, timestamp_col, unique_dates, 
         return {}
     
     df = add_date_column(df, timestamp_col)
+    
+    # Normalize column names AFTER adding date column
+    df = normalize_column_names(df, 'participants')
     
     all_participant_dates = df[col.common.date].unique()
     print(f"    Available dates in participants: {sorted(all_participant_dates)}")
@@ -433,7 +440,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition):
     if session_files:
         print(f"\n  Processing Session data from {len(session_files)} file(s)...")
         results['session'] = _process_single_reference_type(
-            session_files, col.session.timestamp, unique_dates, processed_dir, 'session.csv.gz'
+            session_files, col.session.timestamp, unique_dates, processed_dir, 'session.csv.gz', 'session'
         )
     else:
         print(f"\n  Processing Session data from 0 file(s)...")
@@ -442,7 +449,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition):
     if reference_files:
         print(f"\n  Processing Reference data from {len(reference_files)} file(s)...")
         results['reference'] = _process_single_reference_type(
-            reference_files, col.reference.timestamp, unique_dates, processed_dir, 'reference.csv.gz'
+            reference_files, col.reference.timestamp, unique_dates, processed_dir, 'reference.csv.gz', 'reference'
         )
     else:
         print(f"\n  Processing Reference data from 0 file(s)...")
