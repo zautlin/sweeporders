@@ -172,26 +172,20 @@ def _process_nbbo_data(file_list, timestamp_col, orders_by_partition, processed_
 
 def _filter_sweep_orders_by_execution(orders_df):
     """Filter sweep orders that completed execution."""
-    order_id_col = col.common.orderid
-    timestamp_col = col.common.timestamp
-    order_type_col = col.common.exchangeordertype
-    changereason_col = col.common.changereason
-    leavesqty_col = col.common.leavesquantity
-    
-    sweep_orders = orders_df[orders_df[order_type_col] == SWEEP_ORDER_TYPE].copy()
+    sweep_orders = orders_df[orders_df[col.common.exchangeordertype] == SWEEP_ORDER_TYPE].copy()
     
     if len(sweep_orders) == 0:
         return []
     
-    sweep_orders_sorted = sweep_orders.sort_values([order_id_col, timestamp_col])
+    sweep_orders_sorted = sweep_orders.sort_values([col.common.orderid, col.common.timestamp])
     
     qualifying_order_ids = []
     
-    for order_id, group in sweep_orders_sorted.groupby(order_id_col):
+    for order_id, group in sweep_orders_sorted.groupby(col.common.orderid):
         final_state = group.iloc[-1]
         
-        if final_state[changereason_col] == 3 and final_state[leavesqty_col] == 0:
-            if (group[changereason_col] == 6).any():
+        if final_state[col.common.changereason] == 3 and final_state[col.common.leavesquantity] == 0:
+            if (group[col.common.changereason] == 6).any():
                 qualifying_order_ids.append(order_id)
     
     return qualifying_order_ids
@@ -199,14 +193,12 @@ def _filter_sweep_orders_by_execution(orders_df):
 
 def _filter_orders_with_valid_trades(order_ids, trades_df):
     """Filter orders that have trades with dealsource=1."""
-    trade_orderid_col = col.common.orderid
-    
-    qualifying_trades = trades_df[trades_df[trade_orderid_col].isin(order_ids)].copy()
+    qualifying_trades = trades_df[trades_df[col.common.orderid].isin(order_ids)].copy()
     
     orders_with_valid_trades = {}
     
     for order_id in order_ids:
-        order_trades = qualifying_trades[qualifying_trades[trade_orderid_col] == order_id]
+        order_trades = qualifying_trades[qualifying_trades[col.common.orderid] == order_id]
         
         if len(order_trades) == 0:
             continue
@@ -222,11 +214,8 @@ def _filter_orders_with_valid_trades(order_ids, trades_df):
 
 def _extract_execution_time_dict(order_id, order_df, trades_df):
     """Extract first execution time from orders and last execution time from trades."""
-    timestamp_col = col.common.timestamp
-    trade_time_col = col.common.tradetime
-    
-    first_time = order_df[timestamp_col].min()
-    last_time = trades_df[trade_time_col].max()
+    first_time = order_df[col.common.timestamp].min()
+    last_time = trades_df[col.common.tradetime].max()
     
     return {
         'orderid': order_id,
@@ -249,19 +238,15 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
     """Extract Centre Point orders and partition by date/security."""
     print(f"\n[1/11] Extracting Centre Point orders from {input_file}...")
     
-    order_type_col = col.orders.order_type
-    timestamp_col = col.orders.timestamp
-    security_col = col.orders.security_code
-    
     orders_list = []
     total_rows = 0
     
     for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
         total_rows += len(chunk)
-        cp_chunk = chunk[chunk[order_type_col].isin(order_types)].copy()
+        cp_chunk = chunk[chunk[col.orders.order_type].isin(order_types)].copy()
         
         if len(cp_chunk) > 0:
-            cp_chunk = add_date_column(cp_chunk, timestamp_col)
+            cp_chunk = add_date_column(cp_chunk, col.orders.timestamp)
             orders_list.append(cp_chunk)
     
     if not orders_list:
@@ -273,7 +258,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
     
     # Partition by date/security
     partitions = {}
-    for (date, security_code_val), group_df in orders.groupby(['date', security_col]):
+    for (date, security_code_val), group_df in orders.groupby(['date', col.orders.security_code]):
         partition_key = f"{date}/{security_code_val}"
         
         # Normalize column names to standard before saving
@@ -300,8 +285,6 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     print(f"\n[2/11] Extracting matching trades from {input_file}...")
     
     order_id_col_orders = 'orderid'
-    order_id_col_trades = col.trades.order_id
-    trade_time_col = col.trades.trade_time
     
     # Collect all order IDs
     all_order_ids = set()
@@ -320,10 +303,10 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     
     for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
         total_rows += len(chunk)
-        matched_chunk = chunk[chunk[order_id_col_trades].isin(all_order_ids)].copy()
+        matched_chunk = chunk[chunk[col.trades.order_id].isin(all_order_ids)].copy()
         
         if len(matched_chunk) > 0:
-            matched_chunk = add_date_column(matched_chunk, trade_time_col)
+            matched_chunk = add_date_column(matched_chunk, col.trades.trade_time)
             trades_list.append(matched_chunk)
     
     if not trades_list:
@@ -337,7 +320,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     trades_by_partition = {}
     
     for partition_key, order_ids in partition_order_ids.items():
-        partition_trades = all_trades[all_trades[order_id_col_trades].isin(order_ids)].copy()
+        partition_trades = all_trades[all_trades[col.trades.order_id].isin(order_ids)].copy()
         
         if len(partition_trades) > 0:
             # Normalize column names to standard before saving
@@ -355,7 +338,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
             partition_trades_normalized.to_csv(partition_file, index=False, compression='gzip')
             
             size_mb = partition_file.stat().st_size / (1024 * 1024)
-            unique_orders = partition_trades[order_id_col_trades].nunique()
+            unique_orders = partition_trades[col.trades.order_id].nunique()
             print(f"  {partition_key}: {len(partition_trades):,} trades, {unique_orders:,} orders ({size_mb:.2f} MB)")
     
     return trades_by_partition
@@ -365,11 +348,6 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
     """Aggregate trades by order_id per partition."""
     print(f"\n[3/11] Aggregating trades by order...")
     
-    order_id_col = col.common.orderid
-    trade_time_col = col.common.tradetime
-    trade_price_col = col.common.tradeprice
-    quantity_col = col.common.quantity
-    
     trades_agg_by_partition = {}
     
     for partition_key, trades_df in trades_by_partition.items():
@@ -378,17 +356,17 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
         
         # Calculate price*quantity for VWAP
         trades_df = trades_df.copy()
-        trades_df['price_qty_product'] = trades_df[trade_price_col] * trades_df[quantity_col]
+        trades_df['price_qty_product'] = trades_df[col.common.tradeprice] * trades_df[col.common.quantity]
         
         # Aggregate by order ID
         agg_dict = {
-            quantity_col: 'sum',
-            trade_price_col: 'mean',
+            col.common.quantity: 'sum',
+            col.common.tradeprice: 'mean',
             'price_qty_product': 'sum',  # For VWAP calculation
-            trade_time_col: ['min', 'max', 'count']
+            col.common.tradetime: ['min', 'max', 'count']
         }
         
-        trades_agg = trades_df.groupby(order_id_col).agg(agg_dict).reset_index()
+        trades_agg = trades_df.groupby(col.common.orderid).agg(agg_dict).reset_index()
         
         # Flatten column names
         trades_agg.columns = [
@@ -499,10 +477,6 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     """Extract before/after/final order states per partition."""
     print(f"\n[5/11] Extracting order states...")
     
-    order_id_col = col.common.orderid
-    timestamp_col = col.common.timestamp
-    sequence_col = col.common.sequence
-    
     order_states_by_partition = {}
     
     # Create debug directory
@@ -516,11 +490,11 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
         date, security_code = partition_key.split('/')
         
         # Sort by timestamp, then sequence (ascending)
-        orders_sorted = orders_df.sort_values([timestamp_col, sequence_col])
+        orders_sorted = orders_df.sort_values([col.common.timestamp, col.common.sequence])
         
         # Get minimum and maximum timestamps per order
-        min_timestamps = orders_sorted.groupby(order_id_col)[timestamp_col].min()
-        max_timestamps = orders_sorted.groupby(order_id_col)[timestamp_col].max()
+        min_timestamps = orders_sorted.groupby(col.common.orderid)[col.common.timestamp].min()
+        max_timestamps = orders_sorted.groupby(col.common.orderid)[col.common.timestamp].max()
         
         orders_before_list = []
         orders_after_list = []
@@ -532,8 +506,8 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
             
             # Filter to records at minimum timestamp for this order
             records_at_min_ts = orders_sorted[
-                (orders_sorted[order_id_col] == order_id) & 
-                (orders_sorted[timestamp_col] == min_ts)
+                (orders_sorted[col.common.orderid] == order_id) & 
+                (orders_sorted[col.common.timestamp] == min_ts)
             ]
             
             # BEFORE: First record at min timestamp (min sequence)
@@ -544,8 +518,8 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
             
             # Filter to records at maximum timestamp for this order
             records_at_max_ts = orders_sorted[
-                (orders_sorted[order_id_col] == order_id) & 
-                (orders_sorted[timestamp_col] == max_ts)
+                (orders_sorted[col.common.orderid] == order_id) & 
+                (orders_sorted[col.common.timestamp] == max_ts)
             ]
             
             # FINAL: Last record at max timestamp (max sequence) - for debugging
@@ -655,10 +629,6 @@ def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
     """Classify sweep orders into groups based on real execution results."""
     print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     
-    order_type_col = col.common.exchangeordertype
-    leaves_qty_col = col.common.leavesquantity
-    matched_qty_col = col.common.matched_quantity
-    
     groups_by_partition = {}
     
     for partition_key in orders_by_partition.keys():
@@ -673,21 +643,21 @@ def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
         orders_after = pd.read_csv(after_file)
         
         # Filter for sweep orders ONLY (type 2048)
-        sweep_orders = orders_after[orders_after[order_type_col] == SWEEP_ORDER_TYPE].copy()
+        sweep_orders = orders_after[orders_after[col.common.exchangeordertype] == SWEEP_ORDER_TYPE].copy()
         
         if len(sweep_orders) == 0:
             print(f"  {partition_key}: No sweep orders found")
             continue
         
         # Classify based on real execution
-        group1 = sweep_orders[sweep_orders[leaves_qty_col] == 0].copy()
+        group1 = sweep_orders[sweep_orders[col.common.leavesquantity] == 0].copy()
         group2 = sweep_orders[
-            (sweep_orders[leaves_qty_col] > 0) & 
-            (sweep_orders[matched_qty_col] > 0)
+            (sweep_orders[col.common.leavesquantity] > 0) & 
+            (sweep_orders[col.common.matched_quantity] > 0)
         ].copy()
         group3 = sweep_orders[
-            (sweep_orders[leaves_qty_col] > 0) & 
-            (sweep_orders[matched_qty_col] == 0)
+            (sweep_orders[col.common.leavesquantity] > 0) & 
+            (sweep_orders[col.common.matched_quantity] == 0)
         ].copy()
         
         groups_by_partition[partition_key] = {

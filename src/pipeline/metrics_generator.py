@@ -148,13 +148,11 @@ def compare_by_group(orders_with_metrics, groups):
         # Get orders with metrics for this group
         if 'order_id' in group_orders.columns:
             group_orderids = group_orders[col.common.order_id].values
-            orderid_col = col.common.orderid  # Post-normalization always uses 'orderid'
         else:
             group_orderids = group_orders[col.common.orderid].values
-            orderid_col = col.common.orderid
         
         group_with_metrics = orders_with_metrics[
-            orders_with_metrics[orderid_col].isin(group_orderids)
+            orders_with_metrics[col.common.orderid].isin(group_orderids)
         ].copy()
         
         if len(group_with_metrics) == 0:
@@ -518,15 +516,15 @@ def _find_order_group(orderid, groups):
     for group_name, group_df in groups.items():
         # Post-normalization always uses 'orderid' column name
         if 'orderid' in group_df.columns:
-            orderid_col = col.common.orderid
+            orderid_col_name = col.common.orderid
         elif 'order_id' in group_df.columns:
-            orderid_col = col.common.order_id
+            orderid_col_name = col.common.order_id
         else:
             continue
         
         # Ensure orderid is int64 for comparison
         try:
-            if int(orderid) in group_df[orderid_col].astype('int64').values:
+            if int(orderid) in group_df[orderid_col_name].astype('int64').values:
                 return group_name
         except (ValueError, TypeError, KeyError):
             continue
