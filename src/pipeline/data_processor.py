@@ -581,11 +581,14 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
 
 
 def load_partition_data(partition_key, processed_dir):
-    """Load all necessary data for a partition for simulation."""
+    """Load all necessary data for a partition including reference data."""
     date, security_code = partition_key.split('/')
     partition_dir = Path(processed_dir) / date / security_code
+    date_dir = Path(processed_dir) / date
     
     partition_data = {}
+    
+    # ===== PARTITION-LEVEL DATA =====
     
     # Load orders_before_matching
     before_file = partition_dir / "orders_before_matching.csv"
@@ -604,6 +607,36 @@ def load_partition_data(partition_key, processed_dir):
     else:
         # Create empty DataFrame if no execution times
         partition_data['last_execution'] = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+    
+    # ===== REFERENCE DATA =====
+    
+    # Load NBBO (partition-specific)
+    nbbo_file = partition_dir / "nbbo.csv.gz"
+    if nbbo_file.exists():
+        partition_data['nbbo'] = pd.read_csv(nbbo_file)
+    else:
+        partition_data['nbbo'] = pd.DataFrame()
+    
+    # Load session data (date-level)
+    session_file = date_dir / "session.csv.gz"
+    if session_file.exists():
+        partition_data['session'] = pd.read_csv(session_file)
+    else:
+        partition_data['session'] = pd.DataFrame()
+    
+    # Load reference data (date-level)
+    reference_file = date_dir / "reference.csv.gz"
+    if reference_file.exists():
+        partition_data['reference'] = pd.read_csv(reference_file)
+    else:
+        partition_data['reference'] = pd.DataFrame()
+    
+    # Load participants data (date-level)
+    participants_file = date_dir / "participants.csv.gz"
+    if participants_file.exists():
+        partition_data['participants'] = pd.read_csv(participants_file)
+    else:
+        partition_data['participants'] = pd.DataFrame()
     
     return partition_data
 
