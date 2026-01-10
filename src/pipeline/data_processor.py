@@ -45,8 +45,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
         
         if len(cp_chunk) > 0:
             cp_chunk = add_date_column(cp_chunk, timestamp_col)
-            if security_col != 'security_code':
-                cp_chunk = cp_chunk.rename(columns={security_col: 'security_code'})
+            # No rename needed - use raw column name from accessor
             orders_list.append(cp_chunk)
     
     if not orders_list:
@@ -58,8 +57,8 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
     
     # Partition by date/security
     partitions = {}
-    for (date, security_code), group_df in orders.groupby(['date', 'security_code']):
-        partition_key = f"{date}/{security_code}"
+    for (date, security_code_val), group_df in orders.groupby(['date', security_col]):
+        partition_key = f"{date}/{security_code_val}"
         
         # Normalize column names to standard before saving
         group_df_normalized = normalize_to_standard_names(group_df, 'orders')
@@ -68,7 +67,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
         partitions[partition_key] = group_df_normalized
         
         # Save to processed directory
-        partition_dir = Path(processed_dir) / date / str(security_code)
+        partition_dir = Path(processed_dir) / date / str(security_code_val)
         partition_dir.mkdir(parents=True, exist_ok=True)
         
         partition_file = partition_dir / "cp_orders_filtered.csv.gz"
@@ -391,8 +390,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
         
         # Standardize security_code column
         security_col = col.nbbo.security_code
-        if security_col != 'orderbookid':
-            nbbo_df = nbbo_df.rename(columns={security_col: 'orderbookid'})
+        # No rename needed - use raw column name from accessor
         
         # Partition by date and orderbookid
         for partition_key in orders_by_partition.keys():
@@ -401,7 +399,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
             
             partition_data = nbbo_df[
                 (nbbo_df[col.common.date] == date) & 
-                (nbbo_df['orderbookid'] == orderbookid_int)
+                (nbbo_df[security_col] == orderbookid_int)
             ].copy()
             
             if len(partition_data) > 0:
@@ -454,9 +452,7 @@ def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping)
     if 'date' not in df.columns:
         nbbo_df = add_date_column(nbbo_df, timestamp_col)
     
-    # Standardize security_code column
-    if security_col != 'security_code':
-        nbbo_df = nbbo_df.rename(columns={security_col: 'security_code'})
+    # No rename needed - use raw column name from accessor
     
     nbbo_by_partition = {}
     
@@ -467,7 +463,7 @@ def extract_nbbo(input_file, orders_by_partition, processed_dir, column_mapping)
         # Filter NBBO for this partition
         partition_nbbo = nbbo_df[
             (nbbo_df[col.common.date] == date) & 
-            (nbbo_df['security_code'] == security_code_int)
+            (nbbo_df[security_col] == security_code_int)
         ].copy()
         
         if len(partition_nbbo) > 0:
