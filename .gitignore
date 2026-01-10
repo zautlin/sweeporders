@@ -44,6 +44,7 @@ data/outputs/
 data/output/
 data/aggregated/
 data/exploration/
+data/debug/
 
 # Logs
 *.log
