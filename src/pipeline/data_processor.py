@@ -15,8 +15,9 @@ Handles all data extraction, partitioning, and preprocessing operations:
 
 import pandas as pd
 from pathlib import Path
-from config.config import SWEEP_ORDER_TYPE, normalize_to_standard_names
+from config.config import SWEEP_ORDER_TYPE
 from config.column_schema import col
+from utils.normalization import normalize_column_names
 
 
 def add_date_column(df, timestamp_col):
@@ -81,7 +82,7 @@ def _partition_by_date_security_and_save(df, orders_by_partition, processed_dir,
         ].copy()
         
         if len(partition_data) > 0:
-            partition_data_normalized = normalize_to_standard_names(partition_data, 'nbbo')
+            partition_data_normalized = normalize_column_names(partition_data, 'nbbo')
             
             partition_dir = Path(processed_dir) / date / orderbookid
             partition_dir.mkdir(parents=True, exist_ok=True)
@@ -234,7 +235,7 @@ def _save_execution_times(partition_key, execution_times_df, processed_dir):
     execution_times_df.to_csv(exec_file, index=False)
 
 
-def extract_orders(input_file, processed_dir, order_types, chunk_size, column_mapping):
+def extract_orders(input_file, processed_dir, order_types, chunk_size):
     """Extract Centre Point orders and partition by date/security."""
     print(f"\n[1/11] Extracting Centre Point orders from {input_file}...")
     
@@ -262,7 +263,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
         partition_key = f"{date}/{security_code_val}"
         
         # Normalize column names to standard before saving
-        group_df_normalized = normalize_to_standard_names(group_df, 'orders')
+        group_df_normalized = normalize_column_names(group_df, 'orders')
         
         # Store normalized version for downstream use
         partitions[partition_key] = group_df_normalized
@@ -280,7 +281,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size, column_ma
     return partitions
 
 
-def extract_trades(input_file, orders_by_partition, processed_dir, column_mapping, chunk_size):
+def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
     """Extract trades matching order_ids from partitions."""
     print(f"\n[2/11] Extracting matching trades from {input_file}...")
     
@@ -324,7 +325,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
         
         if len(partition_trades) > 0:
             # Normalize column names to standard before saving
-            partition_trades_normalized = normalize_to_standard_names(partition_trades, 'trades')
+            partition_trades_normalized = normalize_column_names(partition_trades, 'trades')
             
             # Store normalized version for downstream use
             trades_by_partition[partition_key] = partition_trades_normalized
@@ -344,7 +345,7 @@ def extract_trades(input_file, orders_by_partition, processed_dir, column_mappin
     return trades_by_partition
 
 
-def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
+def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir):
     """Aggregate trades by order_id per partition."""
     print(f"\n[3/11] Aggregating trades by order...")
     
@@ -411,7 +412,7 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
 
 
 
-def process_reference_data(raw_folders, processed_dir, orders_by_partition, column_mapping):
+def process_reference_data(raw_folders, processed_dir, orders_by_partition):
     """Process and partition all reference data files."""
     print(f"\n[4/11] Processing reference data files...")
     
@@ -473,7 +474,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition, colu
     return results
 
 
-def get_orders_state(orders_by_partition, processed_dir, column_mapping):
+def get_orders_state(orders_by_partition, processed_dir):
     """Extract before/after/final order states per partition."""
     print(f"\n[5/11] Extracting order states...")
     
@@ -556,7 +557,7 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     return order_states_by_partition
 
 
-def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir, column_mapping):
+def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir):
     """Extract first and last execution times for SWEEP ORDERS ONLY."""
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
     
@@ -625,7 +626,7 @@ def load_partition_data(partition_key, processed_dir):
     return partition_data
 
 
-def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
+def classify_order_groups(orders_by_partition, processed_dir):
     """Classify sweep orders into groups based on real execution results."""
     print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     

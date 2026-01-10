@@ -796,7 +796,7 @@ def generate_sweep_comparison_reports(partition_key, comparison_results, output_
 # TRADE-LEVEL COMPARISON (Real vs Simulated Trades)
 # ============================================================================
 
-def calculate_real_trade_metrics(trades_by_partition, orders_by_partition, processed_dir, column_mapping):
+def calculate_real_trade_metrics(trades_by_partition, orders_by_partition, processed_dir):
     """Calculate comprehensive metrics from real trades for sweep orders."""
     print(f"\n[11/11] Calculating real trade metrics for sweep orders...")
     

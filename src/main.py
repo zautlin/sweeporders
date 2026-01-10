@@ -232,8 +232,7 @@ def extract_and_prepare_data(input_files):
         input_files['orders'], 
         config.PROCESSED_DIR, 
         config.CENTRE_POINT_ORDER_TYPES, 
-        config.CHUNK_SIZE, 
-        config.COLUMN_MAPPING
+        config.CHUNK_SIZE
     )
     
     if not orders_by_partition:
@@ -245,7 +244,6 @@ def extract_and_prepare_data(input_files):
         input_files['trades'], 
         orders_by_partition, 
         config.PROCESSED_DIR, 
-        config.COLUMN_MAPPING,
         config.CHUNK_SIZE
     )
     
@@ -253,8 +251,7 @@ def extract_and_prepare_data(input_files):
     reference_results = dp.process_reference_data(
         config.RAW_FOLDERS,
         config.PROCESSED_DIR,
-        orders_by_partition,
-        config.COLUMN_MAPPING
+        orders_by_partition
     )
     
     nbbo_by_partition = reference_results.get('nbbo', {})
@@ -262,16 +259,14 @@ def extract_and_prepare_data(input_files):
     # Step 5: Extract order states
     order_states_by_partition = dp.get_orders_state(
         orders_by_partition, 
-        config.PROCESSED_DIR, 
-        config.COLUMN_MAPPING
+        config.PROCESSED_DIR
     )
     
     # Step 6: Extract execution times
     last_execution_by_partition = dp.extract_last_execution_times(
         orders_by_partition, 
         trades_by_partition, 
-        config.PROCESSED_DIR, 
-        config.COLUMN_MAPPING
+        config.PROCESSED_DIR
     )
     
     return {
@@ -330,8 +325,7 @@ def run_simulations_and_lob(data, enable_parallel):
         real_trade_metrics_by_partition = mg.calculate_real_trade_metrics(
             data['trades'],
             data['orders'],
-            config.PROCESSED_DIR,
-            config.COLUMN_MAPPING
+            config.PROCESSED_DIR
         )
         
         # Step 12: Compare real vs simulated trades
