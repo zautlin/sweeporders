@@ -151,10 +151,10 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir, co
     print(f"\n[3/11] Aggregating trades by order...")
     
     # NOTE: trades_by_partition now has normalized column names
-    order_id_col = 'orderid'
-    trade_time_col = 'tradetime'
-    trade_price_col = 'tradeprice'
-    quantity_col = 'quantity'
+    order_id_col = col.common.orderid
+    trade_time_col = col.common.tradetime
+    trade_price_col = col.common.tradeprice
+    quantity_col = col.common.quantity
     
     trades_agg_by_partition = {}
     
@@ -544,9 +544,9 @@ def get_orders_state(orders_by_partition, processed_dir, column_mapping):
     print(f"\n[5/11] Extracting order states...")
     
     # NOTE: orders_by_partition now has normalized column names
-    order_id_col = 'orderid'
-    timestamp_col = 'timestamp'
-    sequence_col = 'sequence'
+    order_id_col = col.common.orderid
+    timestamp_col = col.common.timestamp
+    sequence_col = col.common.sequence
     
     order_states_by_partition = {}
     
@@ -632,15 +632,15 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
     
     # NOTE: Both orders_by_partition and trades_by_partition now have normalized column names
-    order_id_col = 'orderid'
-    timestamp_col = 'timestamp'
-    order_type_col = 'exchangeordertype'
-    changereason_col = 'changereason'
-    leavesqty_col = 'leavesquantity'
+    order_id_col = col.common.orderid
+    timestamp_col = col.common.timestamp
+    order_type_col = col.common.exchangeordertype
+    changereason_col = col.common.changereason
+    leavesqty_col = col.common.leavesquantity
     
     # Get column names for TRADES
-    trade_orderid_col = 'orderid'
-    trade_time_col = 'tradetime'
+    trade_orderid_col = col.common.orderid
+    trade_time_col = col.common.tradetime
     
     execution_times_by_partition = {}
     
@@ -824,9 +824,9 @@ def classify_order_groups(orders_by_partition, processed_dir, column_mapping):
     print(f"\n[9/11] Classifying sweep order groups (type 2048 only)...")
     
     # NOTE: orders_after_matching.csv now has normalized column names
-    order_type_col = 'exchangeordertype'
-    leaves_qty_col = 'leavesquantity'
-    matched_qty_col = 'matched_quantity'
+    order_type_col = col.common.exchangeordertype
+    leaves_qty_col = col.common.leavesquantity
+    matched_qty_col = col.common.matched_quantity
     
     groups_by_partition = {}
     

@@ -43,8 +43,8 @@ def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
         return None
     
     # Use standardized column names (normalized in Stage 1)
-    orderbook_col = 'orderbookid'
-    timestamp_col = 'timestamp'
+    orderbook_col = col.common.orderbookid
+    timestamp_col = col.common.timestamp
     
     # Filter for this orderbookid and timestamp <= target
     valid_quotes = nbbo_data[
@@ -59,8 +59,8 @@ def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
     latest = valid_quotes.iloc[-1]
     
     # Use standardized column names (normalized in Stage 1)
-    bid_col = 'bid'
-    offer_col = 'offer'
+    bid_col = col.common.bid
+    offer_col = col.common.offer
     
     # Calculate midpoint
     midpoint = (latest[bid_col] + latest[offer_col]) / 2.0

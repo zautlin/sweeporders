@@ -337,6 +337,7 @@ COLUMN_MAPPING = {
     },
     
     # Common identifiers (used across multiple contexts)
+    # Note: These are normalized/processed column names used after Stage 1
     'common': {
         'orderid': 'orderid',
         'order_id': 'order_id',
@@ -347,6 +348,15 @@ COLUMN_MAPPING = {
         'side': 'side',
         'quantity': 'quantity',
         'price': 'price',
+        'sequence': 'sequence',
+        'tradetime': 'tradetime',
+        'tradeprice': 'tradeprice',
+        'exchangeordertype': 'exchangeordertype',
+        'changereason': 'changereason',
+        'leavesquantity': 'leavesquantity',
+        'matched_quantity': 'matched_quantity',
+        'bid': 'bid',
+        'offer': 'offer',
     },
 }
 
