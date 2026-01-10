@@ -54,25 +54,13 @@ class SecurityDiscovery:
     def __init__(self, raw_data_dir: str = 'data/raw', 
                  min_orders: int = 100, 
                  min_trades: int = 10):
-        """
-        Initialize security discovery
-        
-        Args:
-            raw_data_dir: Path to raw data directory
-            min_orders: Minimum number of orders to consider a security valid
-            min_trades: Minimum number of trades to consider a security valid
-        """
+        """Initialize security discovery with thresholds for minimum orders and trades."""
         self.raw_data_dir = Path(raw_data_dir)
         self.min_orders = min_orders
         self.min_trades = min_trades
         
     def get_available_dates(self) -> List[str]:
-        """
-        Scan raw data directory to find all available dates
-        
-        Returns:
-            List of date strings (YYYYMMDD format)
-        """
+        """Scan raw data directory and return list of available dates in YYYYMMDD format."""
         dates = set()
         
         # Scan order files
@@ -113,16 +101,7 @@ class SecurityDiscovery:
     
     def _get_orderbookids_from_file(self, file_path: Path, 
                                     file_type: str) -> Dict[int, int]:
-        """
-        Extract unique orderbookids and their counts from a CSV file
-        
-        Args:
-            file_path: Path to CSV file
-            file_type: 'orders' or 'trades'
-            
-        Returns:
-            Dict mapping orderbookid to count
-        """
+        """Extract unique orderbookids and counts from CSV file. Returns dict mapping orderbookid to count."""
         try:
             # Read only first chunk to find orderbookids (for performance)
             # For orders, column is 'security_code'
@@ -251,12 +230,7 @@ class SecurityDiscovery:
         return None
     
     def print_summary(self, date: str):
-        """
-        Print a summary of discovered securities for a date
-        
-        Args:
-            date: Date string in YYYYMMDD format
-        """
+        """Print summary of discovered securities for the specified date."""
         print(f"\n{'='*80}")
         print(f"Security Discovery Summary for {date}")
         print(f"{'='*80}")

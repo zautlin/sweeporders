@@ -37,16 +37,7 @@ def detect_system_config(
     override_workers: Optional[int] = None,
     override_chunk_size: Optional[int] = None
 ) -> SystemConfig:
-    """
-    Detect system configuration and calculate optimal settings.
-    
-    Args:
-        override_workers: Manual override for number of workers (optional)
-        override_chunk_size: Manual override for chunk size (optional)
-    
-    Returns:
-        SystemConfig object with optimal settings
-    """
+    """Detect system config and calculate optimal settings. Supports manual overrides for workers and chunk size."""
     try:
         # Try to import psutil for accurate memory detection
         import psutil
@@ -126,22 +117,7 @@ def get_config_with_overrides(
     workers: Optional[int] = None,
     chunk_size: Optional[int] = None
 ) -> SystemConfig:
-    """
-    Get system configuration with optional overrides from environment variables.
-    
-    Environment Variables:
-        SWEEP_WORKERS: Number of worker processes
-        SWEEP_CHUNK_SIZE: Chunk size for reading CSV files
-    
-    Priority: function args > env vars > auto-detect
-    
-    Args:
-        workers: Direct override for workers
-        chunk_size: Direct override for chunk size
-    
-    Returns:
-        SystemConfig object
-    """
+    """Get system config with env var overrides. Priority: function args > env vars > auto-detect."""
     # Check environment variables
     env_workers = os.getenv('SWEEP_WORKERS')
     env_chunk_size = os.getenv('SWEEP_CHUNK_SIZE')

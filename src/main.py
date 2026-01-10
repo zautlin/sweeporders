@@ -18,39 +18,7 @@ def parse_arguments():
     """Parse CLI arguments with config.py fallback. CLI args override config defaults."""
     parser = argparse.ArgumentParser(
         description='Centre Point Sweep Order Matching Pipeline - 4 Stage Pipeline',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Pipeline Stages:
-  Stage 1: Data Extraction & Preparation (Steps 1-6)
-  Stage 2: Simulation & LOB States (Steps 7-12)
-  Stage 3: Per-Security Analysis + Volume Analysis (Steps 13-14)
-  Stage 4: Cross-Security Aggregation (all securities)
-
-Examples:
-  # List available securities for a date
-  python main.py --list-securities --date 20240905
-  
-  # Run all stages with auto-discovered orderbookid
-  python main.py --orderbookid 110621 --date 20240905
-  
-  # Run all stages for all discovered securities
-  python main.py --auto-discover --date 20240905
-  
-  # Run with legacy ticker (backward compatible)
-  python main.py --ticker drr --date 20240905
-  
-  # Run only Stage 1 (data extraction)
-  python main.py --orderbookid 110621 --date 20240905 --stage 1
-  
-  # Run only Stage 4 (aggregation - no ticker/orderbookid/date needed)
-  python main.py --stage 4
-  
-  # Enable statistical tests (requires scipy or uses approximate methods)
-  python main.py --orderbookid 110621 --date 20240905 --enable-stats
-  
-  # Override execution mode for Stage 2
-  python main.py --orderbookid 110621 --date 20240905 --parallel
-        """
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     # Security selection (mutually exclusive)
@@ -96,7 +64,7 @@ Examples:
 
 
 def get_runtime_config(args):
-    """Build runtime configuration from CLI args and config defaults. CLI takes priority."""
+    """Build runtime config from CLI args and config. CLI takes priority."""
     # Handle list operations first (they exit early)
     discovery = SecurityDiscovery(min_orders=args.min_orders, min_trades=args.min_trades)
     

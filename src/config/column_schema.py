@@ -149,12 +149,7 @@ class ColumnSchema:
         return data_type in self._accessors
     
     def data_types(self) -> list:
-        """
-        Get list of all data types.
-        
-        Returns:
-            List of data type names
-        """
+        """Get list of all data types."""
         return list(self._accessors.keys())
     
     def validate(self, data_type: str, required_columns: list) -> bool:

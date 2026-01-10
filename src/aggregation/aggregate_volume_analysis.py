@@ -274,15 +274,7 @@ def generate_volume_report(
     per_security_summary: pd.DataFrame,
     output_file: str
 ) -> None:
-    """
-    Generate a human-readable text report of volume analysis findings.
-    
-    Args:
-        aggregated_df: Aggregated volume bucket data
-        cross_security_tests: Cross-security test results
-        per_security_summary: Per-security summary statistics
-        output_file: Path to output text file
-    """
+    """Generate human-readable text report of volume analysis findings."""
     logger.info(f"Generating volume analysis report: {output_file}")
     
     with open(output_file, 'w') as f:

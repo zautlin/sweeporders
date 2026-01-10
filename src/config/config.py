@@ -550,26 +550,7 @@ def rename_columns_to_standard(df: pd.DataFrame, data_type: str) -> pd.DataFrame
 
 
 def normalize_to_standard_names(df: pd.DataFrame, data_type: str) -> pd.DataFrame:
-    """
-    Normalize DataFrame columns to standard names based on COLUMN_NORMALIZATION_MAP.
-    
-    This function is used by Stage 1 (data_processor) to standardize column names
-    before saving processed files. This ensures all downstream stages can use
-    consistent column names without runtime normalization.
-    
-    Args:
-        df: DataFrame with raw/alternative column names
-        data_type: Type of data ('orders', 'trades', 'nbbo', etc.)
-    
-    Returns:
-        DataFrame with standardized column names
-    
-    Example:
-        >>> df = pd.DataFrame({'order_id': [1, 2], 'security_code': [100, 200]})
-        >>> df_normalized = normalize_to_standard_names(df, 'orders')
-        >>> df_normalized.columns
-        Index(['orderid', 'orderbookid'])
-    """
+    """Normalize DataFrame columns to standard names. Used by Stage 1 before saving processed files."""
     if data_type not in COLUMN_NORMALIZATION_MAP:
         # No normalization defined for this data type, return as-is
         return df

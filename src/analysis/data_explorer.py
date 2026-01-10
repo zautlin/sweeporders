@@ -576,15 +576,7 @@ def generate_exploration_report(
 
 def explore_data(ticker: Optional[str], date: str, orderbookid: Optional[int] = None, 
                 output_base_dir: str = 'data/exploration'):
-    """
-    Main exploration function for a single security.
-    
-    Args:
-        ticker: Security ticker (e.g., 'drr') - optional if orderbookid provided
-        date: Date string YYYYMMDD
-        orderbookid: OrderbookID - optional if ticker provided
-        output_base_dir: Base output directory
-    """
+    """Main exploration function for a single security. Requires ticker or orderbookid with date."""
     if ticker:
         ticker_display = ticker.upper()
     else:
