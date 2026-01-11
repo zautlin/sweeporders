@@ -344,13 +344,11 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             # Calculate match quantity
             match_qty = min(sweep_remaining_qty, order_available)
             
-            # Get timestamps
-            sweep_timestamp = sweep[col.common.timestamp]
-            incoming_timestamp = order[col.common.timestamp]
-            match_timestamp = incoming_timestamp  # Match occurs at incoming order time
+            # Get match timestamp (when incoming order arrives)
+            match_timestamp = order[col.common.timestamp]
             
             # Get NBBO at match time
-            nbbo_bid, nbbo_offer, nbbo_timestamp = _get_nbbo_at_timestamp(
+            nbbo_bid, nbbo_offer, _ = _get_nbbo_at_timestamp(
                 nbbo_sorted,
                 match_timestamp,
                 sweep_orderbookid
@@ -375,9 +373,6 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             sweep_side_val = int(sweep[col.common.side])
             order_side = int(order[col.common.side])
             
-            # Calculate duration
-            sweep_to_match_duration = match_timestamp - sweep_timestamp
-            
             # === ROW 1: AGGRESSOR (Sweep Order) ===
             simulated_trades.append({
                 'EXCHANGE': 3,
@@ -397,11 +392,6 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
                 'participantid': 0,
                 'passiveaggressive': 1,  # Aggressor
                 'row_num': row_counter,
-                # Analytical columns
-                'sweepordertimestamp': sweep_timestamp,
-                'incomingordertimestamp': incoming_timestamp,
-                'nbbotimestamp': nbbo_timestamp,
-                'sweeptomatchduration': sweep_to_match_duration,
             })
             row_counter += 1
             
@@ -424,11 +414,6 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
                 'participantid': 0,
                 'passiveaggressive': 0,  # Passive
                 'row_num': row_counter,
-                # Analytical columns
-                'sweepordertimestamp': sweep_timestamp,
-                'incomingordertimestamp': incoming_timestamp,
-                'nbbotimestamp': nbbo_timestamp,
-                'sweeptomatchduration': sweep_to_match_duration,
             })
             row_counter += 1
             
@@ -467,9 +452,7 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             'EXCHANGE', 'sequence', 'tradetime', 'securitycode', 'orderid',
             'dealsource', 'matchgroupid', 'nationalbidpricesnapshot',
             'nationalofferpricesnapshot', 'tradeprice', 'quantity', 'side',
-            'participantid', 'passiveaggressive', 'row_num',
-            'sweepordertimestamp', 'incomingordertimestamp', 'nbbotimestamp',
-            'sweeptomatchduration'
+            'participantid', 'passiveaggressive', 'row_num'
         ]
         
         for col_name in int_columns:
@@ -482,9 +465,7 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             'orderid', 'dealsource', 'exchangeinfo', 'matchgroupid',
             'nationalbidpricesnapshot', 'nationalofferpricesnapshot',
             'tradeprice', 'quantity', 'side', 'participantid',
-            'passiveaggressive', 'row_num',
-            'sweepordertimestamp', 'incomingordertimestamp', 'nbbotimestamp',
-            'sweeptomatchduration'
+            'passiveaggressive', 'row_num'
         ])
     
     order_summary_df = pd.DataFrame(sweep_summaries)

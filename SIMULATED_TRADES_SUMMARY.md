@@ -48,14 +48,13 @@ Both rows share the same:
 - `tradetime`: When the match occurred
 - `tradeprice`: Execution price (NBBO midpoint)
 - `quantity`: Matched quantity
-- NBBO snapshots and timestamps
+- NBBO bid and offer snapshots
 
 ---
 
-## Schema (21 Columns)
+## Schema (17 Columns)
 
-### Standard Columns (17)
-These columns follow the real trades file format:
+All columns contain essential trade execution data. No derived or analytical fields are stored.
 
 | # | Column | Description |
 |---|--------|-------------|
@@ -77,15 +76,60 @@ These columns follow the real trades file format:
 | 16 | `passiveaggressive` | Role (1=aggressor, 0=passive) |
 | 17 | `row_num` | Global row number |
 
-### Analytical Columns (4)
-New columns for analysis and research:
+---
 
-| # | Column | Description |
-|---|--------|-------------|
-| 18 | `sweepordertimestamp` | When sweep order was placed |
-| 19 | `incomingordertimestamp` | When incoming order was placed |
-| 20 | `nbbotimestamp` | When NBBO snapshot was recorded |
-| 21 | `sweeptomatchduration` | Duration from sweep to match (nanoseconds) |
+## Retrieving Analytical Data
+
+Timestamp and duration data can be derived by joining with order data:
+
+### Get Sweep Order Timestamp
+```python
+# Load data
+trades = pd.read_csv('cp_trades_simulation.csv')
+orders = pd.read_csv('orders_before_matching.csv')
+
+# Filter aggressor rows (sweep orders)
+aggressor = trades[trades['passiveaggressive'] == 1]
+
+# Join to get sweep timestamp
+aggressor = aggressor.merge(
+    orders[['orderid', 'timestamp']], 
+    on='orderid',
+    how='left'
+)
+# aggressor['timestamp'] is the sweep order timestamp
+```
+
+### Calculate Match Duration
+```python
+# Duration from sweep placement to match
+aggressor['sweeptomatchduration'] = aggressor['tradetime'] - aggressor['timestamp']
+aggressor['duration_sec'] = aggressor['sweeptomatchduration'] / 1e9
+
+# Statistics
+print(f"Average duration: {aggressor['duration_sec'].mean():.2f} seconds")
+print(f"Min duration: {aggressor['duration_sec'].min():.2f} seconds")
+print(f"Max duration: {aggressor['duration_sec'].max():.2f} seconds")
+```
+
+### Helper Function
+```python
+def enrich_trades_with_timestamps(trades_df, orders_df):
+    """Add sweep timestamp and duration to aggressor trades."""
+    aggressor = trades_df[trades_df['passiveaggressive'] == 1].copy()
+    
+    aggressor = aggressor.merge(
+        orders_df[['orderid', 'timestamp']],
+        on='orderid',
+        how='left',
+        suffixes=('', '_sweep')
+    )
+    
+    aggressor['sweepordertimestamp'] = aggressor['timestamp']
+    aggressor['sweeptomatchduration'] = aggressor['tradetime'] - aggressor['timestamp']
+    
+    return aggressor
+```
 
 ---
 
@@ -115,8 +159,27 @@ New columns for analysis and research:
 
 ## Timing Analysis
 
-### Sweep-to-Match Duration
-Time from when sweep order was placed to when it matched:
+### Duration Calculation Example
+Time from when sweep order was placed to when it matched can be calculated by joining with orders:
+
+```python
+# Example from DRR 2024-09-05 dataset
+trades = pd.read_csv('cp_trades_simulation.csv')
+orders = pd.read_csv('orders_before_matching.csv')
+
+# Get aggressor rows and join with orders
+aggressor = trades[trades['passiveaggressive'] == 1]
+aggressor = aggressor.merge(orders[['orderid', 'timestamp']], on='orderid')
+
+# Calculate duration
+aggressor['duration_ns'] = aggressor['tradetime'] - aggressor['timestamp']
+aggressor['duration_sec'] = aggressor['duration_ns'] / 1e9
+
+# Statistics
+print(aggressor['duration_sec'].describe())
+```
+
+**Results from this dataset:**
 
 | Statistic | Value |
 |-----------|-------|
@@ -185,15 +248,15 @@ Row 4 (Passive):
 - One aggressor (sweep), one passive (incoming)
 
 ### 3. NBBO Integration
-- NBBO snapshots captured at match time
+- NBBO bid and offer snapshots captured at match time
 - Trade price calculated as midpoint: `(bid + offer) / 2`
-- NBBO timestamp preserved for analysis
+- Values stored in `nationalbidpricesnapshot` and `nationalofferpricesnapshot`
 
-### 4. Timestamp Tracking
-- `sweepordertimestamp`: Original sweep placement time
-- `incomingordertimestamp`: When incoming order arrived
-- `nbbotimestamp`: NBBO snapshot time
-- `sweeptomatchduration`: Computed duration field
+### 4. Essential Data Only
+- Only core trade execution data stored (17 columns)
+- No derived or analytical fields in output
+- Timestamps and durations can be calculated by joining with orders
+- Keeps files smaller and more focused
 
 ### 5. Column Naming Convention
 - Lowercase, no underscores (follows real trades format)
@@ -207,7 +270,7 @@ Row 4 (Passive):
 - ✅ Pipeline completed successfully
 - ✅ 1,548 matches generated
 - ✅ 3,096 trade rows created (1,548 × 2)
-- ✅ All 21 columns present
+- ✅ Exactly 17 columns (core trade data only)
 - ✅ No `match_details.csv` created (deprecated)
 - ✅ Perfect pairing: every match has exactly 2 rows
 - ✅ Aggressor/passive counts match (1,548 each)
@@ -277,9 +340,10 @@ data/outputs/2024-09-05/110621/
    - Both rows have identical quantity/price/time
 
 4. **Duration analysis:**
-   - `sweeptomatchduration` is in nanoseconds
+   - Join with `orders_before_matching.csv` to get sweep timestamp
+   - Calculate: `duration_ns = tradetime - sweep_timestamp`
    - Convert to seconds: `duration_ns / 1e9`
-   - Measures time from sweep placement to match
+   - See "Retrieving Analytical Data" section for code examples
 
 ### For Comparison
 Compare with real trades:
@@ -293,21 +357,28 @@ Use `trade_level_comparison.csv` for pre-computed comparisons.
 
 ## Breaking Changes from Previous Version
 
-### ❌ Removed
+### ❌ Removed (v2.0)
+- 4 analytical columns: `sweepordertimestamp`, `incomingordertimestamp`, `nbbotimestamp`, `sweeptomatchduration`
+- These can be derived by joining with orders data (see "Retrieving Analytical Data" section)
+
+### ❌ Removed (v1.0)
 - `match_details` DataFrame (deprecated)
 - `simulation_match_details.csv` file
 - `generate_simulated_trades()` function
 - Intermediate transformation step
 
-### ✅ Added
-- `simulated_trades` DataFrame (replaces match_details)
-- 4 new analytical columns
+### ✅ Current Schema (v2.0)
+- `simulated_trades` DataFrame with 17 columns (core trade data only)
 - Direct generation at match time
 - Performance optimizations
+- Essential fields only (no derived data)
 
-### 🔄 Changed
-- Schema expanded from 19 to 21 columns
-- Each match now 2 rows instead of 1
+### 🔄 Changed (v2.0)
+- Schema reduced from 21 to 17 columns (removed analytical columns)
+- Timestamps and duration now calculated on-demand via joins
+
+### 🔄 Changed (v1.0)
+- Each match generates 2 rows instead of 1 (aggressor + passive)
 - `passiveaggressive` column indicates role
 - Return structure: `sim_results['simulated_trades']` not `sim_results['match_details']`
 
@@ -337,13 +408,20 @@ midpoint = _calculate_midpoint(nbbo_bid, nbbo_offer)
 - Finds NBBO at or before match time
 - Fallback to 0 if no NBBO available
 
-### Duration Calculation
+### Duration Calculation (On-Demand)
+Duration must be calculated by joining with orders:
 ```python
-sweeptomatchduration = tradetime - sweepordertimestamp
+# Join aggressor trades with orders to get sweep timestamp
+aggressor = trades[trades['passiveaggressive'] == 1]
+aggressor = aggressor.merge(orders[['orderid', 'timestamp']], on='orderid')
+
+# Calculate duration
+sweeptomatchduration = aggressor['tradetime'] - aggressor['timestamp']
 ```
-- Both in nanoseconds since epoch
+- Both timestamps in nanoseconds since epoch
 - Positive value = time elapsed
 - Can be 0 for immediate matches
+- See "Retrieving Analytical Data" section for complete examples
 
 ---
 
@@ -392,6 +470,7 @@ For questions about this dataset or the simulation methodology, please refer to:
 
 ---
 
-**Document Version:** 1.0  
+**Document Version:** 2.0  
 **Last Updated:** 2026-01-11  
-**Pipeline Version:** Post-refactoring (direct generation)
+**Schema Version:** 17 columns (analytical columns removed)  
+**Pipeline Version:** Post-refactoring (direct generation, essential data only)
