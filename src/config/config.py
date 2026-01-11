@@ -275,7 +275,6 @@ COLUMN_MAPPING = {
         'simulated_vwap': 'simulated_vwap',
         'simulated_exec_cost': 'simulated_exec_cost',
         'match_status': 'match_status',
-        'match_details': 'match_details',
     },
     
     # Comparison columns (real vs simulated)
@@ -412,7 +411,6 @@ CALCULATED_COLUMNS = {
     # Matching/simulation
     'match_value': 'Value used for trade matching logic',
     'match_status': 'Status of simulated match (matched/unmatched)',
-    'match_details': 'Detailed information about match results',
 }
 
 

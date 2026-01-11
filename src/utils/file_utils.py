@@ -75,7 +75,7 @@ def load_nbbo(partition_dir):
 
 
 def save_simulation_results(sim_results, output_dir, partition_key):
-    """Save all simulation outputs (order_summary, match_details, simulated_trades)."""
+    """Save simulation outputs (order_summary and simulated_trades)."""
     partition_output_dir = Path(output_dir) / partition_key
     partition_output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -86,8 +86,6 @@ def save_simulation_results(sim_results, output_dir, partition_key):
             partition_output_dir / 'simulation_order_summary.csv',
             create_dirs=False
         )
-    
-
     
     # Save simulated trades to processed directory
     if 'simulated_trades' in sim_results and sim_results['simulated_trades'] is not None:

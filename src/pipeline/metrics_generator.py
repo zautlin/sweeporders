@@ -23,7 +23,7 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 
-def calculate_simulated_metrics(all_orders, order_summary, match_details):
+def calculate_simulated_metrics(all_orders, order_summary, simulated_trades):
     """Calculate simulated execution metrics for orders."""
     
     # Start with all orders
@@ -78,8 +78,8 @@ def calculate_simulated_metrics(all_orders, order_summary, match_details):
     )
     
     # Calculate average price and total value
-    if not match_details.empty:
-        price_stats = _calculate_price_metrics(match_details)
+    if not simulated_trades.empty:
+        price_stats = _calculate_price_metrics(simulated_trades)
         result = result.merge(
             price_stats,
             on='orderid',
@@ -106,29 +106,34 @@ def _determine_fill_status(matched_qty, total_qty):
         return 'Partially Filled'
 
 
-def _calculate_price_metrics(match_details):
-    """Calculate average price and total value per order from match details."""
-    # Calculate total value per match
-    match_details = match_details.copy()
-    match_details['match_value'] = match_details['matched_quantity'] * match_details[col.common.price]
+def _calculate_price_metrics(simulated_trades):
+    """Calculate average price and total value per order from simulated trades.
     
-    # Aggregate by incoming order
-    price_stats = match_details.groupby('incoming_orderid').agg({
-        'matched_quantity': 'sum',
-        'match_value': 'sum'
+    Note: simulated_trades has 2 rows per match (aggressor + passive).
+    We aggregate by the orderid from aggressor rows (passiveaggressive=1) for sweep orders.
+    """
+    # Filter for aggressor rows only (sweep orders) - passiveaggressive=1
+    aggressor_trades = simulated_trades[simulated_trades['passiveaggressive'] == 1].copy()
+    
+    # Calculate total value per trade
+    aggressor_trades['trade_value'] = aggressor_trades['quantity'] * aggressor_trades['tradeprice']
+    
+    # Aggregate by orderid (sweep order)
+    price_stats = aggressor_trades.groupby('orderid').agg({
+        'quantity': 'sum',
+        'trade_value': 'sum'
     }).reset_index()
     
     # Calculate weighted average price
     price_stats['simulated_avg_price'] = np.where(
-        price_stats['matched_quantity'] > 0,
-        price_stats['match_value'] / price_stats['matched_quantity'],
+        price_stats['quantity'] > 0,
+        price_stats['trade_value'] / price_stats['quantity'],
         0
     )
     
     # Rename columns
     price_stats = price_stats.rename(columns={
-        'incoming_orderid': 'orderid',
-        'match_value': 'simulated_total_value'
+        'trade_value': 'simulated_total_value'
     })
     
     # Keep only needed columns
@@ -931,15 +936,15 @@ def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_resul
         
         # Extract data
         real_order_metrics = real_metrics['order_metrics']
-        sim_match_details = sim_results['match_details']
+        sim_trades = sim_results['simulated_trades']
         sim_order_summary = sim_results['order_summary']
         
-        if len(sim_match_details) == 0:
-            print(f"  {partition_key}: No simulated matches")
+        if len(sim_trades) == 0:
+            print(f"  {partition_key}: No simulated trades")
             continue
         
         # Aggregate simulated trades per order (for sweep orders)
-        sim_aggregated = _aggregate_simulated_trades_per_order(sim_match_details, sim_order_summary)
+        sim_aggregated = _aggregate_simulated_trades_per_order(sim_trades, sim_order_summary)
         
         # Compare real vs simulated at order level
         comparison = _compare_order_level_trades(real_order_metrics, sim_aggregated)
@@ -957,14 +962,20 @@ def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_resul
     return trade_comparison_by_partition
 
 
-def _aggregate_simulated_trades_per_order(match_details, order_summary):
-    """Aggregate simulated match details per sweep order."""
+def _aggregate_simulated_trades_per_order(simulated_trades, order_summary):
+    """Aggregate simulated trades per sweep order.
     
-    # Group by sweep_orderid
-    aggregated = match_details.groupby('sweep_orderid').agg({
-        'matched_quantity': ['count', 'sum'],
-        'price': ['mean', 'std'],
-        'timestamp': ['min', 'max']
+    Note: simulated_trades has 2 rows per match (aggressor + passive).
+    We aggregate by orderid from aggressor rows (passiveaggressive=1) for sweep orders.
+    """
+    # Filter for aggressor rows only (sweep orders) - passiveaggressive=1
+    aggressor_trades = simulated_trades[simulated_trades['passiveaggressive'] == 1].copy()
+    
+    # Group by orderid (sweep order)
+    aggregated = aggressor_trades.groupby('orderid').agg({
+        'quantity': ['count', 'sum'],
+        'tradeprice': ['mean', 'std'],
+        'tradetime': ['min', 'max']
     }).reset_index()
     
     # Flatten column names

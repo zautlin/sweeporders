@@ -51,7 +51,7 @@ def process_single_partition(partition_key, processed_dir, outputs_dir, enable_t
             orders_with_metrics = mg.calculate_simulated_metrics(
                 orders_after,
                 sim_results['order_summary'],
-                sim_results['match_details']
+                sim_results['simulated_trades']
             )
             fu.save_orders_with_metrics(orders_with_metrics, outputs_dir, partition_key)
         
@@ -63,7 +63,7 @@ def process_single_partition(partition_key, processed_dir, outputs_dir, enable_t
             'partition_key': partition_key,
             'status': 'success',
             'num_sweep_orders': len(sim_results['order_summary']),
-            'num_matches': len(sim_results['match_details'])
+            'num_matches': len(sim_results['simulated_trades']) // 2  # 2 rows per match
         }
         
     except Exception as e:
@@ -110,7 +110,7 @@ def compare_trades_for_partition(partition_key, sim_results, processed_dir, outp
     
     # Aggregate simulated trades
     sim_aggregated = mg._aggregate_simulated_trades_per_order(
-        sim_results['match_details'],
+        sim_results['simulated_trades'],
         sim_results['order_summary']
     )
     
@@ -214,7 +214,7 @@ def calculate_metrics_step(partition_key, sim_results, orders_after, output_dir)
     orders_with_metrics = mg.calculate_simulated_metrics(
         orders_after,
         sim_results['order_summary'],
-        sim_results['match_details']
+        sim_results['simulated_trades']
     )
     
     fu.save_orders_with_metrics(orders_with_metrics, output_dir, partition_key)
@@ -261,7 +261,7 @@ def simulate_sweep_matching_sequential(orders_by_partition, order_states_by_part
         
         simulation_results_by_partition[partition_key] = {
             'order_summary': sim_results['order_summary'],
-            'match_details': sim_results['match_details']
+            'simulated_trades': sim_results['simulated_trades']
         }
     
     print(f"   Completed sweep simulation for {len(simulation_results_by_partition)} partitions")
@@ -287,7 +287,7 @@ def calculate_simulated_metrics_sequential(orders_by_partition, simulation_resul
         orders_with_metrics = mg.calculate_simulated_metrics(
             orders_after,
             sim_results['order_summary'],
-            sim_results['match_details']
+            sim_results['simulated_trades']
         )
         
         # Save orders with simulated metrics

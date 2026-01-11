@@ -60,6 +60,61 @@ def _get_midpoint_from_nbbo(nbbo_data, timestamp, orderbookid):
     return midpoint
 
 
+def _get_nbbo_at_timestamp(nbbo_data, timestamp, orderbookid):
+    """Get NBBO bid/offer/timestamp at or before given timestamp.
+    
+    Args:
+        nbbo_data: Sorted NBBO DataFrame (must be pre-sorted by timestamp)
+        timestamp: Match timestamp (nanoseconds)
+        orderbookid: Security identifier
+    
+    Returns:
+        tuple: (bid, offer, nbbo_timestamp) or (0, 0, 0) if not found
+    """
+    if nbbo_data is None or len(nbbo_data) == 0:
+        return 0, 0, 0
+    
+    # Filter for this security at or before timestamp
+    relevant_nbbo = nbbo_data[
+        (nbbo_data[col.common.orderbookid] == orderbookid) &
+        (nbbo_data[col.common.timestamp] <= timestamp)
+    ]
+    
+    if len(relevant_nbbo) == 0:
+        return 0, 0, 0
+    
+    # Get most recent NBBO
+    latest = relevant_nbbo.iloc[-1]
+    bid = latest.get('bid', 0)
+    offer = latest.get('offer', 0)
+    nbbo_ts = latest[col.common.timestamp]
+    
+    return int(bid), int(offer), int(nbbo_ts)
+
+
+def _calculate_midpoint(bid, offer, fallback_bid=0, fallback_offer=0):
+    """Calculate midpoint from NBBO with fallback.
+    
+    Args:
+        bid: NBBO bid price
+        offer: NBBO offer price
+        fallback_bid: Fallback bid if NBBO unavailable
+        fallback_offer: Fallback offer if NBBO unavailable
+    
+    Returns:
+        float: Midpoint price or None if cannot calculate
+    """
+    # Try NBBO first
+    if bid > 0 and offer > 0:
+        return (bid + offer) / 2
+    
+    # Fallback to order bid/offer
+    if fallback_bid > 0 and fallback_offer > 0:
+        return (fallback_bid + fallback_offer) / 2
+    
+    return None
+
+
 def load_and_prepare_orders(partition_data):
     """Load and prepare sweep orders and all matching-eligible orders for simulation."""
     
@@ -189,16 +244,18 @@ def simulate_partition(partition_key, partition_data):
     # Run simulation
     results = simulate_sweep_matching(sweep_orders, all_orders, nbbo_data)
     
-    print(f"  {partition_key}: {len(results['match_details']):,} matches, {len(sweep_orders):,} sweep orders")
+    # Calculate matches from simulated trades (2 rows per match)
+    num_matches = len(results['simulated_trades']) // 2 if len(results['simulated_trades']) > 0 else 0
+    print(f"  {partition_key}: {num_matches:,} matches, {len(sweep_orders):,} sweep orders")
     
     return results
 
 
 def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
-    """Simulate sweep matching with CORRECT sweep-centric algorithm."""
+    """Simulate sweep matching and generate full trade rows directly (2 rows per match)."""
     
     # Initialize tracking structures
-    all_matches = []
+    simulated_trades = []  # Will store FULL TRADE ROWS (2 per match)
     sweep_summaries = []
     
     # Track sweep usage
@@ -211,6 +268,24 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
     
     # Pre-index all_orders by orderid for fast lookup
     all_orders_indexed = all_orders.set_index('orderid')
+    
+    # Counters for trade generation
+    row_counter = 1
+    match_counter = 0
+    base_matchgroupid = 7904794000999000001
+    
+    # Extract tradedate once from first sweep order
+    if len(sweep_orders) > 0:
+        first_timestamp = sweep_orders[col.common.timestamp].iloc[0]
+        tradedate = pd.to_datetime(first_timestamp, unit='ns').strftime('%Y-%m-%d')
+    else:
+        tradedate = None
+    
+    # Pre-sort NBBO for efficient lookups
+    if nbbo_data is not None and len(nbbo_data) > 0:
+        nbbo_sorted = nbbo_data.sort_values('timestamp').reset_index(drop=True)
+    else:
+        nbbo_sorted = None
     
     # Process each SWEEP order chronologically (by placement time)
     for idx in range(len(sweep_orders)):
@@ -269,27 +344,93 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             # Calculate match quantity
             match_qty = min(sweep_remaining_qty, order_available)
             
-            # Get midpoint price
-            midpoint = get_midpoint(
-                nbbo_data=nbbo_data,
-                timestamp=order[col.common.timestamp],
-                orderbookid=sweep_orderbookid,
+            # Get timestamps
+            sweep_timestamp = sweep[col.common.timestamp]
+            incoming_timestamp = order[col.common.timestamp]
+            match_timestamp = incoming_timestamp  # Match occurs at incoming order time
+            
+            # Get NBBO at match time
+            nbbo_bid, nbbo_offer, nbbo_timestamp = _get_nbbo_at_timestamp(
+                nbbo_sorted,
+                match_timestamp,
+                sweep_orderbookid
+            )
+            
+            # Calculate midpoint for trade price
+            midpoint = _calculate_midpoint(
+                nbbo_bid,
+                nbbo_offer,
                 fallback_bid=order[col.orders.bid],
                 fallback_offer=order[col.orders.offer]
             )
             
             if midpoint is None:
-                continue
+                continue  # Cannot price this match
             
-            # Record match
-            all_matches.append({
-                'incoming_orderid': np.int64(order_id),  # Explicit numpy int64
-                'sweep_orderid': np.int64(sweep_id),     # Explicit numpy int64
-                'timestamp': order[col.common.timestamp],
-                'matched_quantity': match_qty,
-                'price': midpoint,
-                'orderbookid': sweep_orderbookid
+            # Generate unique matchgroupid
+            matchgroupid = base_matchgroupid + match_counter
+            match_counter += 1
+            
+            # Get sides
+            sweep_side_val = int(sweep[col.common.side])
+            order_side = int(order[col.common.side])
+            
+            # Calculate duration
+            sweep_to_match_duration = match_timestamp - sweep_timestamp
+            
+            # === ROW 1: AGGRESSOR (Sweep Order) ===
+            simulated_trades.append({
+                'EXCHANGE': 3,
+                'sequence': row_counter,
+                'tradedate': tradedate,
+                'tradetime': match_timestamp,
+                'securitycode': sweep_orderbookid,
+                'orderid': sweep_id,
+                'dealsource': 99,
+                'exchangeinfo': '',
+                'matchgroupid': matchgroupid,
+                'nationalbidpricesnapshot': nbbo_bid,
+                'nationalofferpricesnapshot': nbbo_offer,
+                'tradeprice': int(midpoint),
+                'quantity': int(match_qty),
+                'side': sweep_side_val,
+                'participantid': 0,
+                'passiveaggressive': 1,  # Aggressor
+                'row_num': row_counter,
+                # Analytical columns
+                'sweepordertimestamp': sweep_timestamp,
+                'incomingordertimestamp': incoming_timestamp,
+                'nbbotimestamp': nbbo_timestamp,
+                'sweeptomatchduration': sweep_to_match_duration,
             })
+            row_counter += 1
+            
+            # === ROW 2: PASSIVE (Incoming Order) ===
+            simulated_trades.append({
+                'EXCHANGE': 3,
+                'sequence': row_counter,
+                'tradedate': tradedate,
+                'tradetime': match_timestamp,
+                'securitycode': sweep_orderbookid,
+                'orderid': order_id,
+                'dealsource': 99,
+                'exchangeinfo': '',
+                'matchgroupid': matchgroupid,
+                'nationalbidpricesnapshot': nbbo_bid,
+                'nationalofferpricesnapshot': nbbo_offer,
+                'tradeprice': int(midpoint),
+                'quantity': int(match_qty),
+                'side': order_side,
+                'participantid': 0,
+                'passiveaggressive': 0,  # Passive
+                'row_num': row_counter,
+                # Analytical columns
+                'sweepordertimestamp': sweep_timestamp,
+                'incomingordertimestamp': incoming_timestamp,
+                'nbbotimestamp': nbbo_timestamp,
+                'sweeptomatchduration': sweep_to_match_duration,
+            })
+            row_counter += 1
             
             # Update quantities
             sweep_remaining_qty -= match_qty
@@ -317,154 +458,43 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             'orderbookid': sweep_orderbookid
         })
     
-    # Convert to DataFrames with explicit dtypes to prevent float conversion
-    if all_matches:
-        match_details_df = pd.DataFrame(all_matches)
-        # Force int64 IMMEDIATELY to prevent any float conversion
-        match_details_df['sweep_orderid'] = pd.to_numeric(match_details_df['sweep_orderid'], downcast='signed', errors='coerce').astype('int64')
-        match_details_df['incoming_orderid'] = pd.to_numeric(match_details_df['incoming_orderid'], downcast='signed', errors='coerce').astype('int64')
+    # Convert to DataFrame
+    if simulated_trades:
+        simulated_trades_df = pd.DataFrame(simulated_trades)
+        
+        # Ensure correct data types
+        int_columns = [
+            'EXCHANGE', 'sequence', 'tradetime', 'securitycode', 'orderid',
+            'dealsource', 'matchgroupid', 'nationalbidpricesnapshot',
+            'nationalofferpricesnapshot', 'tradeprice', 'quantity', 'side',
+            'participantid', 'passiveaggressive', 'row_num',
+            'sweepordertimestamp', 'incomingordertimestamp', 'nbbotimestamp',
+            'sweeptomatchduration'
+        ]
+        
+        for col_name in int_columns:
+            if col_name in simulated_trades_df.columns:
+                simulated_trades_df[col_name] = simulated_trades_df[col_name].astype('int64')
     else:
-        match_details_df = pd.DataFrame()
+        # Empty case - no matches
+        simulated_trades_df = pd.DataFrame(columns=[
+            'EXCHANGE', 'sequence', 'tradedate', 'tradetime', 'securitycode',
+            'orderid', 'dealsource', 'exchangeinfo', 'matchgroupid',
+            'nationalbidpricesnapshot', 'nationalofferpricesnapshot',
+            'tradeprice', 'quantity', 'side', 'participantid',
+            'passiveaggressive', 'row_num',
+            'sweepordertimestamp', 'incomingordertimestamp', 'nbbotimestamp',
+            'sweeptomatchduration'
+        ])
     
     order_summary_df = pd.DataFrame(sweep_summaries)
     sweep_utilization_df = _generate_sweep_utilization(sweep_orders, sweep_usage)
     
-    # Generate simulated trades
-    simulated_trades_df = generate_simulated_trades(match_details_df, sweep_orders, nbbo_data)
-    
     return {
-        'match_details': match_details_df,
         'order_summary': order_summary_df,
         'sweep_utilization': sweep_utilization_df,
         'simulated_trades': simulated_trades_df
     }
-
-
-def generate_simulated_trades(match_details, sweep_orders, nbbo_data=None):
-    """Generate simulated trades in 19-column format matching real trade files (2 rows per match)."""
-    if len(match_details) == 0:
-        return pd.DataFrame(columns=[
-            col.trades.exchange, col.common.sequence, col.trades.trade_date, col.trades.trade_time, 
-            col.trades.security_code, col.common.orderid, col.trades.dealsource, 
-            col.trades.dealsource_decoded, col.trades.exchange_info, col.trades.match_group_id,
-            col.trades.national_bid_snapshot, col.trades.national_offer_snapshot, 
-            col.common.tradeprice, col.common.quantity, col.common.side, col.trades.side_decoded, 
-            col.trades.participant_id, col.trades.passive_aggressive, col.trades.row_num
-        ])
-    
-    # Extract date from first match timestamp
-    first_timestamp = match_details[col.common.timestamp].iloc[0]
-    tradedate = pd.to_datetime(first_timestamp, unit='ns').strftime('%Y-%m-%d')
-    
-    # Get sweep order sides
-    sweep_side_map = sweep_orders.set_index('orderid')[col.common.side].to_dict()
-    
-    # Sort matches by timestamp for consistent ordering
-    matches_sorted = match_details.sort_values('timestamp').reset_index(drop=True)
-    
-    # Prepare NBBO data for lookup (sort by timestamp)
-    if nbbo_data is not None and len(nbbo_data) > 0:
-        nbbo_sorted = nbbo_data.sort_values('timestamp').reset_index(drop=True)
-    else:
-        nbbo_sorted = None
-    
-    # Generate rows (2 per match)
-    rows = []
-    row_counter = 1
-    
-    # CRITICAL: Use itertuples() instead of iterrows() to preserve int64 precision
-    # iterrows() converts int64 to float64, causing precision loss for large integers
-    for match in matches_sorted.itertuples(index=True, name='Match'):
-        sweep_orderid = match.sweep_orderid
-        incoming_orderid = match.incoming_orderid
-        timestamp = match.timestamp
-        quantity = match.matched_quantity
-        price = match.price
-        security_code = match.orderbookid
-        idx = match.Index
-        
-        # Generate unique matchgroupid (use base + match index)
-        matchgroupid = 7904794000999000001 + idx
-        
-        # Get aggressor side
-        aggressor_side = sweep_side_map.get(sweep_orderid, 2)
-        passive_side = 1 if aggressor_side == 2 else 2
-        
-        # Get NBBO snapshots (most recent before this timestamp)
-        bid_snapshot = 0
-        offer_snapshot = 0
-        if nbbo_sorted is not None:
-            recent_nbbo = nbbo_sorted[nbbo_sorted[col.common.timestamp] <= timestamp]
-            if len(recent_nbbo) > 0:
-                latest_nbbo = recent_nbbo.iloc[-1]
-                # Use standardized column names (normalized in Stage 1)
-                bid_snapshot = latest_nbbo.get('bid', 0)
-                offer_snapshot = latest_nbbo.get('offer', 0)
-        
-        # Row 1: Aggressor (sweep order)
-        rows.append({
-            col.trades.exchange: 3,
-            col.common.sequence: row_counter,
-            col.trades.trade_date: tradedate,
-            col.trades.trade_time: timestamp,
-            col.trades.security_code: security_code,
-            col.common.orderid: sweep_orderid,
-            col.trades.dealsource: 99,
-            col.trades.dealsource_decoded: 'Simulated',
-            col.trades.exchange_info: '',
-            col.trades.match_group_id: matchgroupid,
-            col.trades.national_bid_snapshot: int(bid_snapshot),
-            col.trades.national_offer_snapshot: int(offer_snapshot),
-            col.common.tradeprice: int(price),
-            col.common.quantity: int(quantity),
-            col.common.side: int(aggressor_side),
-            col.trades.side_decoded: 'Buy' if aggressor_side == 1 else 'Sell',
-            col.trades.participant_id: 0,
-            col.trades.passive_aggressive: 1,
-            col.trades.row_num: row_counter
-        })
-        row_counter += 1
-        
-        # Row 2: Passive (incoming order)
-        rows.append({
-            col.trades.exchange: 3,
-            col.common.sequence: row_counter,
-            col.trades.trade_date: tradedate,
-            col.trades.trade_time: timestamp,
-            col.trades.security_code: security_code,
-            col.common.orderid: incoming_orderid,
-            col.trades.dealsource: 99,
-            col.trades.dealsource_decoded: 'Simulated',
-            col.trades.exchange_info: '',
-            col.trades.match_group_id: matchgroupid,
-            col.trades.national_bid_snapshot: int(bid_snapshot),
-            col.trades.national_offer_snapshot: int(offer_snapshot),
-            col.common.tradeprice: int(price),
-            col.common.quantity: int(quantity),
-            col.common.side: int(passive_side),
-            col.trades.side_decoded: 'Buy' if passive_side == 1 else 'Sell',
-            col.trades.participant_id: 0,
-            col.trades.passive_aggressive: 0,
-            col.trades.row_num: row_counter
-        })
-        row_counter += 1
-    
-    # Create DataFrame
-    trades_df = pd.DataFrame(rows)
-    
-    # Ensure correct data types (prevent scientific notation)
-    int_columns = [col.trades.exchange, col.common.sequence, col.trades.trade_time, 
-                   col.trades.security_code, col.common.orderid, col.trades.dealsource, 
-                   col.trades.match_group_id, col.trades.national_bid_snapshot, 
-                   col.trades.national_offer_snapshot, col.common.tradeprice, col.common.quantity, 
-                   col.common.side, col.trades.participant_id, col.trades.passive_aggressive, 
-                   col.trades.row_num]
-    
-    for column_name in int_columns:
-        if column_name in trades_df.columns:
-            trades_df[column_name] = trades_df[column_name].astype('int64')
-    
-    return trades_df
 
 
 def _generate_sweep_utilization(sweep_orders, sweep_usage):
