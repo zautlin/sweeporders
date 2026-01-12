@@ -13,6 +13,8 @@ from config.column_schema import col
 import numpy as np
 from pathlib import Path
 from utils.statistics_layer import StatisticsEngine
+from .trade_metrics_calculator import calculate_trade_metrics
+from utils import file_utils as fu
 
 # Try to import scipy for backward compatibility
 try:
@@ -24,122 +26,84 @@ except ImportError:
 
 
 def calculate_simulated_metrics(all_orders, order_summary, simulated_trades):
-    """Calculate simulated execution metrics for orders."""
+    """Calculate simulated execution metrics for orders using unified calculator."""
     
     # Start with all orders
     result = all_orders.copy()
     
-    # Rename order_id to orderid if needed
-    if 'order_id' in result.columns and 'orderid' not in result.columns:
-        result = result.rename(columns={'order_id': 'orderid'})
-    
     # Check if order_summary is empty
-    if order_summary.empty:
-        result['simulated_matched_quantity'] = 0
-        result['simulated_num_matches'] = 0
-        result['simulated_fill_ratio'] = 0
-        result['simulated_fill_status'] = 'Unfilled'
-        result['simulated_avg_price'] = 0.0
-        result['simulated_total_value'] = 0.0
+    if order_summary.empty or simulated_trades.empty:
+        # Return with zero metrics
+        result['qty_filled'] = 0
+        result['num_fills'] = 0
+        result['fill_ratio'] = 0.0
+        result['fill_status'] = 'Unfilled'
+        result['vwap'] = 0.0
+        result['total_execution_value'] = 0.0
         return result
     
-    # Merge with order summary
+    # Create order context for calculator (include arrival NBBO for metrics)
+    # Note: All columns are normalized by Stage 1 (orderid, timestamp, etc.)
+    order_context = result[['orderid', 'timestamp', 'side', 'quantity', 'price']].copy()
+    
+    # Arrival NBBO (from orders_after_matching.csv - needed for arrival-based metrics)
+    if 'national_bid' in result.columns:
+        order_context['national_bid'] = result['national_bid']
+    if 'national_offer' in result.columns:
+        order_context['national_offer'] = result['national_offer']
+    
+    # Calculate comprehensive metrics using unified calculator
+    # Note: Simulated trades execute at midpoint by design (see sweep_simulator.py line 444)
+    metrics_result = calculate_trade_metrics(
+        trades_df=simulated_trades,
+        orders_df=order_context,
+        nbbo_df=None,
+        filter_orderids=order_summary['orderid'].tolist() if 'orderid' in order_summary.columns else None,
+        role_filter='aggressor',  # Only aggressor rows for sweep orders
+        prefix='',
+        is_simulated=True  # Flag for simulated-specific logic
+    )
+    
+    per_order_metrics = metrics_result['per_order_metrics']
+    
+    if per_order_metrics.empty:
+        # Return with zero metrics
+        result['qty_filled'] = 0
+        result['num_fills'] = 0
+        result['fill_ratio'] = 0.0
+        result['fill_status'] = 'Unfilled'
+        result['vwap'] = 0.0
+        result['total_execution_value'] = 0.0
+        return result
+    
+    # Merge with all_orders
     result = result.merge(
-        order_summary[['orderid', 'matched_quantity', 'num_matches']],
+        per_order_metrics,
         on='orderid',
-        how='left',
-        suffixes=('', '_sim')
+        how='left'
     )
     
-    # Rename columns with simulated_ prefix
-    result = result.rename(columns={
-        'matched_quantity': 'simulated_matched_quantity',
-        'num_matches': 'simulated_num_matches'
-    })
+    # Fill NaN for orders without simulation matches
+    metric_cols = ['qty_filled', 'num_fills', 'fill_ratio', 'vwap', 'total_execution_value']
+    for col_name in metric_cols:
+        if col_name in result.columns:
+            result[col_name] = result[col_name].fillna(0)
     
-    # Fill NaN for orders that didn't participate in simulation
-    result['simulated_matched_quantity'] = result['simulated_matched_quantity'].fillna(0)
-    result['simulated_num_matches'] = result['simulated_num_matches'].fillna(0).astype(int)
-    
-    # Calculate fill ratio
-    result['simulated_fill_ratio'] = np.where(
-        result[col.common.quantity] > 0,
-        result['simulated_matched_quantity'] / result[col.common.quantity],
-        0
-    )
-    
-    # Determine fill status
-    result['simulated_fill_status'] = result.apply(
-        lambda row: _determine_fill_status(
-            row['simulated_matched_quantity'],
-            row[col.common.quantity]
-        ),
-        axis=1
-    )
-    
-    # Calculate average price and total value
-    if not simulated_trades.empty:
-        price_stats = _calculate_price_metrics(simulated_trades)
-        result = result.merge(
-            price_stats,
-            on='orderid',
-            how='left'
-        )
-    else:
-        result['simulated_avg_price'] = 0.0
-        result['simulated_total_value'] = 0.0
-    
-    # Fill NaN for orders without matches
-    result['simulated_avg_price'] = result['simulated_avg_price'].fillna(0)
-    result['simulated_total_value'] = result['simulated_total_value'].fillna(0)
+    # Fill fill_status with 'Unfilled' for NaN
+    if 'fill_status' in result.columns:
+        result['fill_status'] = result['fill_status'].fillna('Unfilled')
     
     return result
 
 
 def _determine_fill_status(matched_qty, total_qty):
-    """Determine fill status based on matched vs total quantity."""
+    """Determine fill status based on matched vs total quantity (Unfilled/Partially Filled/Fully Filled)."""
     if matched_qty == 0:
         return 'Unfilled'
     elif matched_qty >= total_qty:
         return 'Fully Filled'
     else:
         return 'Partially Filled'
-
-
-def _calculate_price_metrics(simulated_trades):
-    """Calculate average price and total value per order from simulated trades.
-    
-    Note: simulated_trades has 2 rows per match (aggressor + passive).
-    We aggregate by the orderid from aggressor rows (passiveaggressive=1) for sweep orders.
-    """
-    # Filter for aggressor rows only (sweep orders) - passiveaggressive=1
-    aggressor_trades = simulated_trades[simulated_trades['passiveaggressive'] == 1].copy()
-    
-    # Calculate total value per trade
-    aggressor_trades['trade_value'] = aggressor_trades['quantity'] * aggressor_trades['tradeprice']
-    
-    # Aggregate by orderid (sweep order)
-    price_stats = aggressor_trades.groupby('orderid').agg({
-        'quantity': 'sum',
-        'trade_value': 'sum'
-    }).reset_index()
-    
-    # Calculate weighted average price
-    price_stats['simulated_avg_price'] = np.where(
-        price_stats['quantity'] > 0,
-        price_stats['trade_value'] / price_stats['quantity'],
-        0
-    )
-    
-    # Rename columns
-    price_stats = price_stats.rename(columns={
-        'trade_value': 'simulated_total_value'
-    })
-    
-    # Keep only needed columns
-    price_stats = price_stats[['orderid', 'simulated_avg_price', 'simulated_total_value']]
-    
-    return price_stats
 
 
 def compare_by_group(orders_with_metrics, groups):
@@ -802,7 +766,7 @@ def generate_sweep_comparison_reports(partition_key, comparison_results, output_
 # ============================================================================
 
 def calculate_real_trade_metrics(trades_by_partition, orders_by_partition, processed_dir):
-    """Calculate comprehensive metrics from real trades for sweep orders."""
+    """Calculate comprehensive metrics from real trades for sweep orders using unified calculator."""
     print(f"\n[11/11] Calculating real trade metrics for sweep orders...")
     
     SWEEP_ORDER_TYPE = 2048
@@ -837,88 +801,52 @@ def calculate_real_trade_metrics(trades_by_partition, orders_by_partition, proce
             print(f"  {partition_key}: No sweep orders found")
             continue
         
-        # Filter trades to only those involving sweep orders
-        sweep_trades = trades_df[trades_df[col.common.orderid].isin(sweep_orderids)].copy()
+        # Use unified calculator for comprehensive metrics
+        metrics = calculate_trade_metrics(
+            trades_df=trades_df,
+            orders_df=orders_before,
+            nbbo_df=None,
+            filter_orderids=list(sweep_orderids),
+            role_filter=None,  # All trades for sweep orders
+            prefix='',  # No prefix for real trades
+            is_simulated=False  # Real trades
+        )
         
-        if len(sweep_trades) == 0:
-            print(f"  {partition_key}: No trades for sweep orders")
+        if len(metrics['per_order_metrics']) == 0:
+            print(f"  {partition_key}: No metrics calculated")
             continue
         
-        # Calculate per-trade metrics
-        trade_metrics = _calculate_per_trade_metrics(sweep_trades, orders_before)
-        
-        # Calculate aggregated metrics per order
-        order_metrics = _aggregate_trade_metrics_per_order(sweep_trades)
-        
         real_metrics_by_partition[partition_key] = {
-            'trade_metrics': trade_metrics,
-            'order_metrics': order_metrics
+            'trade_metrics': metrics['per_trade_metrics'],
+            'order_metrics': metrics['per_order_metrics']
         }
         
-        print(f"  {partition_key}: {len(sweep_trades):,} trades for {len(sweep_orderids):,} sweep orders")
+        num_orders = len(metrics['per_order_metrics'])
+        num_trades = len(metrics['per_trade_metrics'])
+        print(f"  {partition_key}: {num_trades:,} trades for {num_orders:,} sweep orders (36 metrics per order)")
     
     return real_metrics_by_partition
 
 
-def _calculate_per_trade_metrics(trades_df, orders_df):
-    """Calculate metrics for each individual trade."""
+def load_real_metrics(output_dir, partition_keys):
+    """Load pre-calculated real trade metrics from disk."""
+    real_metrics_by_partition = {}
     
-    # Merge trade with order details
-    trades_with_order = trades_df.merge(
-        orders_df[['orderid', 'side', 'price', 'quantity']],
-        on='orderid',
-        how='left',
-        suffixes=('', '_order')
-    )
+    for partition_key in partition_keys:
+        partition_output_dir = Path(output_dir) / partition_key
+        real_metrics_path = partition_output_dir / 'real_trade_metrics.csv'
+        
+        if not real_metrics_path.exists():
+            continue
+        
+        real_order_metrics = pd.read_csv(real_metrics_path)
+        
+        if len(real_order_metrics) > 0:
+            real_metrics_by_partition[partition_key] = {
+                'order_metrics': real_order_metrics
+            }
     
-    # Sort by order and time
-    trades_with_order = trades_with_order.sort_values(['orderid', 'tradetime'])
-    
-    # Calculate cumulative fill per order (use trade quantity)
-    trades_with_order['cumulative_fill'] = trades_with_order.groupby('orderid')[col.common.quantity].cumsum()
-    
-    # Identify first and last fills
-    trades_with_order['is_first_fill'] = ~trades_with_order.duplicated(subset=[col.common.orderid], keep='first')
-    trades_with_order['is_last_fill'] = ~trades_with_order.duplicated(subset=[col.common.orderid], keep='last')
-    
-    # Calculate price deviation from order price
-    trades_with_order['price_vs_order_price'] = (
-        trades_with_order['tradeprice'] - trades_with_order[col.common.price]
-    )
-    
-    return trades_with_order
-
-
-def _aggregate_trade_metrics_per_order(trades_df):
-    """Aggregate trade metrics per order."""
-    
-    aggregated = trades_df.groupby('orderid').agg({
-        'quantity': ['count', 'sum'],
-        'tradeprice': ['mean', 'std'],
-        'tradetime': ['min', 'max']
-    }).reset_index()
-    
-    # Flatten column names
-    aggregated.columns = [
-        'orderid',
-        'total_trades',
-        'total_quantity_filled',
-        'weighted_avg_price',
-        'price_std_dev',
-        'first_trade_time',
-        'last_trade_time'
-    ]
-    
-    # Calculate execution duration
-    aggregated['execution_duration_sec'] = (
-        (aggregated['last_trade_time'] - aggregated['first_trade_time']) / 1e9
-    )
-    
-    # Calculate average time between trades
-    aggregated['avg_time_between_trades'] = aggregated['execution_duration_sec'] / (aggregated['total_trades'] - 1)
-    aggregated.loc[aggregated['total_trades'] == 1, 'avg_time_between_trades'] = 0
-    
-    return aggregated
+    return real_metrics_by_partition
 
 
 def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_results_by_partition, output_dir):
@@ -943,8 +871,13 @@ def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_resul
             print(f"  {partition_key}: No simulated trades")
             continue
         
+        # Load orders to get arrival NBBO for simulated metrics
+        date, security_code = partition_key.split('/')
+        partition_dir = Path(output_dir).parent / "processed" / date / security_code
+        orders_before = fu.load_orders_before(partition_dir)
+        
         # Aggregate simulated trades per order (for sweep orders)
-        sim_aggregated = _aggregate_simulated_trades_per_order(sim_trades, sim_order_summary)
+        sim_aggregated = _aggregate_simulated_trades_per_order(sim_trades, sim_order_summary, orders_before)
         
         # Compare real vs simulated at order level
         comparison = _compare_order_level_trades(real_order_metrics, sim_aggregated)
@@ -954,7 +887,9 @@ def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_resul
         
         trade_comparison_by_partition[partition_key] = {
             'trade_level_comparison': comparison,
-            'trade_accuracy_summary': accuracy_summary
+            'trade_accuracy_summary': accuracy_summary,
+            'real_metrics': real_order_metrics,  # Add full metrics for saving
+            'sim_metrics': sim_aggregated  # Add full metrics for saving
         }
         
         print(f"  {partition_key}: Compared {len(comparison):,} sweep orders")
@@ -962,47 +897,74 @@ def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_resul
     return trade_comparison_by_partition
 
 
-def _aggregate_simulated_trades_per_order(simulated_trades, order_summary):
-    """Aggregate simulated trades per sweep order.
+def _aggregate_simulated_trades_per_order(simulated_trades, order_summary, orders_df=None):
+    """Aggregate simulated trades per sweep order using unified calculator with optional order context."""
+    # Get unique orderids from order_summary (these are sweep orders)
+    if order_summary is not None and not order_summary.empty:
+        sweep_orderids = order_summary['orderid'].unique().tolist()
+    else:
+        # If no order_summary, get from simulated trades aggressor rows
+        sweep_orderids = simulated_trades[simulated_trades['passiveaggressive'] == 1]['orderid'].unique().tolist()
     
-    Note: simulated_trades has 2 rows per match (aggressor + passive).
-    We aggregate by orderid from aggressor rows (passiveaggressive=1) for sweep orders.
-    """
-    # Filter for aggressor rows only (sweep orders) - passiveaggressive=1
-    aggressor_trades = simulated_trades[simulated_trades['passiveaggressive'] == 1].copy()
+    # Create order context for metrics calculation
+    if orders_df is not None and not orders_df.empty:
+        # Use provided orders (has arrival NBBO from orders_before/orders_after)
+        order_context = orders_df[orders_df['orderid'].isin(sweep_orderids)].copy()
+        
+        # Ensure required columns exist
+        if 'timestamp' not in order_context.columns and 'arrival_time' in order_context.columns:
+            order_context['timestamp'] = order_context['arrival_time']
+    else:
+        # Fallback: create minimal order data from simulated trades (no arrival NBBO)
+        aggressor_trades = simulated_trades[simulated_trades['passiveaggressive'] == 1]
+        order_context = aggressor_trades.groupby('orderid').agg({
+            'tradetime': 'min',  # Use first trade time as proxy for order time
+            'side': 'first',
+            'quantity': 'sum',  # Total matched quantity
+            'tradeprice': 'first'  # Use as proxy for limit price
+        }).reset_index()
+        order_context = order_context.rename(columns={
+            'tradetime': 'timestamp',
+            'tradeprice': 'price'
+        })
     
-    # Group by orderid (sweep order)
-    aggregated = aggressor_trades.groupby('orderid').agg({
-        'quantity': ['count', 'sum'],
-        'tradeprice': ['mean', 'std'],
-        'tradetime': ['min', 'max']
-    }).reset_index()
-    
-    # Flatten column names
-    aggregated.columns = [
-        'orderid',
-        'sim_total_matches',
-        'sim_total_quantity',
-        'sim_avg_price',
-        'sim_price_std_dev',
-        'sim_first_match_time',
-        'sim_last_match_time'
-    ]
-    
-    # Calculate execution duration
-    aggregated['sim_execution_duration_sec'] = (
-        (aggregated['sim_last_match_time'] - aggregated['sim_first_match_time']) / 1e9
+    # Calculate metrics using unified calculator
+    # Note: Simulated trades execute at midpoint (see sweep_simulator.py line 444)
+    metrics = calculate_trade_metrics(
+        trades_df=simulated_trades,
+        orders_df=order_context,
+        nbbo_df=None,
+        filter_orderids=sweep_orderids,
+        role_filter='aggressor',  # Only aggressor rows
+        prefix='sim_',  # Add sim_ prefix
+        is_simulated=True  # Simulated trades
     )
     
-    return aggregated
+    return metrics['per_order_metrics']
 
 
 def _compare_order_level_trades(real_metrics, sim_metrics):
-    """Compare real vs simulated trades at order level."""
+    """Compare real vs simulated trades at order level using comprehensive metrics."""
+    # Map comprehensive metric names to expected comparison names
+    # Real metrics use new names directly
+    real_mapped = real_metrics.copy()
+    real_mapped = real_mapped.rename(columns={
+        'qty_filled': 'total_quantity_filled',
+        'num_fills': 'total_trades',
+        'vwap': 'weighted_avg_price'
+    })
+    
+    # Simulated metrics already have sim_ prefix, just map the base names
+    sim_mapped = sim_metrics.copy()
+    sim_mapped = sim_mapped.rename(columns={
+        'sim_qty_filled': 'sim_total_quantity',
+        'sim_num_fills': 'sim_total_matches',
+        'sim_vwap': 'sim_avg_price'
+    })
     
     # Merge real and simulated metrics
-    comparison = real_metrics.merge(
-        sim_metrics,
+    comparison = real_mapped.merge(
+        sim_mapped,
         on='orderid',
         how='outer',
         suffixes=('_real', '_sim')
@@ -1129,6 +1091,8 @@ def generate_trade_comparison_reports(trade_comparison_by_partition, output_dir,
     """Generate trade-level comparison reports."""
     print(f"\n  Generating trade-level comparison reports...")
     
+    import utils.file_utils as fu
+    
     report_files_by_partition = {}
     
     for partition_key, comparison_data in trade_comparison_by_partition.items():
@@ -1150,6 +1114,18 @@ def generate_trade_comparison_reports(trade_comparison_by_partition, output_dir,
             comparison_data['trade_accuracy_summary'].to_csv(file_path, index=False)
             report_files['trade_accuracy_summary'] = file_path
             print(f"    {partition_key}/trade_accuracy_summary.csv: Overall metrics")
+        
+        # NEW: Save full metrics (36 metrics per order) for Stage 3 to load
+        # This avoids recalculating the same metrics in Stage 3
+        if 'real_metrics' in comparison_data and 'sim_metrics' in comparison_data:
+            fu.save_trade_metrics(
+                comparison_data['real_metrics'],
+                comparison_data['sim_metrics'],
+                output_dir,
+                partition_key
+            )
+            print(f"    {partition_key}/real_trade_metrics.csv: {len(comparison_data['real_metrics']):,} orders (36 metrics)")
+            print(f"    {partition_key}/simulated_trade_metrics.csv: {len(comparison_data['sim_metrics']):,} orders (36 metrics)")
         
         report_files_by_partition[partition_key] = report_files
     

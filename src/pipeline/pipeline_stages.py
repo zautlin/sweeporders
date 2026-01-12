@@ -4,7 +4,7 @@ from pathlib import Path
 import config.config as config
 import pipeline.data_processor as dp
 import pipeline.partition_processor as pp
-import pipeline.metrics_generator as mg
+import pipeline.execution_comparison as ec
 import analysis.sweep_execution_analyzer as sea
 import analysis.unmatched_analyzer as uma
 import analysis.volume_analyzer as va
@@ -149,22 +149,200 @@ def _run_trade_comparison(data, simulation_results):
         )
 
 
-def run_per_security_analysis(processed_dir, outputs_dir, partition_keys, stats_engine):
-    """Run sweep execution and unmatched order analysis plus volume analysis."""
-    _print_stage_3_header()
+def run_stage_2_simulation(data, enable_parallel):
+    """STAGE 2: Run simulation only (Step 7)."""
+    _print_stage_2_simulation_header(data, enable_parallel)
+    
+    if enable_parallel and len(data['partition_keys']) > 1:
+        return pp.process_partitions_parallel_stage_2(
+            data['partition_keys'],
+            config.PROCESSED_DIR,
+            config.OUTPUTS_DIR,
+            config.MAX_PARALLEL_WORKERS
+        )
+    else:
+        return pp.simulate_sweep_matching_sequential(
+            data['orders'],
+            data['order_states'],
+            data['last_execution'],
+            data['nbbo'],
+            config.OUTPUTS_DIR
+        )
+
+
+def run_stage_3_calculate_metrics(data, enable_parallel):
+    """STAGE 3: Calculate metrics for both real and simulated trades (Steps 8-9)."""
+    _print_stage_3_metrics_header(data, enable_parallel)
+    
+    if enable_parallel and len(data['partition_keys']) > 1:
+        return pp.process_partitions_parallel_stage_3(
+            data['partition_keys'],
+            config.PROCESSED_DIR,
+            config.OUTPUTS_DIR,
+            config.MAX_PARALLEL_WORKERS
+        )
+    else:
+        # Step 8: Calculate real trade metrics FIRST (ground truth)
+        print("\n[8/11] Calculating real trade metrics...")
+        real_trade_metrics = ec.calculate_real_trade_metrics(
+            data['trades'],
+            data['orders'],
+            config.PROCESSED_DIR
+        )
+        
+        # Save real metrics to disk for Stage 4
+        import utils.file_utils as fu
+        for partition_key, metrics_data in real_trade_metrics.items():
+            real_order_metrics = metrics_data['order_metrics']
+            fu.save_trade_metrics(real_order_metrics, None, config.OUTPUTS_DIR, partition_key)
+        
+        # Step 9: Calculate simulated trade metrics SECOND
+        print("\n[9/11] Calculating simulated trade metrics...")
+        simulation_results = _load_simulation_results(data['partition_keys'])
+        
+        # For each partition, aggregate simulated trades and save metrics
+        for partition_key in simulation_results.keys():
+            # Load simulated metrics that were just calculated
+            simulated_trades = simulation_results[partition_key]['simulated_trades']
+            order_summary = simulation_results[partition_key]['order_summary']
+            
+            # Load orders for arrival NBBO
+            partition_dir = fu.get_partition_dir(config.PROCESSED_DIR, partition_key)
+            orders_before = fu.load_orders_before(partition_dir)
+            
+            # Aggregate simulated trades to get per-order metrics
+            sim_aggregated = ec._aggregate_simulated_trades_per_order(
+                simulated_trades,
+                order_summary,
+                orders_before
+            )
+            
+            # Save simulated metrics to match real metrics format
+            # Use fu.save_trade_metrics to save to simulated_trade_metrics.csv
+            from pathlib import Path
+            output_partition_dir = Path(config.OUTPUTS_DIR) / partition_key
+            output_partition_dir.mkdir(parents=True, exist_ok=True)
+            sim_metrics_path = output_partition_dir / 'simulated_trade_metrics.csv'
+            sim_aggregated.to_csv(sim_metrics_path, index=False)
+            print(f"  Saved simulated metrics for {partition_key}: {len(sim_aggregated)} orders")
+        
+        return {
+            'real_metrics': real_trade_metrics,
+            'simulation_results': simulation_results
+        }
+
+
+def run_stage_4_comparison(data, enable_parallel):
+    """STAGE 4: Compare real vs simulated metrics (Step 10)."""
+    _print_stage_4_comparison_header(data, enable_parallel)
+    
+    # Load pre-calculated metrics from disk
+    print("\n[10/11] Loading and comparing metrics...")
+    
+    partition_keys = data['partition_keys']
+    real_metrics = ec.load_real_metrics(config.OUTPUTS_DIR, partition_keys)
+    simulation_results = _load_simulation_results(partition_keys)
+    
+    if not real_metrics or not simulation_results:
+        print("  ✗ Cannot compare: missing metrics files. Run stages 2-3 first.")
+        return None
+    
+    # Compare and generate reports
+    trade_comparison = ec.compare_real_vs_simulated_trades(
+        real_metrics,
+        simulation_results,
+        config.OUTPUTS_DIR
+    )
+    
+    ec.generate_trade_comparison_reports(
+        trade_comparison,
+        config.OUTPUTS_DIR,
+        include_accuracy_summary=False
+    )
+    
+    return trade_comparison
+
+
+def _load_simulation_results(partition_keys):
+    """Load simulation results from disk for given partitions."""
+    import utils.file_utils as fu
+    
+    simulation_results = {}
+    for partition_key in partition_keys:
+        # Load simulated trades
+        partition_dir = fu.get_partition_dir(config.PROCESSED_DIR, partition_key)
+        simulated_trades = fu.load_simulation_trades(partition_dir)
+        
+        # Load order summary
+        output_partition_dir = fu.get_partition_dir(config.OUTPUTS_DIR, partition_key)
+        order_summary = fu.load_simulation_order_summary(output_partition_dir)
+        
+        if simulated_trades is not None and order_summary is not None:
+            simulation_results[partition_key] = {
+                'simulated_trades': simulated_trades,
+                'order_summary': order_summary
+            }
+    
+    return simulation_results
+
+
+def _print_stage_2_simulation_header(data, enable_parallel):
+    """Print Stage 2 header for simulation."""
+    print(f"\n{'='*80}")
+    print(f"STAGE 2: SIMULATION ONLY (Step 7)")
+    print(f"{'='*80}")
+    
+    if enable_parallel and len(data['partition_keys']) > 1:
+        print(f"PARALLEL PROCESSING MODE")
+        print(f"Using {config.MAX_PARALLEL_WORKERS} workers for {len(data['partition_keys'])} partitions")
+    else:
+        print(f"SEQUENTIAL PROCESSING MODE")
+        print(f"Processing {len(data['partition_keys'])} partition(s) sequentially")
+
+
+def _print_stage_3_metrics_header(data, enable_parallel):
+    """Print Stage 3 header for metrics calculation."""
+    print(f"\n{'='*80}")
+    print(f"STAGE 3: CALCULATE METRICS (Steps 8-9)")
+    print(f"{'='*80}")
+    print(f"  Step 8: Real trade metrics (ground truth)")
+    print(f"  Step 9: Simulated trade metrics")
+    
+    if enable_parallel and len(data['partition_keys']) > 1:
+        print(f"\nPARALLEL PROCESSING MODE")
+        print(f"Using {config.MAX_PARALLEL_WORKERS} workers for {len(data['partition_keys'])} partitions")
+    else:
+        print(f"\nSEQUENTIAL PROCESSING MODE")
+        print(f"Processing {len(data['partition_keys'])} partition(s) sequentially")
+
+
+def _print_stage_4_comparison_header(data, enable_parallel):
+    """Print Stage 4 header for metrics comparison."""
+    print(f"\n{'='*80}")
+    print(f"STAGE 4: METRICS COMPARISON (Step 10)")
+    print(f"{'='*80}")
+
+
+def run_stage_5_per_security_analysis(processed_dir, outputs_dir, partition_keys, stats_engine):
+    """STAGE 5: Run sweep execution and unmatched order analysis plus volume analysis."""
+    _print_stage_5_header()
     
     _run_sweep_execution_analysis(processed_dir, outputs_dir, partition_keys, stats_engine)
     _run_unmatched_orders_analysis(processed_dir, outputs_dir, partition_keys)
     volume_summary = _run_volume_analysis(outputs_dir, partition_keys, stats_engine)
     
-    print(f"\n✓ Stage 3 complete (per-security analysis + volume analysis)")
+    print(f"\n✓ Stage 5 complete (per-security analysis + volume analysis)")
     return volume_summary
 
 
-def _print_stage_3_header():
-    """Print Stage 3 header."""
+# Backward compatibility alias
+run_per_security_analysis = run_stage_5_per_security_analysis
+
+
+def _print_stage_5_header():
+    """Print Stage 5 header."""
     print(f"\n{'='*80}")
-    print(f"STAGE 3: PER-SECURITY ANALYSIS (Steps 13-14 + Volume Analysis)")
+    print(f"STAGE 5: PER-SECURITY ANALYSIS (Steps 11-12 + Volume Analysis)")
     print(f"{'='*80}")
 
 
@@ -200,9 +378,9 @@ def _run_volume_analysis(outputs_dir, partition_keys, stats_engine):
     )
 
 
-def run_cross_security_aggregation(runtime_config):
-    """Aggregate sweep and volume results across all securities."""
-    _print_stage_4_header()
+def run_stage_6_aggregation(runtime_config):
+    """STAGE 6: Aggregate sweep and volume results across all securities."""
+    _print_stage_6_header()
     
     stats_engine = runtime_config.get('stats_engine')
     
@@ -219,16 +397,20 @@ def run_cross_security_aggregation(runtime_config):
     # Step 4: Volume aggregation
     _aggregate_volume_results(stats_engine)
     
-    print("\n✓ Stage 4 complete (cross-security aggregation + volume analysis)")
+    print("\n✓ Stage 6 complete (cross-security aggregation + volume analysis)")
     return True
 
 
-def _print_stage_4_header():
-    """Print Stage 4 header."""
+# Backward compatibility alias
+run_cross_security_aggregation = run_stage_6_aggregation
+
+
+def _print_stage_6_header():
+    """Print Stage 6 header."""
     print(f"\n{'='*80}")
-    print(f"STAGE 4: CROSS-SECURITY AGGREGATION")
+    print(f"STAGE 6: CROSS-SECURITY AGGREGATION")
     print(f"{'='*80}")
-    print("\n[Stage 4] Aggregating results across all securities...")
+    print("\n[Stage 6] Aggregating results across all securities...")
 
 
 def _aggregate_sweep_results():
@@ -292,27 +474,47 @@ def _execute_stage_1(sec_info, stages):
 
 
 def _execute_stage_2(data, runtime_config, stages):
-    """Execute Stage 2 for a security if needed."""
+    """Execute Stage 2 (Simulation) for a security if needed."""
     if stages is None or 2 in stages:
         if data is None:
             print(f"\n✗ Stage 2 requires Stage 1 data. Please run Stage 1 first or run both together.")
             return
         
-        run_simulations_and_lob(data, runtime_config['enable_parallel'])
+        run_stage_2_simulation(data, runtime_config['enable_parallel'])
 
 
-def _execute_stage_3(security, data, runtime_config, stages):
-    """Execute Stage 3 for a security if needed."""
+def _execute_stage_3(data, runtime_config, stages):
+    """Execute Stage 3 (Metrics Calculation) for a security if needed."""
     if stages is None or 3 in stages:
+        if data is None:
+            print(f"\n✗ Stage 3 requires Stage 1 data. Please run Stage 1 first or run both together.")
+            return
+        
+        run_stage_3_calculate_metrics(data, runtime_config['enable_parallel'])
+
+
+def _execute_stage_4(data, runtime_config, stages):
+    """Execute Stage 4 (Metrics Comparison) for a security if needed."""
+    if stages is None or 4 in stages:
+        if data is None:
+            print(f"\n✗ Stage 4 requires Stage 1 data. Please run Stage 1 first or run both together.")
+            return
+        
+        run_stage_4_comparison(data, runtime_config['enable_parallel'])
+
+
+def _execute_stage_5(security, data, runtime_config, stages):
+    """Execute Stage 5 (Per-Security Analysis) for a security if needed."""
+    if stages is None or 5 in stages:
         if data is None:
             partition_keys = _load_partition_keys_from_disk(security, config.PROCESSED_DIR)
             if not partition_keys:
-                print(f"✗ Stage 3 requires processed data from Stages 1-2 for OrderbookID {security.orderbookid}")
+                print(f"✗ Stage 5 requires processed data from Stages 1-4 for OrderbookID {security.orderbookid}")
                 return []
         else:
             partition_keys = data['partition_keys']
         
-        run_per_security_analysis(config.PROCESSED_DIR, config.OUTPUTS_DIR, partition_keys, runtime_config['stats_engine'])
+        run_stage_5_per_security_analysis(config.PROCESSED_DIR, config.OUTPUTS_DIR, partition_keys, runtime_config['stats_engine'])
         return partition_keys
     
     return []
@@ -325,23 +527,31 @@ def _process_single_security(sec_info, runtime_config):
     
     _print_security_header(security)
     
-    # Execute Stage 1
+    # Execute Stage 1: Data extraction
     data, partition_keys_s1 = _execute_stage_1(sec_info, stages)
     if data is None and _should_run_stage(stages, 1):
         _print_stage_failure(security.orderbookid, 1, "no Centre Point orders found")
         return None, []
     _print_stage_success_if_ran(stages, 1, security.orderbookid)
     
-    # Execute Stage 2
+    # Execute Stage 2: Simulation
     _execute_stage_2(data, runtime_config, stages)
     _print_stage_success_if_ran(stages, 2, security.orderbookid)
     
-    # Execute Stage 3
-    partition_keys_s3 = _execute_stage_3(security, data, runtime_config, stages)
+    # Execute Stage 3: Calculate metrics
+    _execute_stage_3(data, runtime_config, stages)
     _print_stage_success_if_ran(stages, 3, security.orderbookid)
     
+    # Execute Stage 4: Compare metrics
+    _execute_stage_4(data, runtime_config, stages)
+    _print_stage_success_if_ran(stages, 4, security.orderbookid)
+    
+    # Execute Stage 5: Per-security analysis
+    partition_keys_s5 = _execute_stage_5(security, data, runtime_config, stages)
+    _print_stage_success_if_ran(stages, 5, security.orderbookid)
+    
     # Combine partition keys
-    all_partition_keys = _combine_partition_keys(partition_keys_s1, partition_keys_s3)
+    all_partition_keys = _combine_partition_keys(partition_keys_s1, partition_keys_s5)
     
     return data, all_partition_keys
 
@@ -393,8 +603,8 @@ def execute_pipeline_stages(runtime_config):
             data = sec_data
         all_partition_keys.extend(sec_partition_keys)
     
-    if stages is None or 4 in stages:
-        run_cross_security_aggregation(runtime_config)
-        print(f"\n✓ Stage 4 complete")
+    if stages is None or 6 in stages:
+        run_stage_6_aggregation(runtime_config)
+        print(f"\n✓ Stage 6 complete")
     
     return data, all_partition_keys

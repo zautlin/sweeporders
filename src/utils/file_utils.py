@@ -129,3 +129,45 @@ def save_trade_comparison(comparison_df, accuracy_df, output_dir, partition_key)
             accuracy_df,
             partition_output_dir / 'trade_accuracy_summary.csv'
         )
+
+
+def save_trade_metrics(real_metrics_df, sim_metrics_df, output_dir, partition_key):
+    """Save real and simulated trade metrics calculated in Stage 2 for Stage 3 reuse."""
+    partition_output_dir = Path(output_dir) / partition_key
+    
+    if real_metrics_df is not None and len(real_metrics_df) > 0:
+        safe_write_csv(
+            real_metrics_df,
+            partition_output_dir / 'real_trade_metrics.csv'
+        )
+    
+    if sim_metrics_df is not None and len(sim_metrics_df) > 0:
+        safe_write_csv(
+            sim_metrics_df,
+            partition_output_dir / 'simulated_trade_metrics.csv'
+        )
+
+
+def load_trade_metrics(output_dir, partition_key):
+    """Load pre-calculated trade metrics from Stage 2 output directory."""
+    partition_output_dir = Path(output_dir) / partition_key
+    
+    real_metrics_path = partition_output_dir / 'real_trade_metrics.csv'
+    sim_metrics_path = partition_output_dir / 'simulated_trade_metrics.csv'
+    
+    real_metrics_df = safe_read_csv(real_metrics_path, required=False)
+    sim_metrics_df = safe_read_csv(sim_metrics_path, required=False)
+    
+    return real_metrics_df, sim_metrics_df
+
+
+def load_simulation_trades(partition_dir):
+    """Load cp_trades_simulation.csv from partition processed directory."""
+    filepath = Path(partition_dir) / "cp_trades_simulation.csv"
+    return safe_read_csv(filepath, required=False)
+
+
+def load_simulation_order_summary(partition_dir):
+    """Load simulation_order_summary.csv from partition output directory."""
+    filepath = Path(partition_dir) / "simulation_order_summary.csv"
+    return safe_read_csv(filepath, required=False)

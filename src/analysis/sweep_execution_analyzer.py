@@ -253,20 +253,57 @@ def calculate_execution_metrics(trades_df, orderid, arrival_context):
     }
 
 
-def calculate_all_metrics(orderids, trades_df, orders_df, prefix='real'):
-    """Calculate metrics for all orders in the set."""
+def load_metrics_from_stage2(partition_dir, outputs_dir, partition_key, prefix='real'):
+    """Load pre-calculated metrics from Stage 2 instead of recalculating.
+    
+    Stage 2 already calculated all 36 metrics per order and saved them to CSV.
+    This function loads those metrics to avoid redundant calculation.
+    
+    Note: Real metrics CSV has columns WITHOUT prefix (qty_filled, vwap, etc.)
+          Simulated metrics CSV has columns WITH prefix (sim_qty_filled, sim_vwap, etc.)
+          This function handles both cases to ensure consistency.
+    
+    Args:
+        partition_dir: Path to processed data directory
+        outputs_dir: Path to outputs directory where metrics are saved
+        partition_key: Partition key (date/orderbookid)
+        prefix: 'real' or 'sim' to indicate which metrics to load
+    
+    Returns:
+        dict: Dictionary mapping orderid -> metrics dict with proper prefixes
+    """
+    if prefix not in ['real', 'sim']:
+        raise ValueError(f"Invalid prefix: {prefix}. Must be 'real' or 'sim'")
+    
+    # Load metrics CSV from Stage 2 output
+    real_metrics_df, sim_metrics_df = fu.load_trade_metrics(outputs_dir, partition_key)
+    
+    # Select the appropriate metrics based on prefix
+    if prefix == 'real':
+        metrics_df = real_metrics_df
+    else:
+        metrics_df = sim_metrics_df
+    
+    if metrics_df is None or len(metrics_df) == 0:
+        print(f"  Loaded {prefix} metrics for 0 orders (file not found or empty)")
+        return {}
+    
+    # Convert to dictionary format
     metrics = {}
+    for _, row in metrics_df.iterrows():
+        orderid = row['orderid']
+        metric_dict = {}
+        for col_name, value in row.items():
+            if col_name not in ['orderid', 'orderbookid']:
+                # Real metrics need prefix added, sim metrics already have it
+                if prefix == 'real':
+                    metric_dict[f'real_{col_name}'] = value
+                else:
+                    # Sim metrics already have sim_ prefix in CSV
+                    metric_dict[col_name] = value
+        metrics[orderid] = metric_dict
     
-    for orderid in orderids:
-        arrival_context = orders_df.loc[orderid]
-        order_metrics = calculate_execution_metrics(trades_df, orderid, arrival_context)
-        
-        if order_metrics is not None:
-            # Add prefix to all keys
-            prefixed_metrics = {f'{prefix}_{k}': v for k, v in order_metrics.items()}
-            metrics[orderid] = prefixed_metrics
-    
-    print(f"  Calculated {prefix} metrics for {len(metrics)} orders")
+    print(f"  Loaded {prefix} metrics for {len(metrics)} orders from Stage 2")
     return metrics
 
 
@@ -285,23 +322,17 @@ def merge_and_calculate_differences(set_a_orderids, real_metrics, sim_metrics, o
         if real is None or sim is None:
             continue
         
-        # Calculate differences (Real - Simulated)
+        # Calculate key differences for backward compatibility with volume_analyzer
         differences = {
-            'qty_diff': real['real_qty_filled'] - sim['sim_qty_filled'],
-            'fill_rate_diff_pct': real['real_fill_rate_pct'] - sim['sim_fill_rate_pct'],
-            'num_fills_diff': real['real_num_fills'] - sim['sim_num_fills'],
-            'avg_fill_size_diff': real['real_avg_fill_size'] - sim['sim_avg_fill_size'],
-            'vwap_diff': real['real_vwap'] - sim['sim_vwap'],
-            'exec_cost_arrival_diff_bps': real['real_exec_cost_arrival_bps'] - sim['sim_exec_cost_arrival_bps'],
-            'exec_cost_vw_diff_bps': real['real_exec_cost_vw_bps'] - sim['sim_exec_cost_vw_bps'],
-            'effective_spread_diff_pct': real['real_effective_spread_pct'] - sim['sim_effective_spread_pct'],
-            'exec_time_diff_sec': real['real_exec_time_sec'] - sim['sim_exec_time_sec'],
-            'time_to_first_fill_diff_sec': real['real_time_to_first_fill_sec'] - sim['sim_time_to_first_fill_sec'],
-            'vw_exec_time_diff_sec': real['real_vw_exec_time_sec'] - sim['sim_vw_exec_time_sec'],
+            'exec_cost_arrival_diff_bps': real.get('real_exec_cost_arrival_bps', 0) - sim.get('sim_exec_cost_arrival_bps', 0),
+            'exec_cost_vw_diff_bps': real.get('real_exec_cost_vw_bps', 0) - sim.get('sim_exec_cost_vw_bps', 0),
+            'vwap_diff': real.get('real_vwap', 0) - sim.get('sim_vwap', 0),
+            'qty_diff': real.get('real_qty_filled', 0) - sim.get('sim_qty_filled', 0),
+            'exec_time_diff_sec': real.get('real_execution_duration_sec', 0) - sim.get('sim_execution_duration_sec', 0),  # Updated metric name
         }
         
         # Dark pool better if lower cost
-        dark_pool_better = sim['sim_exec_cost_arrival_bps'] < real['real_exec_cost_arrival_bps']
+        dark_pool_better = sim.get('sim_exec_cost_arrival_bps', 0) < real.get('real_exec_cost_arrival_bps', 0)
         
         # Combine all data
         row = {
@@ -378,7 +409,7 @@ def calculate_summary_statistics(comparison_df):
         'exec_cost_arrival_bps',
         'exec_cost_vw_bps',
         'effective_spread_pct',
-        'exec_time_sec',
+        'execution_duration_sec',  # Updated from exec_time_sec
         'time_to_first_fill_sec',
         'vw_exec_time_sec'
     ]
@@ -392,7 +423,7 @@ def calculate_summary_statistics(comparison_df):
         'exec_cost_arrival_bps': 'Cost',
         'exec_cost_vw_bps': 'Cost',
         'effective_spread_pct': 'Cost',
-        'exec_time_sec': 'Timing',
+        'execution_duration_sec': 'Timing',  # Updated from exec_time_sec
         'time_to_first_fill_sec': 'Timing',
         'vw_exec_time_sec': 'Timing'
     }
@@ -468,17 +499,35 @@ def perform_statistical_tests(comparison_df, stats_engine=None):
         stats_engine = StatisticsEngine(enable_stats=True)
     
     metrics_to_analyze = [
+        # Fill Metrics (existing)
         'qty_filled',
         'fill_rate_pct',
         'num_fills',
         'avg_fill_size',
+        # Price Metrics (existing + 5 new)
         'vwap',
+        'arrival_midpoint',              # NEW
+        'arrival_spread',                # NEW
+        'arrival_spread_bps',            # NEW
+        'price_improvement',             # NEW
+        'price_improvement_bps',         # NEW
+        # Execution Cost Metrics (existing + 1 new)
         'exec_cost_arrival_bps',
         'exec_cost_vw_bps',
         'effective_spread_pct',
-        'exec_time_sec',
+        'implementation_shortfall_bps',  # NEW
+        # Timing Metrics (existing + 2 new) - UPDATED NAMES
+        'execution_duration_sec',        # Updated from exec_time_sec
         'time_to_first_fill_sec',
-        'vw_exec_time_sec'
+        'vw_exec_time_sec',
+        'total_duration_sec',            # NEW
+        'avg_time_between_fills',        # NEW
+        # Market Context Metrics (5 new)
+        'first_fill_midpoint',           # NEW
+        'last_fill_midpoint',            # NEW
+        'market_drift_bps',              # NEW
+        'avg_execution_spread_bps',      # NEW
+        'spread_volatility_bps'          # NEW
     ]
     
     test_rows = []
@@ -601,16 +650,34 @@ def perform_statistical_tests(comparison_df, stats_engine=None):
 def calculate_quantile_comparison(comparison_df):
     """Calculate quantile comparison for distribution analysis."""
     metrics_to_analyze = [
+        # Fill Metrics (existing)
         'qty_filled',
         'fill_rate_pct',
         'num_fills',
         'avg_fill_size',
+        # Price Metrics (existing + 5 new)
         'vwap',
+        'arrival_midpoint',              # NEW
+        'arrival_spread',                # NEW
+        'arrival_spread_bps',            # NEW
+        'price_improvement',             # NEW
+        'price_improvement_bps',         # NEW
+        # Execution Cost Metrics (existing + 1 new)
         'exec_cost_arrival_bps',
         'exec_cost_vw_bps',
         'effective_spread_pct',
-        'exec_time_sec',
-        'time_to_first_fill_sec'
+        'implementation_shortfall_bps',  # NEW
+        # Timing Metrics (existing + 2 new) - UPDATED NAMES
+        'execution_duration_sec',        # Updated from exec_time_sec
+        'time_to_first_fill_sec',
+        'total_duration_sec',            # NEW
+        'avg_time_between_fills',        # NEW
+        # Market Context Metrics (5 new)
+        'first_fill_midpoint',           # NEW
+        'last_fill_midpoint',            # NEW
+        'market_drift_bps',              # NEW
+        'avg_execution_spread_bps',      # NEW
+        'spread_volatility_bps'          # NEW
     ]
     
     quantiles = [0.10, 0.25, 0.50, 0.75, 0.90]
@@ -871,13 +938,13 @@ def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys, stats_en
             sweep_orderids, real_trades_df, sim_trades_df
         )
         
-        # Phase 3: Calculate metrics
-        print(f"\nPhase 3: Calculating metrics...")
-        real_metrics = calculate_all_metrics(
-            set_a_orderids | set_b_orderids, real_trades_df, orders_df, prefix='real'
+        # Phase 3: Load metrics from Stage 2 (instead of recalculating)
+        print(f"\nPhase 3: Loading metrics from Stage 2...")
+        real_metrics = load_metrics_from_stage2(
+            partition_dir, outputs_dir, partition_key, prefix='real'
         )
-        sim_metrics = calculate_all_metrics(
-            set_a_orderids, sim_trades_df, orders_df, prefix='sim'
+        sim_metrics = load_metrics_from_stage2(
+            partition_dir, outputs_dir, partition_key, prefix='sim'
         )
         
         # Create comparison DataFrames

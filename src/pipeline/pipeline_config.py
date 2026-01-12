@@ -10,7 +10,7 @@ from utils.statistics_layer import StatisticsEngine
 def parse_arguments():
     """Parse CLI arguments with config.py fallback."""
     parser = argparse.ArgumentParser(
-        description='Centre Point Sweep Order Matching Pipeline - 4 Stage Pipeline',
+        description='Centre Point Sweep Order Matching Pipeline - 6 Stage Pipeline',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -37,8 +37,9 @@ def parse_arguments():
                         help=f'Minimum trades threshold for valid security (default: {config.MIN_TRADES_THRESHOLD})')
     
     # Pipeline stages
-    parser.add_argument('--stage', type=int, choices=[1, 2, 3, 4], action='append',
-                        help='Pipeline stage(s) to run (can specify multiple): 1=extraction, 2=simulation, 3=analysis, 4=aggregation')
+    parser.add_argument('--stage', type=int, choices=[1, 2, 3, 4, 5, 6], action='append',
+                        help='Pipeline stage(s) to run (can specify multiple): '
+                             '1=extraction, 2=simulation, 3=metrics, 4=comparison, 5=analysis, 6=aggregation')
     
     # Processing options
     parser.add_argument('--parallel', action='store_true',

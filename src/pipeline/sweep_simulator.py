@@ -12,6 +12,7 @@ Handles all sweep order matching simulation logic:
 import pandas as pd
 import numpy as np
 from config.column_schema import col
+import config.config as cfg
 
 # Constants
 SWEEP_ORDER_TYPE = 2048
@@ -199,6 +200,8 @@ def _prepare_all_orders_for_matching(partition_data):
         col.common.orderbookid,
         col.orders.bid,
         col.orders.offer,
+        col.orders.national_bid,    # Always include (needed for INTERNAL mode)
+        col.orders.national_offer,  # Always include (needed for INTERNAL mode)
     ]
     
     # Validate all required columns exist
@@ -223,36 +226,72 @@ def _prepare_all_orders_for_matching(partition_data):
 def simulate_partition(partition_key, partition_data):
     """Simulate sweep matching for a partition."""
     
-    # Load and prepare orders
-    sweep_orders, all_orders = load_and_prepare_orders(partition_data)
-    
-    if len(sweep_orders) == 0:
-        print(f"  {partition_key}: No sweep orders, skipping")
-        return None
-    
-    if len(all_orders) == 0:
-        print(f"  {partition_key}: No matching orders, skipping")
-        return None
-    
-    # Get NBBO data
-    nbbo_data = partition_data.get('nbbo')
-    
-    # Prepare NBBO data if available
-    if nbbo_data is not None and len(nbbo_data) > 0:
-        nbbo_data = nbbo_data.sort_values('timestamp').reset_index(drop=True)
-    
-    # Run simulation
-    results = simulate_sweep_matching(sweep_orders, all_orders, nbbo_data)
-    
-    # Calculate matches from simulated trades (2 rows per match)
-    num_matches = len(results['simulated_trades']) // 2 if len(results['simulated_trades']) > 0 else 0
-    print(f"  {partition_key}: {num_matches:,} matches, {len(sweep_orders):,} sweep orders")
-    
-    return results
+    try:
+        # Load and prepare orders
+        sweep_orders, all_orders = load_and_prepare_orders(partition_data)
+        
+        if len(sweep_orders) == 0:
+            print(f"  {partition_key}: No sweep orders, skipping")
+            return None
+        
+        if len(all_orders) == 0:
+            print(f"  {partition_key}: No matching orders, skipping")
+            return None
+        
+        # Get NBBO data
+        nbbo_data = partition_data.get('nbbo')
+        
+        # Validate NBBO availability for EXTERNAL mode
+        if cfg.NBBO_SOURCE == 'EXTERNAL':
+            if nbbo_data is None or len(nbbo_data) == 0:
+                raise ValueError(
+                    f"NBBO_SOURCE is 'EXTERNAL' but no NBBO data found for partition {partition_key}.\n"
+                    f"Expected file: data/processed/{partition_key}/nbbo.csv.gz\n"
+                    f"Options:\n"
+                    f"  1. Set NBBO_SOURCE='INTERNAL' in config.py\n"
+                    f"  2. Ensure NBBO file exists for this partition"
+                )
+        
+        # Run simulation
+        results = simulate_sweep_matching(sweep_orders, all_orders, nbbo_data)
+        
+        # Calculate matches from simulated trades (2 rows per match)
+        num_matches = len(results['simulated_trades']) // 2 if len(results['simulated_trades']) > 0 else 0
+        print(f"  {partition_key}: {num_matches:,} matches, {len(sweep_orders):,} sweep orders")
+        
+        return results
+        
+    except ValueError as e:
+        print(f"\n{'='*80}")
+        print(f"ERROR: NBBO Configuration Issue for {partition_key}")
+        print(f"{'='*80}")
+        print(f"{str(e)}")
+        print(f"{'='*80}\n")
+        raise
 
 
-def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
-    """Simulate sweep matching and generate full trade rows directly (2 rows per match)."""
+def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data, nbbo_source=None):
+    """Simulate sweep matching and generate full trade rows directly (2 rows per match).
+    
+    Args:
+        sweep_orders: DataFrame of sweep orders to match
+        all_orders: DataFrame of all eligible orders for matching
+        nbbo_data: External NBBO DataFrame (required when nbbo_source='EXTERNAL')
+        nbbo_source: NBBO source mode ('INTERNAL' or 'EXTERNAL'). Defaults to cfg.NBBO_SOURCE
+        
+    Raises:
+        ValueError: If NBBO source is not properly configured
+    """
+    # Use config default if not specified
+    if nbbo_source is None:
+        nbbo_source = cfg.NBBO_SOURCE
+    
+    # Validate NBBO source
+    if nbbo_source not in ['INTERNAL', 'EXTERNAL']:
+        raise ValueError(
+            f"Invalid NBBO_SOURCE: '{nbbo_source}'. "
+            f"Must be 'INTERNAL' (orders file) or 'EXTERNAL' (nbbo file)."
+        )
     
     # Initialize tracking structures
     simulated_trades = []  # Will store FULL TRADE ROWS (2 per match)
@@ -281,11 +320,22 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
     else:
         tradedate = None
     
-    # Pre-sort NBBO for efficient lookups
-    if nbbo_data is not None and len(nbbo_data) > 0:
+    # Validate NBBO availability and prepare based on source mode
+    if nbbo_source == 'EXTERNAL':
+        if nbbo_data is None or len(nbbo_data) == 0:
+            raise ValueError(
+                "NBBO_SOURCE is set to 'EXTERNAL' but no NBBO data available. "
+                "Options:\n"
+                "  1. Set NBBO_SOURCE='INTERNAL' in config.py to use national_bid/national_offer from orders\n"
+                "  2. Ensure nbbo.csv.gz file exists in data/processed/{date}/{security}/"
+            )
+        # Pre-sort NBBO for efficient lookups
         nbbo_sorted = nbbo_data.sort_values('timestamp').reset_index(drop=True)
+        print(f"    Using NBBO source: EXTERNAL (nbbo.csv.gz file, {len(nbbo_data):,} snapshots)")
     else:
+        # INTERNAL mode - use national_bid/national_offer from orders
         nbbo_sorted = None
+        print(f"    Using NBBO source: INTERNAL (national_bid/national_offer from orders)")
     
     # Process each SWEEP order chronologically (by placement time)
     for idx in range(len(sweep_orders)):
@@ -347,23 +397,28 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data):
             # Get match timestamp (when incoming order arrives)
             match_timestamp = order[col.common.timestamp]
             
-            # Get NBBO at match time
-            nbbo_bid, nbbo_offer, _ = _get_nbbo_at_timestamp(
-                nbbo_sorted,
-                match_timestamp,
-                sweep_orderbookid
-            )
+            # Get NBBO based on configuration (no fallback)
+            if nbbo_source == 'EXTERNAL':
+                # Use external NBBO file
+                nbbo_bid, nbbo_offer, _ = _get_nbbo_at_timestamp(
+                    nbbo_sorted,
+                    match_timestamp,
+                    sweep_orderbookid
+                )
+                
+                # Check if NBBO found
+                if nbbo_bid == 0 or nbbo_offer == 0:
+                    # No NBBO at this timestamp - skip match
+                    continue
+                
+            else:
+                # INTERNAL mode: Use NBBO from incoming order (national_bid/national_offer)
+                # The incoming order captures market state at match time
+                nbbo_bid = int(order[col.orders.national_bid])
+                nbbo_offer = int(order[col.orders.national_offer])
             
             # Calculate midpoint for trade price
-            midpoint = _calculate_midpoint(
-                nbbo_bid,
-                nbbo_offer,
-                fallback_bid=order[col.orders.bid],
-                fallback_offer=order[col.orders.offer]
-            )
-            
-            if midpoint is None:
-                continue  # Cannot price this match
+            midpoint = (nbbo_bid + nbbo_offer) / 2
             
             # Generate unique matchgroupid
             matchgroupid = base_matchgroupid + match_counter

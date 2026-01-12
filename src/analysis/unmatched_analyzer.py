@@ -148,7 +148,7 @@ def analyze_liquidity_evolution(unmatched_order, order_index):
     """Track contra-side liquidity arrivals during order lifetime."""
     orderid = unmatched_order[col.common.orderid]
     arrival_time = int(unmatched_order['order_timestamp'])
-    first_lit_fill_time = int(unmatched_order['real_first_trade_time'])
+    first_lit_fill_time = int(unmatched_order['real_first_fill_time'])  # Uses first_fill_time from TradeMetricsCalculator
     side = int(unmatched_order[col.common.side])
     limit_price = unmatched_order['arrival_bid'] if side == 1 else unmatched_order['arrival_offer']
     order_qty = unmatched_order['order_quantity']

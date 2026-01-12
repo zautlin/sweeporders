@@ -71,6 +71,24 @@ WARN_APPROXIMATE_STATS = True
 
 
 # ============================================================================
+# NBBO SOURCE CONFIGURATION
+# ============================================================================
+
+# NBBO source for simulation pricing
+# Options:
+#   'INTERNAL' (default): Use national_bid/national_offer from orders file
+#   'EXTERNAL': Use NBBO from external nbbo.csv.gz file
+NBBO_SOURCE = 'INTERNAL'  # Default: use NBBO from orders file
+
+# Validation: Ensure valid option
+if NBBO_SOURCE not in ['INTERNAL', 'EXTERNAL']:
+    raise ValueError(
+        f"Invalid NBBO_SOURCE: '{NBBO_SOURCE}'. "
+        f"Must be 'INTERNAL' (orders file) or 'EXTERNAL' (nbbo file)."
+    )
+
+
+# ============================================================================
 # INPUT FILES
 # ============================================================================
 
