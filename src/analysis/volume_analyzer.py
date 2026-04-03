@@ -453,8 +453,15 @@ def analyze_by_volume(outputs_dir, partition_keys, method='quartile', stats_engi
             logger.warning(f"  Comparison file not found: {comparison_file}")
             continue
         
-        df = pd.read_csv(comparison_file)
+        try:
+            df = pd.read_csv(comparison_file)
+        except pd.errors.EmptyDataError:
+            logger.warning(f"  Comparison file is empty (no matched orders): {comparison_file}")
+            continue
         logger.info(f"  Loaded {len(df)} matched orders")
+        if len(df) == 0:
+            logger.warning(f"  Skipping partition (no matched orders)")
+            continue
         
         # Create volume buckets
         logger.info(f"  Creating volume buckets (method={method})...")

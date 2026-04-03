@@ -14,10 +14,21 @@ Handles all data extraction, partitioning, and preprocessing operations:
 """
 
 import pandas as pd
+import numpy as np
 from pathlib import Path
-from config.config import SWEEP_ORDER_TYPE
+from config.config import SWEEP_ORDER_TYPE, PROJECT_ROOT
+import config.config as _cfg
 from config.column_schema import col
 from utils.normalization import normalize_column_names
+
+
+def _should_save():
+    """Return True if intermediate partition files should be written to disk."""
+    return _cfg.PROCESSING_MODE == 'file'
+
+
+# Session state constants (per dd.txt spec)
+MATCHING_SESSION_STATES = {'OPEN'}  # Only OPEN state allows continuous matching
 
 
 def add_date_column(df, timestamp_col):
@@ -29,75 +40,267 @@ def add_date_column(df, timestamp_col):
     return df
 
 
+def load_session_data(date, orderbookid):
+    """
+    Load session state data for given date and orderbook.
+    
+    Session data defines trading phases (PRE_OPEN, OPEN, AUCTION, etc.)
+    Per dd.txt spec, matching only allowed during OPEN state.
+    
+    Args:
+        date: Date string (YYYY-MM-DD or YYYYMMDD)
+        orderbookid: Order book ID (integer)
+    
+    Returns:
+        DataFrame: Session states with timestamps
+    """
+    # Normalize date format
+    date_str = date.replace('-', '')
+    session_file = PROJECT_ROOT / 'data' / 'raw' / 'session' / f'{date_str}_session.csv'
+    
+    if not session_file.exists():
+        print(f"  Warning: Session file not found: {session_file}")
+        return None
+    
+    session_df = pd.read_csv(session_file)
+    
+    # Clean column names (remove leading spaces)
+    session_df.columns = session_df.columns.str.strip()
+    
+    # Filter for this orderbook
+    orderbook_sessions = session_df[
+        session_df['OrderBookId'] == orderbookid
+    ].copy()
+    
+    if len(orderbook_sessions) == 0:
+        print(f"  Warning: No session data for orderbook {orderbookid}")
+        return None
+    
+    # Convert Timestamp to nanoseconds (already in nanoseconds in raw data)
+    orderbook_sessions['timestamp'] = orderbook_sessions['Timestamp'].astype('int64')
+    
+    # Sort by timestamp
+    orderbook_sessions = orderbook_sessions.sort_values('timestamp').reset_index(drop=True)
+    
+    # Select relevant columns
+    result = orderbook_sessions[['timestamp', 'Name', 'OrderBookId', 'isEndOfTrading']].copy()
+    result.columns = ['timestamp', 'session_state', 'orderbookid', 'is_end_of_trading']
+    
+    return result
+
+
+def get_session_times(session_df):
+    """
+    Get session start and end times from session data.
+    
+    Args:
+        session_df: Session DataFrame from load_session_data()
+    
+    Returns:
+        tuple: (session_start_ns, session_end_ns) or (None, None) if no data
+    """
+    if session_df is None or len(session_df) == 0:
+        return None, None
+    
+    # Find OPEN session start
+    open_sessions = session_df[session_df['session_state'] == 'OPEN']
+    
+    if len(open_sessions) > 0:
+        session_start = open_sessions['timestamp'].min()
+    else:
+        # Fallback: use first timestamp
+        session_start = session_df['timestamp'].min()
+    
+    # Session end is last timestamp
+    session_end = session_df['timestamp'].max()
+    
+    return session_start, session_end
+
+
+def is_matching_allowed(session_state):
+    """
+    Check if matching is allowed in current session state.
+    
+    Per ASX bi.txt Section 8:
+    - OPEN: Continuous matching allowed
+    - PRE_OPEN, AUCTION, CLOSE: No continuous matching
+    
+    Args:
+        session_state: Session state name (string)
+    
+    Returns:
+        bool: True if matching allowed
+    """
+    return session_state in MATCHING_SESSION_STATES
+
+
+def filter_orders_by_session(orders_df, session_df):
+    """
+    Filter orders to only those in matching-allowed sessions.
+    
+    Args:
+        orders_df: Orders DataFrame
+        session_df: Session DataFrame from load_session_data()
+    
+    Returns:
+        DataFrame: Filtered orders
+    """
+    if session_df is None or len(session_df) == 0:
+        # No session data, return all orders
+        return orders_df
+    
+    # Merge orders with session states
+    orders_with_state = pd.merge_asof(
+        orders_df.sort_values('timestamp'),
+        session_df.sort_values('timestamp'),
+        on='timestamp',
+        direction='backward',
+        suffixes=('', '_session')
+    )
+    
+    # Filter to matching-allowed states
+    matching_orders = orders_with_state[
+        orders_with_state['session_state'].apply(is_matching_allowed)
+    ].copy()
+    
+    # Drop session columns
+    cols_to_drop = [c for c in matching_orders.columns if c.endswith('_session') or c == 'session_state']
+    matching_orders = matching_orders.drop(columns=cols_to_drop, errors='ignore')
+    
+    return matching_orders
+
+
+def calculate_order_lifetime(order_row, session_start_ns, session_end_ns):
+    """
+    Calculate order lifetime based on timevalidity field.
+    
+    Per dd.txt spec p.870:
+    - timevalidity field controls how long order stays in book
+    - MSB (most significant byte) defines the unit
+    - LSB (least significant byte) defines the value
+    
+    Time validity types:
+    - 0 (Bouncing/IOC): Order expires immediately
+    - 1 (Rest of Day): Order valid until end of session
+    - 2 (GTC): Order valid for 30 days
+    - 5 (Days): Order valid for N days (LSB = days)
+    - 6 (Current Max): Order valid until end of current session
+    
+    Args:
+        order_row: Order DataFrame row
+        session_start_ns: Session start timestamp (nanoseconds)
+        session_end_ns: Session end timestamp (nanoseconds)
+    
+    Returns:
+        tuple: (start_timestamp_ns, end_timestamp_ns)
+    """
+    timestamp = int(order_row.get('timestamp', 0))
+    timevalidity = int(order_row.get('timevalidity', 1))  # Default: Rest of Day
+    
+    # Handle NaN timevalidity
+    if pd.isna(timevalidity):
+        timevalidity = 1
+    
+    # Extract MSB and LSB
+    msb = (timevalidity >> 8) & 0xFF  # Most significant byte
+    lsb = timevalidity & 0xFF  # Least significant byte
+    
+    # Calculate end time based on timevalidity type
+    if msb == 0:  # Bouncing / IOC
+        # Order expires immediately (within 1 second)
+        return timestamp, timestamp + 1_000_000_000
+    
+    elif msb == 1:  # Rest of Day
+        # Order valid until end of session
+        return timestamp, session_end_ns
+    
+    elif msb == 2:  # Good Till Canceled
+        # Order valid for 30 days by default
+        return timestamp, timestamp + 30 * 24 * 3600 * 1_000_000_000
+    
+    elif msb == 5:  # Days
+        # Order valid for N days (LSB = number of days)
+        days = lsb if lsb > 0 else 30  # Default to 30 if LSB is 0
+        return timestamp, timestamp + days * 24 * 3600 * 1_000_000_000
+    
+    elif msb == 6:  # Current Max
+        # Order valid until end of current session type
+        return timestamp, session_end_ns
+    
+    else:
+        # Unknown timevalidity, default to Rest of Day
+        return timestamp, session_end_ns
+
+
 def _read_csv_files_concat(file_list):
     """Read and concatenate multiple CSV files into single DataFrame."""
     if not file_list:
         return None
-    
+
     dfs = []
     for file in file_list:
         df = pd.read_csv(file)
         dfs.append(df)
-    
+
     if not dfs:
         return None
-    
+
     return pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
 
 
 def _partition_by_date_and_save(df, unique_dates, processed_dir, filename, date_col):
     """Partition DataFrame by date and save each partition as compressed CSV."""
     results = {}
-    
+
     for date in unique_dates:
         date_data = df[df[date_col] == date].copy()
-        
+
         if len(date_data) > 0:
-            date_dir = Path(processed_dir) / date
-            date_dir.mkdir(parents=True, exist_ok=True)
-            
-            output_file = date_dir / filename
-            date_data.to_csv(output_file, index=False, compression='gzip')
-            
             results[date] = date_data
-            size_kb = output_file.stat().st_size / 1024
-            print(f"    {date}/{filename}: {len(date_data):,} records ({size_kb:.1f} KB)")
+            if _should_save():
+                date_dir = Path(processed_dir) / date
+                date_dir.mkdir(parents=True, exist_ok=True)
+                output_file = date_dir / filename
+                date_data.to_csv(output_file, index=False, compression='gzip')
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {date}/{filename}: {len(date_data):,} records ({size_kb:.1f} KB)")
+            else:
+                print(f"    {date}/{filename}: {len(date_data):,} records (in-memory)")
         else:
             print(f"    {date}/{filename}: NO DATA (missing in raw files)")
-    
+
     return results
 
 
 def _partition_by_date_security_and_save(df, orders_by_partition, processed_dir, filename, date_col, security_col):
     """Partition DataFrame by date/security and save each partition as compressed CSV."""
     results = {}
-    
+
     for partition_key in orders_by_partition.keys():
         date, orderbookid = partition_key.split('/')
         orderbookid_int = int(orderbookid)
-        
+
         partition_data = df[
-            (df[date_col] == date) & 
+            (df[date_col] == date) &
             (df[security_col] == orderbookid_int)
         ].copy()
-        
+
         if len(partition_data) > 0:
             partition_data_normalized = normalize_column_names(partition_data, 'nbbo')
-            
-            partition_dir = Path(processed_dir) / date / orderbookid
-            partition_dir.mkdir(parents=True, exist_ok=True)
-            
-            output_file = partition_dir / filename
-            partition_data_normalized.to_csv(output_file, index=False, compression='gzip')
-            
             results[partition_key] = partition_data_normalized
-            size_kb = output_file.stat().st_size / 1024
-            print(f"    {partition_key}/{filename}: {len(partition_data):,} records ({size_kb:.1f} KB)")
+            if _should_save():
+                partition_dir = Path(processed_dir) / date / orderbookid
+                partition_dir.mkdir(parents=True, exist_ok=True)
+                output_file = partition_dir / filename
+                partition_data_normalized.to_csv(output_file, index=False, compression='gzip')
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {partition_key}/{filename}: {len(partition_data):,} records ({size_kb:.1f} KB)")
+            else:
+                print(f"    {partition_key}/{filename}: {len(partition_data):,} records (in-memory)")
         else:
             print(f"    {partition_key}/{filename}: NO DATA (missing in raw files)")
-    
-    return results
 
+    return results
 
 def _process_single_reference_type(file_list, timestamp_col, unique_dates, processed_dir, filename, data_type):
     """Process single reference data type: read files, add date, normalize, partition, save."""
@@ -139,28 +342,29 @@ def _process_participants_with_fallback(file_list, timestamp_col, unique_dates, 
         date_data = df[df[col.common.date] == date].copy()
         
         if len(date_data) > 0:
-            date_dir = Path(processed_dir) / date
-            date_dir.mkdir(parents=True, exist_ok=True)
-            
-            output_file = date_dir / "participants.csv.gz"
-            date_data.to_csv(output_file, index=False, compression='gzip')
-            
             results[date] = date_data
-            size_kb = output_file.stat().st_size / 1024
-            print(f"    {date}/participants.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
+            if _should_save():
+                date_dir = Path(processed_dir) / date
+                date_dir.mkdir(parents=True, exist_ok=True)
+                output_file = date_dir / "participants.csv.gz"
+                date_data.to_csv(output_file, index=False, compression='gzip')
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {date}/participants.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
+            else:
+                print(f"    {date}/participants.csv.gz: {len(date_data):,} records (in-memory)")
         else:
             latest_date = max(all_participant_dates)
             fallback_data = df[df[col.common.date] == latest_date].copy()
-            
-            date_dir = Path(processed_dir) / date
-            date_dir.mkdir(parents=True, exist_ok=True)
-            
-            output_file = date_dir / "participants.csv.gz"
-            fallback_data.to_csv(output_file, index=False, compression='gzip')
-            
             results[date] = fallback_data
-            size_kb = output_file.stat().st_size / 1024
-            print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records ({size_kb:.1f} KB) [FALLBACK from {latest_date}]")
+            if _should_save():
+                date_dir = Path(processed_dir) / date
+                date_dir.mkdir(parents=True, exist_ok=True)
+                output_file = date_dir / "participants.csv.gz"
+                fallback_data.to_csv(output_file, index=False, compression='gzip')
+                size_kb = output_file.stat().st_size / 1024
+                print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records ({size_kb:.1f} KB) [FALLBACK from {latest_date}]")
+            else:
+                print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records (in-memory) [FALLBACK from {latest_date}]")
     
     return results
 
@@ -234,35 +438,59 @@ def _extract_execution_time_dict(order_id, order_df, trades_df):
 
 def _save_execution_times(partition_key, execution_times_df, processed_dir):
     """Save execution times DataFrame to partition directory."""
+    if not _should_save():
+        return
     date, security_code = partition_key.split('/')
     partition_dir = Path(processed_dir) / date / security_code
     partition_dir.mkdir(parents=True, exist_ok=True)
-    
-    exec_file = partition_dir / "last_execution_time.csv"
-    execution_times_df.to_csv(exec_file, index=False)
+    execution_times_df.to_csv(partition_dir / "last_execution_time.csv", index=False)
 
 
 def extract_orders(input_file, processed_dir, order_types, chunk_size):
     """Extract Centre Point orders and partition by date/security."""
     print(f"\n[1/11] Extracting Centre Point orders from {input_file}...")
-    
-    orders_list = []
-    total_rows = 0
-    
-    for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
-        total_rows += len(chunk)
-        cp_chunk = chunk[chunk[col.orders.order_type].isin(order_types)].copy()
-        
-        if len(cp_chunk) > 0:
-            cp_chunk = add_date_column(cp_chunk, col.orders.timestamp)
-            orders_list.append(cp_chunk)
-    
-    if not orders_list:
-        print("  No Centre Point orders found!")
-        return {}
-    
-    orders = pd.concat(orders_list, ignore_index=True)
-    print(f"  Found {len(orders):,} Centre Point orders from {total_rows:,} total rows")
+
+    if _cfg.USE_DUCKDB_IO:
+        import polars as pl
+        from utils.io_backend import get_conn, duck_to_polars
+        conn = get_conn()
+        types_sql = ','.join(str(t) for t in order_types)
+        orders_pl = duck_to_polars(conn.execute(f"""
+            SELECT * FROM read_csv_auto('{input_file}')
+            WHERE {col.orders.order_type} IN ({types_sql})
+        """))
+        total_rows = conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{input_file}')").fetchone()[0]
+        # Replicate add_date_column: UTC ns epoch → AEST → '%Y-%m-%d'
+        orders_pl = orders_pl.with_columns(
+            pl.from_epoch(pl.col(col.orders.timestamp), time_unit='ns')
+              .dt.replace_time_zone('UTC')
+              .dt.convert_time_zone('Australia/Sydney')
+              .dt.strftime('%Y-%m-%d')
+              .alias(col.common.date)
+        )
+        orders = orders_pl.to_pandas()
+        if len(orders) == 0:
+            print("  No Centre Point orders found!")
+            return {}
+        print(f"  Found {len(orders):,} Centre Point orders from {total_rows:,} total rows")
+    else:
+        orders_list = []
+        total_rows = 0
+
+        for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
+            total_rows += len(chunk)
+            cp_chunk = chunk[chunk[col.orders.order_type].isin(order_types)].copy()
+
+            if len(cp_chunk) > 0:
+                cp_chunk = add_date_column(cp_chunk, col.orders.timestamp)
+                orders_list.append(cp_chunk)
+
+        if not orders_list:
+            print("  No Centre Point orders found!")
+            return {}
+
+        orders = pd.concat(orders_list, ignore_index=True)
+        print(f"  Found {len(orders):,} Centre Point orders from {total_rows:,} total rows")
     
     # Partition by date/security
     partitions = {}
@@ -274,16 +502,16 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size):
         
         # Store normalized version for downstream use
         partitions[partition_key] = group_df_normalized
-        
-        # Save to processed directory
-        partition_dir = Path(processed_dir) / date / str(security_code_val)
-        partition_dir.mkdir(parents=True, exist_ok=True)
-        
-        partition_file = partition_dir / "cp_orders_filtered.csv.gz"
-        group_df_normalized.to_csv(partition_file, index=False, compression='gzip')
-        
-        size_mb = partition_file.stat().st_size / (1024 * 1024)
-        print(f"  {partition_key}: {len(group_df):,} orders ({size_mb:.2f} MB)")
+
+        if _should_save():
+            partition_dir = Path(processed_dir) / date / str(security_code_val)
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            partition_file = partition_dir / "cp_orders_filtered.csv.gz"
+            group_df_normalized.to_csv(partition_file, index=False, compression='gzip')
+            size_mb = partition_file.stat().st_size / (1024 * 1024)
+            print(f"  {partition_key}: {len(group_df):,} orders ({size_mb:.2f} MB)")
+        else:
+            print(f"  {partition_key}: {len(group_df):,} orders (in-memory)")
     
     return partitions
 
@@ -304,25 +532,50 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
         all_order_ids.update(order_ids)
     
     print(f"  Looking for {len(all_order_ids):,} order IDs across {len(orders_by_partition)} partitions")
-    
-    # Read and filter trades
-    trades_list = []
-    total_rows = 0
-    
-    for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
-        total_rows += len(chunk)
-        matched_chunk = chunk[chunk[col.trades.order_id].isin(all_order_ids)].copy()
-        
-        if len(matched_chunk) > 0:
-            matched_chunk = add_date_column(matched_chunk, col.trades.trade_time)
-            trades_list.append(matched_chunk)
-    
-    if not trades_list:
-        print("  No matching trades found!")
-        return {}
-    
-    all_trades = pd.concat(trades_list, ignore_index=True)
-    print(f"  Found {len(all_trades):,} trades from {total_rows:,} total rows")
+
+    if _cfg.USE_DUCKDB_IO:
+        import polars as pl
+        from utils.io_backend import get_conn, duck_to_polars
+        conn = get_conn()
+        # Use a temp table join to avoid huge IN-list string interpolation
+        conn.execute("CREATE OR REPLACE TEMP TABLE _target_ids (orderid BIGINT)")
+        conn.executemany("INSERT INTO _target_ids VALUES (?)", [(int(i),) for i in all_order_ids])
+        trades_pl = duck_to_polars(conn.execute(f"""
+            SELECT t.* FROM read_csv_auto('{input_file}') t
+            JOIN _target_ids i ON t.{col.trades.order_id} = i.orderid
+        """))
+        total_rows = conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{input_file}')").fetchone()[0]
+        trades_pl = trades_pl.with_columns(
+            pl.from_epoch(pl.col(col.trades.trade_time), time_unit='ns')
+              .dt.replace_time_zone('UTC')
+              .dt.convert_time_zone('Australia/Sydney')
+              .dt.strftime('%Y-%m-%d')
+              .alias(col.common.date)
+        )
+        all_trades = trades_pl.to_pandas()
+        if len(all_trades) == 0:
+            print("  No matching trades found!")
+            return {}
+        print(f"  Found {len(all_trades):,} trades from {total_rows:,} total rows")
+    else:
+        # Read and filter trades
+        trades_list = []
+        total_rows = 0
+
+        for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
+            total_rows += len(chunk)
+            matched_chunk = chunk[chunk[col.trades.order_id].isin(all_order_ids)].copy()
+
+            if len(matched_chunk) > 0:
+                matched_chunk = add_date_column(matched_chunk, col.trades.trade_time)
+                trades_list.append(matched_chunk)
+
+        if not trades_list:
+            print("  No matching trades found!")
+            return {}
+
+        all_trades = pd.concat(trades_list, ignore_index=True)
+        print(f"  Found {len(all_trades):,} trades from {total_rows:,} total rows")
     
     # Partition trades to match order partitions
     trades_by_partition = {}
@@ -336,18 +589,18 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
             
             # Store normalized version for downstream use
             trades_by_partition[partition_key] = partition_trades_normalized
-            
-            # Save to processed directory
-            date, security_code = partition_key.split('/')
-            partition_dir = Path(processed_dir) / date / security_code
-            partition_dir.mkdir(parents=True, exist_ok=True)
-            
-            partition_file = partition_dir / "cp_trades_matched.csv.gz"
-            partition_trades_normalized.to_csv(partition_file, index=False, compression='gzip')
-            
-            size_mb = partition_file.stat().st_size / (1024 * 1024)
+
             unique_orders = partition_trades[col.trades.order_id].nunique()
-            print(f"  {partition_key}: {len(partition_trades):,} trades, {unique_orders:,} orders ({size_mb:.2f} MB)")
+            if _should_save():
+                date, security_code = partition_key.split('/')
+                partition_dir = Path(processed_dir) / date / security_code
+                partition_dir.mkdir(parents=True, exist_ok=True)
+                partition_file = partition_dir / "cp_trades_matched.csv.gz"
+                partition_trades_normalized.to_csv(partition_file, index=False, compression='gzip')
+                size_mb = partition_file.stat().st_size / (1024 * 1024)
+                print(f"  {partition_key}: {len(partition_trades):,} trades, {unique_orders:,} orders ({size_mb:.2f} MB)")
+            else:
+                print(f"  {partition_key}: {len(partition_trades):,} trades, {unique_orders:,} orders (in-memory)")
     
     return trades_by_partition
 
@@ -362,41 +615,62 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir):
         if len(trades_df) == 0:
             continue
         
-        # Calculate price*quantity for VWAP
-        trades_df = trades_df.copy()
-        trades_df['price_qty_product'] = trades_df[col.common.tradeprice] * trades_df[col.common.quantity]
-        
-        # Aggregate by order ID
-        agg_dict = {
-            col.common.quantity: 'sum',
-            col.common.tradeprice: 'mean',
-            'price_qty_product': 'sum',  # For VWAP calculation
-            col.common.tradetime: ['min', 'max', 'count']
-        }
-        
-        trades_agg = trades_df.groupby(col.common.orderid).agg(agg_dict).reset_index()
-        
-        # Flatten column names
-        trades_agg.columns = [
-            'orderid',
-            'total_quantity_filled',
-            'avg_execution_price',
-            'price_qty_product_sum',
-            'first_trade_time',
-            'last_trade_time',
-            'num_trades'
-        ]
-        
-        # Calculate VWAP: sum(price * quantity) / sum(quantity)
-        trades_agg['vwap'] = trades_agg['price_qty_product_sum'] / trades_agg['total_quantity_filled']
-        
-        # Drop intermediate calculation column
-        trades_agg = trades_agg.drop('price_qty_product_sum', axis=1)
-        
-        # Calculate execution duration
-        trades_agg['execution_duration_sec'] = (
-            (trades_agg['last_trade_time'] - trades_agg['first_trade_time']) / 1e9
-        )
+        if _cfg.USE_DUCKDB_IO:
+            import polars as pl
+            from utils.io_backend import get_conn, duck_to_polars
+            conn = get_conn()
+            conn.register('_trades', trades_df.to_arrow() if hasattr(trades_df, 'to_arrow') else __import__('pyarrow').Table.from_pandas(trades_df))
+            agg_pl = duck_to_polars(conn.execute(f"""
+                SELECT
+                    {col.common.orderid}                                              AS orderid,
+                    SUM({col.common.quantity})                                        AS total_quantity_filled,
+                    AVG({col.common.tradeprice})                                      AS avg_execution_price,
+                    SUM({col.common.tradeprice} * {col.common.quantity})
+                      / SUM({col.common.quantity})                                    AS vwap,
+                    MIN({col.common.tradetime})                                       AS first_trade_time,
+                    MAX({col.common.tradetime})                                       AS last_trade_time,
+                    COUNT(*)                                                          AS num_trades,
+                    (MAX({col.common.tradetime}) - MIN({col.common.tradetime})) / 1e9 AS execution_duration_sec
+                FROM _trades
+                GROUP BY {col.common.orderid}
+            """))
+            trades_agg = agg_pl.to_pandas()
+        else:
+            # Calculate price*quantity for VWAP
+            trades_df = trades_df.copy()
+            trades_df['price_qty_product'] = trades_df[col.common.tradeprice] * trades_df[col.common.quantity]
+
+            # Aggregate by order ID
+            agg_dict = {
+                col.common.quantity: 'sum',
+                col.common.tradeprice: 'mean',
+                'price_qty_product': 'sum',  # For VWAP calculation
+                col.common.tradetime: ['min', 'max', 'count']
+            }
+
+            trades_agg = trades_df.groupby(col.common.orderid).agg(agg_dict).reset_index()
+
+            # Flatten column names
+            trades_agg.columns = [
+                'orderid',
+                'total_quantity_filled',
+                'avg_execution_price',
+                'price_qty_product_sum',
+                'first_trade_time',
+                'last_trade_time',
+                'num_trades'
+            ]
+
+            # Calculate VWAP: sum(price * quantity) / sum(quantity)
+            trades_agg['vwap'] = trades_agg['price_qty_product_sum'] / trades_agg['total_quantity_filled']
+
+            # Drop intermediate calculation column
+            trades_agg = trades_agg.drop('price_qty_product_sum', axis=1)
+
+            # Calculate execution duration
+            trades_agg['execution_duration_sec'] = (
+                (trades_agg['last_trade_time'] - trades_agg['first_trade_time']) / 1e9
+            )
         
         trades_agg_by_partition[partition_key] = trades_agg
         
@@ -499,46 +773,39 @@ def get_orders_state(orders_by_partition, processed_dir):
         
         # Sort by timestamp, then sequence (ascending)
         orders_sorted = orders_df.sort_values([col.common.timestamp, col.common.sequence])
-        
-        # Get minimum timestamp per order
-        min_timestamps = orders_sorted.groupby(col.common.orderid)[col.common.timestamp].min()
-        
-        orders_before_list = []
-        orders_after_list = []
-        
-        for order_id in min_timestamps.index:
-            min_ts = min_timestamps[order_id]
-            
-            # Filter to records at minimum timestamp for this order
-            records_at_min_ts = orders_sorted[
-                (orders_sorted[col.common.orderid] == order_id) & 
-                (orders_sorted[col.common.timestamp] == min_ts)
-            ]
-            
-            # BEFORE: First record at min timestamp (min sequence)
-            orders_before_list.append(records_at_min_ts.iloc[0])
-            
-            # AFTER: Last record at min timestamp (max sequence)
-            orders_after_list.append(records_at_min_ts.iloc[-1])
-        
-        orders_before = pd.DataFrame(orders_before_list).reset_index(drop=True)
-        orders_after = pd.DataFrame(orders_after_list).reset_index(drop=True)
+
+        # BEFORE state: the NEW ORDER submission event (changereason=1).
+        # Using min-timestamp is wrong because the data file includes session-cleanup
+        # cancellations (changereason=6) that appear earlier than the actual submission.
+        # Orders that have no changereason=1 event (pure cleanup artefacts) are excluded.
+        CHANGEREASON_NEW = 1
+        if 'changereason' in orders_sorted.columns:
+            new_order_rows = orders_sorted[orders_sorted['changereason'] == CHANGEREASON_NEW]
+            orders_before = new_order_rows.drop_duplicates(
+                subset=[col.common.orderid], keep='first'
+            ).reset_index(drop=True)
+        else:
+            # Fallback when changereason is unavailable
+            orders_before = orders_sorted.drop_duplicates(
+                subset=[col.common.orderid], keep='first'
+            ).reset_index(drop=True)
+
+        # AFTER state: the last event per order (captures final cancellation/fill)
+        orders_after = orders_sorted.drop_duplicates(
+            subset=[col.common.orderid], keep='last'
+        ).reset_index(drop=True)
         
         order_states_by_partition[partition_key] = {
             'before': orders_before,
             'after': orders_after
         }
-        
-        # Save to processed directory
-        partition_dir = Path(processed_dir) / date / security_code
-        partition_dir.mkdir(parents=True, exist_ok=True)
-        
-        before_file = partition_dir / "orders_before_matching.csv"
-        after_file = partition_dir / "orders_after_matching.csv"
-        
-        orders_before.to_csv(before_file, index=False)
-        orders_after.to_csv(after_file, index=False)
-        
+
+        if _should_save():
+            partition_dir = Path(processed_dir) / date / security_code
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            orders_before.to_csv(partition_dir / "orders_before_matching.csv", index=False)
+            orders_after.to_csv(partition_dir / "orders_after_matching.csv", index=False)
+
         print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after")
     
     return order_states_by_partition

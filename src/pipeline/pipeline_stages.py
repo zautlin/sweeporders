@@ -62,6 +62,7 @@ def extract_and_prepare_data(input_files):
         'order_states': order_states_by_partition,
         'last_execution': last_execution_by_partition,
         'nbbo': nbbo_by_partition,
+        'reference': reference_results,
         'partition_keys': list(orders_by_partition.keys()),
     }
 
@@ -114,16 +115,18 @@ def _run_simulation_and_metrics(data):
         data['order_states'],
         data['last_execution'],
         data['nbbo'],
-        config.OUTPUTS_DIR
+        config.OUTPUTS_DIR,
+        reference_results=data.get('reference'),
     )
-    
+
     pp.calculate_simulated_metrics_sequential(
         data['orders'],
         simulation_results_by_partition,
         config.PROCESSED_DIR,
-        config.OUTPUTS_DIR
+        config.OUTPUTS_DIR,
+        order_states=data['order_states'],
     )
-    
+
     return simulation_results_by_partition
 
 

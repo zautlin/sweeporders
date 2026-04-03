@@ -11,7 +11,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.pipeline.trade_metrics_calculator import TradeMetricsCalculator
+from src.pipeline.trade_metrics_calculator import calculate_trade_metrics
 
 
 def test_with_drr_data():
@@ -58,16 +58,11 @@ def test_with_drr_data():
     aggressor_trades = sim_trades[sim_trades['passiveaggressive'] == 1].copy()
     print(f"  Aggressor trades: {len(aggressor_trades):,}")
     
-    # Initialize calculator
-    calculator = TradeMetricsCalculator()
-    
     # Calculate metrics (sim_ prefix for simulated trades)
     print("\n  Calculating comprehensive metrics...")
-    result = calculator.calculate_metrics(
+    result = calculate_trade_metrics(
         trades_df=sim_trades,
         orders_df=sweep_orders,
-        nbbo_df=None,
-        filter_orderids=None,
         role_filter='aggressor',  # Only aggressor rows
         prefix='sim_'
     )

@@ -11,6 +11,7 @@ import utils.file_utils as fu
 import utils.data_utils as du
 from config.column_schema import col
 from .trade_metrics_calculator import calculate_trade_metrics
+import config.config as cfg
 
 
 def process_single_partition(partition_key, processed_dir, outputs_dir, enable_trade_comparison=True):
@@ -104,7 +105,6 @@ def compare_trades_for_partition(partition_key, sim_results, processed_dir, outp
         return
     
     # Aggregate simulated trades (pass orders_before for arrival NBBO)
-    print(f"  DEBUG partition_processor: orders_before is None? {orders_before is None}, len={len(orders_before) if orders_before is not None else 0}")
     sim_aggregated = ec._aggregate_simulated_trades_per_order(
         sim_results['simulated_trades'],
         sim_results['order_summary'],
@@ -201,20 +201,77 @@ def process_partitions_parallel(partition_keys, processed_dir, outputs_dir, max_
     return partition_results
 
 
+def _inject_lit_orders(partition_data, partition_key):
+    """
+    If resting phase + lit resting are both enabled, load the raw orders file
+    for the security (all order types including 0 and 2) and attach it to
+    partition_data['lit_orders_raw'].
+
+    The orderbookid for this partition is derived from partition_key
+    (format: 'date/orderbookid').  Raw files are discovered via cfg.RAW_FOLDERS.
+    Does nothing if SIMULATE_RESTING_PHASE or SIMULATE_LIT_RESTING are False.
+    """
+    if not (cfg.SIMULATE_RESTING_PHASE and cfg.SIMULATE_LIT_RESTING):
+        return
+
+    if partition_data.get('lit_orders_raw') is not None:
+        return  # already loaded
+
+    try:
+        _, orderbookid_str = partition_key.split('/')
+        orderbookid = int(orderbookid_str)
+
+        # Find the raw orders file that contains this orderbookid
+        raw_orders_dir = Path(cfg.RAW_FOLDERS['orders'])
+        raw_files = list(raw_orders_dir.glob('*_orders.csv'))
+        if not raw_files:
+            return
+
+        # Prefer the most recently modified file (usually the active dataset)
+        raw_file = sorted(raw_files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+        lit_df = pd.read_csv(raw_file, usecols=[
+            'order_id', 'timestamp', 'security_code', 'exchangeordertype',
+            'side', 'price', 'quantity', 'leavesquantity', 'orderstatus',
+            'participantid', 'crossingkey', 'changereason', 'ordertype',
+            'sequence', 'national_bid', 'national_offer',
+        ], dtype={'security_code': int})
+
+        # Normalise column names to match processed schema
+        lit_df = lit_df.rename(columns={
+            'order_id': 'orderid',
+            'security_code': 'orderbookid',
+            'leavesquantity': 'leavesquantity',
+        })
+
+        # Filter to this security
+        lit_df = lit_df[lit_df['orderbookid'] == orderbookid].copy()
+
+        # Keep only lit order types [0, 2]
+        lit_df = lit_df[lit_df['exchangeordertype'].isin([0, 2])].copy()
+
+        if len(lit_df) > 0:
+            partition_data['lit_orders_raw'] = lit_df
+            print(f"    Loaded {len(lit_df)} lit orders for resting phase (orderbookid={orderbookid})")
+    except Exception as e:
+        print(f"    Warning: could not load lit orders for resting phase: {e}")
+
+
 def simulate_partition_step(partition_key, partition_data, nbbo_data, output_dir):
     """Step 7: Simulate sweep matching for single partition."""
-    # Add NBBO data
     partition_data['nbbo'] = nbbo_data
-    
-    # Run simulation
+    _inject_lit_orders(partition_data, partition_key)
+
     sim_results = ss.simulate_partition(partition_key, partition_data)
-    
+
     if not sim_results:
         return None
-    
-    # Save results
+
     fu.save_simulation_results(sim_results, output_dir, partition_key)
-    
+
+    if cfg.SIMULATE_RESTING_PHASE and 'resting_trades' in sim_results:
+        fu.save_resting_simulation_results(sim_results, output_dir, partition_key)
+
     return sim_results
 
 
@@ -234,64 +291,90 @@ def calculate_metrics_step(partition_key, sim_results, orders_after, output_dir)
     return orders_with_metrics
 
 
-def simulate_sweep_matching_sequential(orders_by_partition, order_states_by_partition, 
-                                       last_execution_by_partition, nbbo_by_partition, output_dir):
+def simulate_sweep_matching_sequential(orders_by_partition, order_states_by_partition,
+                                       last_execution_by_partition, nbbo_by_partition, output_dir,
+                                       reference_results=None):
     """Step 7: Simulate sweep matching for all partitions (sequential processing)."""
     print("\n[7/11] Simulating sweep matching...")
-    
+
     simulation_results_by_partition = {}
-    
+
     for partition_key in orders_by_partition.keys():
-        # Load partition data
-        partition_data = dp.load_partition_data(
-            partition_key, 
-            Path(output_dir).parent / 'processed'
-        )
-        
-        if not partition_data or 'orders_before' not in partition_data:
-            continue
-        
-        # Override with in-memory datasets
-        if partition_key in order_states_by_partition:
-            partition_data['orders_before'] = order_states_by_partition[partition_key]['before']
-            partition_data['orders_after'] = order_states_by_partition[partition_key]['after']
-        
-        if partition_key in last_execution_by_partition:
-            partition_data['last_execution'] = last_execution_by_partition[partition_key]
-        
-        # Add NBBO data
-        partition_data['nbbo'] = nbbo_by_partition.get(partition_key)
-        
+        if cfg.PROCESSING_MODE == 'memory':
+            # Build partition_data entirely from in-memory dicts — no disk reads.
+            states = order_states_by_partition.get(partition_key, {})
+            if not states or 'before' not in states:
+                continue
+            date = partition_key.split('/')[0]
+            ref = reference_results or {}
+            partition_data = {
+                'orders_before':  states['before'],
+                'orders_after':   states['after'],
+                'last_execution': last_execution_by_partition.get(partition_key, pd.DataFrame(
+                    columns=['orderid', 'first_execution_time', 'last_execution_time'])),
+                'nbbo':           nbbo_by_partition.get(partition_key),
+                'session':        ref.get('session', {}).get(date, pd.DataFrame()),
+                'reference':      ref.get('reference', {}).get(date, pd.DataFrame()),
+                'participants':   ref.get('participants', {}).get(date, pd.DataFrame()),
+            }
+        else:
+            # Original file-based path: load from data/processed/
+            partition_data = dp.load_partition_data(
+                partition_key,
+                Path(output_dir).parent / 'processed'
+            )
+
+            if not partition_data or 'orders_before' not in partition_data:
+                continue
+
+            # Override with in-memory datasets (they are fresher than what's on disk)
+            if partition_key in order_states_by_partition:
+                partition_data['orders_before'] = order_states_by_partition[partition_key]['before']
+                partition_data['orders_after'] = order_states_by_partition[partition_key]['after']
+
+            if partition_key in last_execution_by_partition:
+                partition_data['last_execution'] = last_execution_by_partition[partition_key]
+
+            partition_data['nbbo'] = nbbo_by_partition.get(partition_key)
+
+        # Load raw lit orders for resting phase if needed
+        _inject_lit_orders(partition_data, partition_key)
+
         # Run simulation
         sim_results = ss.simulate_partition(partition_key, partition_data)
-        
+
         if not sim_results:
             continue
-        
+
         # Save simulation results
         fu.save_simulation_results(sim_results, output_dir, partition_key)
-        
+
+        if cfg.SIMULATE_RESTING_PHASE and 'resting_trades' in sim_results:
+            fu.save_resting_simulation_results(sim_results, output_dir, partition_key)
+
         simulation_results_by_partition[partition_key] = {
             'order_summary': sim_results['order_summary'],
-            'simulated_trades': sim_results['simulated_trades']
+            'simulated_trades': sim_results['simulated_trades'],
         }
     
     print(f"   Completed sweep simulation for {len(simulation_results_by_partition)} partitions")
     return simulation_results_by_partition
 
 
-def calculate_simulated_metrics_sequential(orders_by_partition, simulation_results_by_partition, 
-                                           processed_dir, output_dir):
+def calculate_simulated_metrics_sequential(orders_by_partition, simulation_results_by_partition,
+                                           processed_dir, output_dir, order_states=None):
     """Step 8: Calculate simulated metrics for all partitions (sequential processing)."""
     print("\n[8/11] Calculating simulated metrics...")
-    
+
     orders_with_sim_metrics_by_partition = {}
-    
+
     for partition_key, sim_results in simulation_results_by_partition.items():
-        # Load orders after matching
-        partition_dir = fu.get_partition_dir(processed_dir, partition_key)
-        orders_after = fu.load_orders_after(partition_dir)
-        
+        if cfg.PROCESSING_MODE == 'memory' and order_states and partition_key in order_states:
+            orders_after = order_states[partition_key]['after']
+        else:
+            partition_dir = fu.get_partition_dir(processed_dir, partition_key)
+            orders_after = fu.load_orders_after(partition_dir)
+
         if orders_after is None:
             continue
         

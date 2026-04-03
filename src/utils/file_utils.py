@@ -1,7 +1,13 @@
 """File I/O utilities for pipeline operations."""
 
 import pandas as pd
+import polars as pl
 from pathlib import Path
+
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config.config as config
 
 
 def get_partition_dir(base_dir, partition_key):
@@ -13,29 +19,69 @@ def get_partition_dir(base_dir, partition_key):
 def safe_read_csv(filepath, required=True, compression='infer', **kwargs):
     """Read CSV with existence check and error handling."""
     filepath = Path(filepath)
-    
+
     if not filepath.exists():
         if required:
             raise FileNotFoundError(f"Required file not found: {filepath}")
         return None
-    
+
+    if config.USE_DUCKDB_IO:
+        try:
+            from utils.io_backend import get_conn, duck_to_polars
+            rel = get_conn().execute(f"SELECT * FROM read_csv_auto('{filepath}')")
+            return duck_to_polars(rel).to_pandas()
+        except Exception as e:
+            raise IOError(f"Error reading {filepath}: {e}")
+
     try:
         return pd.read_csv(filepath, compression=compression, **kwargs)
+    except pd.errors.EmptyDataError:
+        return None
     except Exception as e:
         raise IOError(f"Error reading {filepath}: {e}")
 
 
 def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
-    """Write CSV with directory creation and error handling."""
+    """Write CSV with directory creation and error handling.
+
+    Accepts both pandas DataFrames and Polars DataFrames.
+    """
     filepath = Path(filepath)
-    
+
     if create_dirs:
         filepath.parent.mkdir(parents=True, exist_ok=True)
-    
+
     try:
-        df.to_csv(filepath, compression=compression, index=False, **kwargs)
+        if isinstance(df, pl.DataFrame):
+            df.write_csv(filepath)
+        else:
+            df.to_csv(filepath, compression=compression, index=False, **kwargs)
     except Exception as e:
         raise IOError(f"Error writing {filepath}: {e}")
+
+
+def query_partitions(base_dir, filename, where_sql="") -> pl.DataFrame:
+    """Query one file across every date/orderbookid partition in a single DuckDB pass.
+
+    Usage::
+
+        # All sweep orders across all partitions
+        df = query_partitions(PROCESSED_DIR, 'orders_before_matching.csv',
+                              "WHERE exchangeordertype = 2048")
+
+        # All real trade metrics for cross-security aggregation
+        df = query_partitions(OUTPUTS_DIR, 'real_trade_metrics.csv')
+
+        # Works on gzip files too (DuckDB auto-detects)
+        df = query_partitions(PROCESSED_DIR, 'cp_trades_matched.csv.gz')
+
+    Returns a Polars DataFrame with all rows union'd; column order normalised by name.
+    """
+    from utils.io_backend import get_conn, duck_to_polars
+    glob_pattern = str(Path(base_dir) / '*' / '*' / filename)
+    conn = get_conn()
+    sql = f"SELECT * FROM read_csv_auto('{glob_pattern}', union_by_name=True) {where_sql}"
+    return duck_to_polars(conn.execute(sql))
 
 
 def load_orders_before(partition_dir):
@@ -103,6 +149,32 @@ def save_simulation_results(sim_results, output_dir, partition_key):
                 compression=None,  # Uncompressed for easier access
                 create_dirs=False
             )
+
+
+def save_resting_simulation_results(sim_results, output_dir, partition_key):
+    """Save Phase 2 resting simulation outputs alongside Phase 1 outputs."""
+    processed_dir = Path(output_dir).parent / 'processed'
+    partition_processed_dir = processed_dir / partition_key
+    partition_processed_dir.mkdir(parents=True, exist_ok=True)
+
+    resting_trades = sim_results.get('resting_trades')
+    if resting_trades is not None and len(resting_trades) > 0:
+        safe_write_csv(
+            resting_trades,
+            partition_processed_dir / 'cp_trades_simulation_resting.csv',
+            compression=None,
+            create_dirs=False,
+        )
+
+    resting_summary = sim_results.get('resting_summary')
+    if resting_summary is not None and len(resting_summary) > 0:
+        partition_output_dir = Path(output_dir) / partition_key
+        partition_output_dir.mkdir(parents=True, exist_ok=True)
+        safe_write_csv(
+            resting_summary,
+            partition_output_dir / 'resting_order_summary.csv',
+            create_dirs=False,
+        )
 
 
 def save_orders_with_metrics(orders_with_metrics, output_dir, partition_key):

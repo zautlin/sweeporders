@@ -16,6 +16,13 @@ import pandas as pd
 import numpy as np
 from typing import Optional, Dict, List
 
+try:
+    import config.config as _cfg
+except ModuleNotFoundError:
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    import config.config as _cfg
+
 
 def calculate_trade_metrics(
     trades_df: pd.DataFrame,
@@ -155,9 +162,17 @@ def _enrich_trades_with_context(
 def _calculate_per_trade_metrics(trades_df: pd.DataFrame) -> pd.DataFrame:
     """Calculate per-trade enrichment metrics (cumulative fill, first/last fill flags, price vs limit)."""
     enriched = trades_df.sort_values(['orderid', 'tradetime']).copy()
-    
+
     # Calculate cumulative fill
-    enriched['cumulative_fill'] = enriched.groupby('orderid')['quantity'].cumsum()
+    if _cfg.USE_POLARS_TRANSFORMS:
+        import polars as pl
+        enriched_pl = pl.from_pandas(enriched)
+        enriched_pl = enriched_pl.with_columns(
+            pl.col('quantity').cum_sum().over('orderid').alias('cumulative_fill')
+        )
+        enriched = enriched_pl.to_pandas()
+    else:
+        enriched['cumulative_fill'] = enriched.groupby('orderid')['quantity'].cumsum()
     
     # Identify first and last fills
     enriched['is_first_fill'] = ~enriched.duplicated(subset=['orderid'], keep='first')
@@ -175,19 +190,22 @@ def _aggregate_to_order_level(
     is_simulated: bool = False
 ) -> pd.DataFrame:
     """Aggregate per-trade metrics to order level with all 36 metrics across 5 groups."""
+    if _cfg.USE_POLARS_TRANSFORMS:
+        return _aggregate_to_order_level_polars(trades_df, orders_df, is_simulated)
+
     metrics_list = []
-    
+
     for orderid, order_trades in trades_df.groupby('orderid'):
         # Get order context (take first row since all trades have same order context)
         order_context = order_trades.iloc[0]
-        
+
         # Calculate all metric groups
         fill_metrics = _calculate_fill_metrics(order_trades, order_context)
         price_metrics = _calculate_price_metrics(order_trades, order_context)
         exec_cost_metrics = _calculate_execution_cost_metrics(order_trades, order_context, is_simulated)
         timing_metrics = _calculate_timing_metrics(order_trades, order_context)
         market_context_metrics = _calculate_market_context_metrics(order_trades, order_context)
-        
+
         # Combine all metrics
         order_metrics = {
             'orderid': orderid,
@@ -198,10 +216,145 @@ def _aggregate_to_order_level(
             **timing_metrics,
             **market_context_metrics
         }
-        
+
         metrics_list.append(order_metrics)
-    
+
     return pd.DataFrame(metrics_list)
+
+
+def _aggregate_to_order_level_polars(
+    trades_df: pd.DataFrame,
+    orders_df: pd.DataFrame,
+    is_simulated: bool = False
+) -> pd.DataFrame:
+    """Polars-vectorised replacement for _aggregate_to_order_level (called when USE_POLARS_TRANSFORMS=True)."""
+    import polars as pl
+
+    df = pl.from_pandas(trades_df)  # already sorted by [orderid, tradetime]
+
+    # ── Group aggregation ──────────────────────────────────────────────────────
+    agg = df.group_by('orderid', maintain_order=True).agg([
+        # Group A: Fill
+        pl.col('quantity').sum().alias('qty_filled'),
+        pl.col('order_quantity').first(),
+        pl.len().alias('num_fills'),
+
+        # Group B: Price
+        (pl.col('tradeprice') * pl.col('quantity')).sum()
+          .truediv(pl.col('quantity').sum()).alias('vwap'),
+        pl.col('arrival_midpoint').first(),
+        pl.col('arrival_bid').first(),
+        pl.col('arrival_offer').first(),
+        pl.col('order_price').first().cast(pl.Float64).alias('limit_price'),
+        pl.col('order_side').first(),
+        pl.col('order_timestamp').first(),
+
+        # Group C: Exec cost helpers
+        (
+            (pl.col('trade_midpoint') - pl.col('arrival_midpoint').first())
+            / pl.col('arrival_midpoint').first() * 10000 * pl.col('quantity')
+        ).sum().truediv(pl.col('quantity').sum()).alias('_vw_cost_sim'),
+        (
+            (pl.col('tradeprice') - pl.col('trade_midpoint'))
+            / pl.col('trade_midpoint') * 10000 * pl.col('quantity')
+        ).sum().truediv(pl.col('quantity').sum()).alias('_vw_cost_real'),
+        (pl.col('tradeprice') * pl.col('quantity')).sum().alias('total_execution_value'),
+
+        # Group D: Timing
+        pl.col('tradetime').min().alias('first_fill_time'),
+        pl.col('tradetime').max().alias('last_fill_time'),
+        (pl.col('quantity') * (pl.col('tradetime') - pl.col('order_timestamp').first()))
+          .sum().truediv(pl.col('quantity').sum()).alias('_vw_exec_time_ns'),
+
+        # Group E: Market context
+        pl.col('trade_midpoint').first().alias('first_fill_midpoint'),
+        pl.col('trade_midpoint').last().alias('last_fill_midpoint'),
+        (pl.col('trade_spread') / pl.col('trade_midpoint') * 10000).mean().alias('avg_execution_spread_bps'),
+        (pl.col('trade_spread') / pl.col('trade_midpoint') * 10000).std().alias('spread_volatility_bps'),
+        pl.col('tradeprice').std().alias('_price_std'),
+
+        pl.col('orderbookid').first(),
+    ])
+
+    # ── Post-agg derived columns ───────────────────────────────────────────────
+    agg = agg.with_columns([
+        # Fill derived
+        (pl.col('qty_filled') / pl.col('order_quantity')).alias('fill_ratio'),
+        (pl.col('qty_filled') / pl.col('order_quantity') * 100).alias('fill_rate_pct'),
+        (pl.col('qty_filled') / pl.col('num_fills')).alias('avg_fill_size'),
+        pl.when(pl.col('qty_filled') == 0).then(pl.lit('Unfilled'))
+          .when(pl.col('qty_filled') >= pl.col('order_quantity')).then(pl.lit('Fully Filled'))
+          .otherwise(pl.lit('Partially Filled')).alias('fill_status'),
+
+        # Side multiplier
+        pl.when(pl.col('order_side') == 1).then(pl.lit(1.0))
+          .otherwise(pl.lit(-1.0)).alias('_side_mult'),
+
+        # Arrival spread
+        (pl.col('arrival_offer') - pl.col('arrival_bid')).alias('arrival_spread'),
+
+        # Timing (seconds)
+        ((pl.col('first_fill_time') - pl.col('order_timestamp')) / 1e9)
+          .clip(lower_bound=0.0).alias('time_to_first_fill_sec'),
+        ((pl.col('last_fill_time') - pl.col('first_fill_time')) / 1e9)
+          .clip(lower_bound=0.0).alias('execution_duration_sec'),
+        ((pl.col('last_fill_time') - pl.col('order_timestamp')) / 1e9)
+          .clip(lower_bound=0.0).alias('total_duration_sec'),
+        (pl.col('_vw_exec_time_ns') / 1e9).clip(lower_bound=0.0).alias('vw_exec_time_sec'),
+    ])
+    agg = agg.with_columns([
+        # Arrival spread bps
+        pl.when(pl.col('arrival_midpoint') > 0)
+          .then(pl.col('arrival_spread') / pl.col('arrival_midpoint') * 10000)
+          .otherwise(pl.lit(None)).alias('arrival_spread_bps'),
+
+        # Exec cost arrival
+        pl.when(pl.col('arrival_midpoint') > 0)
+          .then(pl.col('_side_mult') * (pl.col('vwap') - pl.col('arrival_midpoint'))
+                / pl.col('arrival_midpoint') * 10000)
+          .otherwise(pl.lit(None)).alias('exec_cost_arrival_bps'),
+
+        # Exec cost volume-weighted
+        pl.col('_side_mult') * (
+            pl.col('_vw_cost_sim') if is_simulated else pl.col('_vw_cost_real')
+        ).alias('exec_cost_vw_bps'),
+
+        # Price improvement
+        pl.when(pl.col('order_side') == 1)
+          .then(pl.col('limit_price') - pl.col('vwap'))
+          .otherwise(pl.col('vwap') - pl.col('limit_price')).alias('price_improvement'),
+
+        # Market drift
+        pl.when(pl.col('first_fill_midpoint') > 0)
+          .then((pl.col('last_fill_midpoint') - pl.col('first_fill_midpoint'))
+                / pl.col('first_fill_midpoint') * 10000)
+          .otherwise(pl.lit(None)).alias('market_drift_bps'),
+
+        # Price volatility
+        pl.when(pl.col('vwap') > 0)
+          .then(pl.col('_price_std') / pl.col('vwap') * 10000)
+          .otherwise(pl.lit(None)).alias('price_volatility_bps'),
+
+        # avg_time_between_fills
+        pl.when(pl.col('num_fills') > 1)
+          .then(pl.col('execution_duration_sec') / (pl.col('num_fills') - 1))
+          .otherwise(pl.lit(0.0)).alias('avg_time_between_fills'),
+    ])
+    agg = agg.with_columns([
+        # price_improvement_bps
+        pl.when(pl.col('limit_price') > 0)
+          .then(pl.col('price_improvement') / pl.col('limit_price') * 10000)
+          .otherwise(pl.lit(0.0)).alias('price_improvement_bps'),
+
+        # order_timestamp rename for output consistency
+        pl.col('order_timestamp').alias('order_timestamp'),
+        pl.col('first_fill_time').alias('first_fill_time'),
+        pl.col('last_fill_time').alias('last_fill_time'),
+    ])
+
+    # Drop internal columns and convert to pandas for StatisticsEngine boundary
+    internal_cols = [c for c in agg.columns if c.startswith('_')]
+    return agg.drop(internal_cols).to_pandas()
 
 
 def _calculate_fill_metrics(trades: pd.DataFrame, order_context: pd.Series) -> Dict:

@@ -180,34 +180,28 @@ def _calculate_group_summary(group_name, group_df):
 def _calculate_order_details(group_name, group_df):
     """Calculate order-level comparison details."""
     
-    details = []
-    
     real_matched_col = 'totalmatchedquantity' if 'totalmatchedquantity' in group_df.columns else None
-    
-    for _, order in group_df.iterrows():
-        real_matched = order[real_matched_col] if real_matched_col else 0
-        simulated_matched = order['simulated_matched_quantity']
-        quantity = order[col.common.quantity]
-        
-        detail = {
-            'group': group_name,
-            'orderid': order[col.common.orderid],
-            'quantity': quantity,
-            'real_matched': real_matched,
-            'simulated_matched': simulated_matched,
-            'difference': simulated_matched - real_matched,
-            'real_fill_ratio': real_matched / quantity if quantity > 0 else 0,
-            'simulated_fill_ratio': simulated_matched / quantity if quantity > 0 else 0,
-            'fill_ratio_change': (simulated_matched - real_matched) / quantity if quantity > 0 else 0,
-        }
-        
-        # Add status if available
-        if 'simulated_fill_status' in order:
-            detail['simulated_fill_status'] = order['simulated_fill_status']
-        
-        details.append(detail)
-    
-    return details
+
+    real_matched_series = group_df[real_matched_col] if real_matched_col else pd.Series(
+        0, index=group_df.index)
+    qty_safe = group_df[col.common.quantity].clip(lower=1)
+
+    details_df = group_df.assign(
+        group=group_name,
+        real_matched=real_matched_series,
+        simulated_matched=group_df['simulated_matched_quantity'],
+        difference=group_df['simulated_matched_quantity'] - real_matched_series,
+        real_fill_ratio=real_matched_series / qty_safe,
+        simulated_fill_ratio=group_df['simulated_matched_quantity'] / qty_safe,
+        fill_ratio_change=(group_df['simulated_matched_quantity'] - real_matched_series) / qty_safe,
+    ).rename(columns={col.common.orderid: 'orderid', col.common.quantity: 'quantity'})
+
+    output_cols = ['group', 'orderid', 'quantity', 'real_matched', 'simulated_matched',
+                   'difference', 'real_fill_ratio', 'simulated_fill_ratio', 'fill_ratio_change']
+    if 'simulated_fill_status' in group_df.columns:
+        output_cols.append('simulated_fill_status')
+
+    return details_df[output_cols].to_dict('records')
 
 
 def _analyze_group_differences(group_name, group_df):
@@ -296,31 +290,20 @@ def _generate_statistical_summary(comparison_data, output_dir):
     # Overall statistics from group analysis
     if 'group_analysis' in comparison_data:
         analysis_df = comparison_data['group_analysis']
-        
-        for _, row in analysis_df.iterrows():
-            stats.append({
-                'metric': f"{row['group']} - Mean Difference",
-                'value': row['mean_difference'],
-                'description': 'Average difference between simulated and real matched quantity'
-            })
-            
-            stats.append({
-                'metric': f"{row['group']} - Std Difference",
-                'value': row['std_difference'],
-                'description': 'Standard deviation of differences'
-            })
-            
-            stats.append({
-                'metric': f"{row['group']} - % Better in Simulation",
-                'value': row['pct_simulated_better'],
-                'description': 'Percentage of orders with better fill in simulation'
-            })
-            
-            stats.append({
-                'metric': f"{row['group']} - Total Quantity Impact %",
-                'value': row['total_quantity_impact_pct'],
-                'description': 'Total impact on quantity as percentage'
-            })
+
+        metric_specs = [
+            ('mean_difference',        'Mean Difference',          'Average difference between simulated and real matched quantity'),
+            ('std_difference',         'Std Difference',           'Standard deviation of differences'),
+            ('pct_simulated_better',   '% Better in Simulation',   'Percentage of orders with better fill in simulation'),
+            ('total_quantity_impact_pct', 'Total Quantity Impact %', 'Total impact on quantity as percentage'),
+        ]
+        for col_name, label, description in metric_specs:
+            if col_name in analysis_df.columns:
+                rows = analysis_df[['group', col_name]].copy()
+                rows['metric'] = rows['group'] + f' - {label}'
+                rows['description'] = description
+                rows = rows.rename(columns={col_name: 'value'})[['metric', 'value', 'description']]
+                stats.extend(rows.to_dict('records'))
     
     # Aggregate statistics from group summary
     if 'group_summary' in comparison_data:
@@ -903,8 +886,9 @@ def _aggregate_simulated_trades_per_order(simulated_trades, order_summary, order
     if order_summary is not None and not order_summary.empty:
         sweep_orderids = order_summary['orderid'].unique().tolist()
     else:
-        # If no order_summary, get from simulated trades aggressor rows
-        sweep_orderids = simulated_trades[simulated_trades['passiveaggressive'] == 1]['orderid'].unique().tolist()
+        # If no order_summary, derive sweep orderids from all simulated trade rows
+        # (do not filter by passiveaggressive — sweeps appear as PA=1 in Phase 1 and PA=0 in Phase 2)
+        sweep_orderids = simulated_trades['orderid'].unique().tolist()
     
     # Create order context for metrics calculation
     if orders_df is not None and not orders_df.empty:
@@ -915,9 +899,10 @@ def _aggregate_simulated_trades_per_order(simulated_trades, order_summary, order
         if 'timestamp' not in order_context.columns and 'arrival_time' in order_context.columns:
             order_context['timestamp'] = order_context['arrival_time']
     else:
-        # Fallback: create minimal order data from simulated trades (no arrival NBBO)
-        aggressor_trades = simulated_trades[simulated_trades['passiveaggressive'] == 1]
-        order_context = aggressor_trades.groupby('orderid').agg({
+        # Fallback: create minimal order data from simulated trades (no arrival NBBO).
+        # Use all rows for each sweep orderid — both PA=1 (Phase 1 aggressor) and
+        # PA=0 (Phase 2 resting) rows carry consistent side/price metadata.
+        order_context = simulated_trades[simulated_trades['orderid'].isin(sweep_orderids)].groupby('orderid').agg({
             'tradetime': 'min',  # Use first trade time as proxy for order time
             'side': 'first',
             'quantity': 'sum',  # Total matched quantity
@@ -935,9 +920,9 @@ def _aggregate_simulated_trades_per_order(simulated_trades, order_summary, order
         orders_df=order_context,
         nbbo_df=None,
         filter_orderids=sweep_orderids,
-        role_filter='aggressor',  # Only aggressor rows
-        prefix='sim_',  # Add sim_ prefix
-        is_simulated=True  # Simulated trades
+        role_filter=None,  # Include both Phase 1 (PA=1) and Phase 2 resting (PA=0) fills
+        prefix='sim_',
+        is_simulated=True,
     )
     
     return metrics['per_order_metrics']

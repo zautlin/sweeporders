@@ -46,6 +46,11 @@ def parse_arguments():
                         help='Enable parallel processing for Stage 2 (overrides config)')
     parser.add_argument('--sequential', action='store_true',
                         help='Force sequential processing for Stage 2 (overrides config)')
+    parser.add_argument('--processing-mode', type=str, choices=['file', 'memory'],
+                        default=None,
+                        help='Processing mode: "file" writes intermediate partitions to disk '
+                             '(resumable), "memory" keeps everything in RAM (faster, no disk I/O). '
+                             f'Default from config: {config.PROCESSING_MODE}')
     
     # Statistical testing options
     stats_group = parser.add_mutually_exclusive_group()
@@ -200,12 +205,19 @@ def _build_security_file_mappings(securities, date, stages):
 
 def build_runtime_config(args):
     """Build runtime config from CLI args and config."""
-    discovery = SecurityDiscovery(min_orders=args.min_orders, min_trades=args.min_trades)
+    discovery = SecurityDiscovery(
+        raw_data_dir=config.PROJECT_ROOT / 'data/raw',
+        min_orders=args.min_orders,
+        min_trades=args.min_trades,
+    )
     
     date = _handle_list_operations(args, discovery)
     stages = _resolve_stages_to_run(args)
     enable_parallel = _determine_parallel_mode(args)
     stats_engine = _create_stats_engine(args)
+
+    if args.processing_mode:
+        config.PROCESSING_MODE = args.processing_mode
     
     securities_to_process = []
     if stages is None or any(s in [1, 2, 3] for s in stages):

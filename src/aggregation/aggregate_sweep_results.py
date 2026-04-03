@@ -93,42 +93,76 @@ def load_and_tag_file(file_path, date_str, orderbookid, ticker):
 
 
 def aggregate_results(outputs_dir='data/outputs'):
-    """Aggregate all sweep order comparison results into a single dataset."""
+    """Aggregate all sweep order comparison results into a single dataset.
+
+    When USE_DUCKDB_IO is enabled, a single DuckDB glob scan replaces the
+    per-partition CSV load loop.  The pandas fallback is unchanged.
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    import config.config as _cfg
+
     logger.info("Starting aggregation of sweep order results...")
-    
+
+    if _cfg.USE_DUCKDB_IO:
+        try:
+            import duckdb
+            import polars as pl
+            from utils.file_utils import query_partitions
+            outputs_path = Path(outputs_dir)
+            glob_pattern = str(outputs_path / '*' / '*' / 'matched' / 'sweep_order_comparison_detailed.csv')
+            conn = duckdb.connect()
+            df_pl = pl.from_arrow(conn.execute(
+                f"SELECT * FROM read_csv_auto('{glob_pattern}', union_by_name=True)"
+            ).arrow())
+            if len(df_pl) == 0:
+                logger.error("No comparison files found via DuckDB glob!")
+                return None
+            aggregated_df = df_pl.to_pandas()
+            # Add ticker via SECURITY_MAPPING if not already present
+            if 'ticker' not in aggregated_df.columns and 'orderbookid' in aggregated_df.columns:
+                aggregated_df['ticker'] = aggregated_df['orderbookid'].astype(str).map(SECURITY_MAPPING).fillna(
+                    'UNKNOWN_' + aggregated_df['orderbookid'].astype(str)
+                )
+            aggregated_df = aggregated_df.sort_values(['ticker', 'date', 'orderid']).reset_index(drop=True)
+            logger.info(f"Aggregation complete (DuckDB): {len(aggregated_df)} orders")
+            return aggregated_df
+        except Exception as e:
+            logger.warning(f"DuckDB aggregation failed ({e}), falling back to pandas loop")
+
     # Find all comparison files
     files = find_detailed_comparison_files(outputs_dir)
-    
+
     if not files:
         logger.error("No comparison files found!")
         return None
-    
+
     logger.info(f"Found {len(files)} files to aggregate")
-    
+
     # Load and concatenate all files
     dfs = []
     total_orders = 0
-    
+
     for file_path, date_str, orderbookid, ticker in files:
         df = load_and_tag_file(file_path, date_str, orderbookid, ticker)
-        
+
         if df is not None:
             dfs.append(df)
             total_orders += len(df)
-    
+
     if not dfs:
         logger.error("No data loaded from any files!")
         return None
-    
+
     # Concatenate all DataFrames
     logger.info(f"Concatenating {len(dfs)} DataFrames with {total_orders} total orders...")
     aggregated_df = pd.concat(dfs, ignore_index=True)
-    
+
     # Sort by ticker, date, orderid for easier analysis
     aggregated_df = aggregated_df.sort_values(['ticker', 'date', 'orderid']).reset_index(drop=True)
-    
+
     logger.info(f"Aggregation complete: {len(aggregated_df)} orders from {len(dfs)} securities")
-    
+
     return aggregated_df
 
 

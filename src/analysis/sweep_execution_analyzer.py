@@ -51,8 +51,6 @@ def load_order_metadata(partition_dir, sweep_orderids):
     df = df[df['orderid'].isin(sweep_orderids) & (df[col.orders.order_type] == 2048)].copy()
     
     # Rename and select columns
-    df = df.rename(columns={'order_id': 'orderid'})
-    
     # De-duplicate: keep FIRST row per orderid (arrival state, not final state)
     # Sort by timestamp to ensure we get the earliest state for arrival time
     df = df.sort_values(['orderid', 'timestamp'])
@@ -114,9 +112,11 @@ def load_simulated_trades(partition_dir, sweep_orderids):
     
     df = fu.safe_read_csv(filepath, required=True)
     
-    # CRITICAL: Filter to sweep orders AND passive side only (passiveaggressive = 1)
-    # The simulation creates paired trades: passive=sweep order, aggressive=counterparty
-    df = df[(df[col.common.orderid].isin(sweep_orderids)) & (df[col.trades.passive_aggressive] == 1)].copy()
+    # Filter to sweep orders only. Do NOT filter on passiveaggressive: in Phase 1 the
+    # sweep is the aggressor (passiveaggressive=1) while in Phase 2 (resting) it is the
+    # passive side (passiveaggressive=0). Filtering on orderid alone is sufficient because
+    # each trade row already carries the originating orderid on that leg.
+    df = df[df[col.common.orderid].isin(sweep_orderids)].copy()
     
     # Calculate trade midpoint
     df['trade_midpoint'] = (df[col.trades.national_bid_snapshot] + df[col.trades.national_offer_snapshot]) / 2
@@ -433,8 +433,12 @@ def calculate_summary_statistics(comparison_df):
     for metric in metrics_to_analyze:
         real_col = f'real_{metric}'
         sim_col = f'sim_{metric}'
-        diff_col = f'{metric.replace("_", "_")}_diff' if f'{metric}_diff' not in comparison_df.columns else f'{metric}_diff'
-        
+
+        if real_col not in comparison_df.columns or sim_col not in comparison_df.columns:
+            continue
+
+        diff_col = f'{metric}_diff'
+
         # Handle different diff column naming
         if diff_col not in comparison_df.columns:
             if 'exec_cost_arrival' in metric:
@@ -443,7 +447,7 @@ def calculate_summary_statistics(comparison_df):
                 diff_col = 'exec_cost_vw_diff_bps'
             elif 'effective_spread' in metric:
                 diff_col = 'effective_spread_diff_pct'
-            elif metric == 'exec_time_sec':
+            elif metric == 'execution_duration_sec':
                 diff_col = 'exec_time_diff_sec'
             elif metric == 'time_to_first_fill_sec':
                 diff_col = 'time_to_first_fill_diff_sec'
@@ -535,7 +539,10 @@ def perform_statistical_tests(comparison_df, stats_engine=None):
     for metric in metrics_to_analyze:
         real_col = f'real_{metric}'
         sim_col = f'sim_{metric}'
-        
+
+        if real_col not in comparison_df.columns or sim_col not in comparison_df.columns:
+            continue
+
         # Extract paired data
         real_values = comparison_df[real_col].dropna()
         sim_values = comparison_df[sim_col].dropna()
@@ -576,8 +583,8 @@ def perform_statistical_tests(comparison_df, stats_engine=None):
                     if wilcoxon_result:
                         w_stat = wilcoxon_result.statistic
                         w_pvalue = wilcoxon_result.pvalue
-                except:
-                    pass  # Wilcoxon can fail for various reasons
+                except Exception:
+                    pass  # Wilcoxon can fail (e.g. all-zero differences)
             
             # Correlation
             if n_pairs >= 3:
@@ -686,10 +693,13 @@ def calculate_quantile_comparison(comparison_df):
     for metric in metrics_to_analyze:
         real_col = f'real_{metric}'
         sim_col = f'sim_{metric}'
-        
+
+        if real_col not in comparison_df.columns or sim_col not in comparison_df.columns:
+            continue
+
         real_values = comparison_df[real_col].dropna()
         sim_values = comparison_df[sim_col].dropna()
-        
+
         for q in quantiles:
             real_q = real_values.quantile(q)
             sim_q = sim_values.quantile(q)
@@ -718,7 +728,12 @@ def print_statistical_summary(summary_df, tests_df, n_matched, n_unmatched):
     print(f"Matched Orders (Set A):   {n_matched:>6}")
     print(f"Unmatched Orders (Set B): {n_unmatched:>6}")
     print(f"{'='*90}")
-    
+
+    if 'metric_name' not in summary_df.columns or 'metric_name' not in tests_df.columns:
+        print("  (No metrics to display — no matched orders)")
+        print(f"{'='*90}")
+        return
+
     # Key metrics to display
     display_metrics = [
         ('exec_cost_arrival_bps', 'Execution Cost (Arrival)', 'bps'),
@@ -728,7 +743,7 @@ def print_statistical_summary(summary_df, tests_df, n_matched, n_unmatched):
         ('qty_filled', 'Quantity Filled', 'units'),
         ('fill_rate_pct', 'Fill Rate', '%'),
         ('num_fills', 'Number of Fills', 'count'),
-        ('exec_time_sec', 'Execution Time', 'sec'),
+        ('execution_duration_sec', 'Execution Time', 'sec'),
         ('vw_exec_time_sec', 'VW Execution Time', 'sec')
     ]
     
@@ -869,7 +884,20 @@ def write_output_files(comparison_df, summary_df, tests_df, quantiles_df, unmatc
     unmatched_df.to_csv(unmatched_path, index=False)
     print(f"    ✓ {unmatched_path.name}: {len(unmatched_df)} rows")
     
-    # Generate validation report
+    # Generate validation report — safely extract exec_cost summary if available.
+    def _safe_float(series):
+        """Return first value as float, or None if empty or NaN."""
+        if len(series) == 0:
+            return None
+        v = series.values[0]
+        return None if (v is None or (isinstance(v, float) and np.isnan(v))) else float(v)
+
+    _empty_summary = pd.DataFrame(columns=['metric_name', 'real_mean', 'sim_mean', 'diff_mean'])
+    _empty_tests   = pd.DataFrame(columns=['metric_name', 'paired_t_pvalue'])
+    _sum = summary_df if 'metric_name' in summary_df.columns else _empty_summary
+    _tst = tests_df   if 'metric_name' in tests_df.columns   else _empty_tests
+    cost_rows = _sum[_sum.metric_name == 'exec_cost_arrival_bps']
+    test_rows  = _tst[_tst.metric_name == 'exec_cost_arrival_bps']
     validation_report = {
         'timestamp': datetime.now().isoformat(),
         'partition_key': partition_key,
@@ -877,10 +905,10 @@ def write_output_files(comparison_df, summary_df, tests_df, quantiles_df, unmatc
         'unmatched_orders_count': len(unmatched_df),
         'metrics_analyzed': len(summary_df),
         'key_findings': {
-            'avg_real_exec_cost_bps': float(summary_df[summary_df.metric_name == 'exec_cost_arrival_bps']['real_mean'].values[0]),
-            'avg_sim_exec_cost_bps': float(summary_df[summary_df.metric_name == 'exec_cost_arrival_bps']['sim_mean'].values[0]),
-            'avg_cost_savings_bps': float(summary_df[summary_df.metric_name == 'exec_cost_arrival_bps']['diff_mean'].values[0]),
-            'cost_diff_pvalue': float(tests_df[tests_df.metric_name == 'exec_cost_arrival_bps']['paired_t_pvalue'].values[0])
+            'avg_real_exec_cost_bps': _safe_float(cost_rows['real_mean']),
+            'avg_sim_exec_cost_bps':  _safe_float(cost_rows['sim_mean']),
+            'avg_cost_savings_bps':   _safe_float(cost_rows['diff_mean']),
+            'cost_diff_pvalue':       _safe_float(test_rows['paired_t_pvalue']),
         }
     }
     
@@ -915,7 +943,7 @@ def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys, stats_en
         
         # Phase 1: Load data
         print(f"\nPhase 1: Loading data...")
-        sweep_orderids, exec_time_df = load_sweep_order_universe(partition_dir)
+        sweep_orderids, _ = load_sweep_order_universe(partition_dir)
         
         # Skip partition if no sweep orders
         if len(sweep_orderids) == 0:
@@ -934,7 +962,7 @@ def analyze_sweep_execution(processed_dir, outputs_dir, partition_keys, stats_en
         
         # Phase 2: Identify order sets
         print(f"\nPhase 2: Identifying order sets...")
-        set_a_orderids, set_b_orderids, orphan_sim = identify_order_sets(
+        set_a_orderids, set_b_orderids, _ = identify_order_sets(
             sweep_orderids, real_trades_df, sim_trades_df
         )
         

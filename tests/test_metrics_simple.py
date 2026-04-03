@@ -12,14 +12,13 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.pipeline.trade_metrics_calculator import TradeMetricsCalculator
+from src.pipeline.trade_metrics_calculator import calculate_trade_metrics
 
 
 def test_basic_functionality():
     """Test basic calculator functionality."""
     print("\n=== Test 1: Basic Functionality ===")
-    
-    calculator = TradeMetricsCalculator()
+
     
     # Create sample data
     trades = pd.DataFrame({
@@ -44,8 +43,8 @@ def test_basic_functionality():
     })
     
     # Calculate metrics
-    result = calculator.calculate_metrics(trades, orders)
-    
+    result = calculate_trade_metrics(trades, orders)
+
     print(f"✓ Calculator executed successfully")
     print(f"✓ Per-trade metrics: {len(result['per_trade_metrics'])} rows")
     print(f"✓ Per-order metrics: {len(result['per_order_metrics'])} rows")
@@ -112,9 +111,7 @@ def test_basic_functionality():
 def test_sell_order():
     """Test sell order metrics."""
     print("\n=== Test 2: Sell Order ===")
-    
-    calculator = TradeMetricsCalculator()
-    
+
     trades = pd.DataFrame({
         'orderid': [2],
         'tradetime': [1725494540000000000],
@@ -134,9 +131,9 @@ def test_sell_order():
         'national_offer': [3340]
     })
     
-    result = calculator.calculate_metrics(trades, orders)
+    result = calculate_trade_metrics(trades, orders)
     metrics = result['per_order_metrics'].iloc[0]
-    
+
     print(f"  vwap: {metrics['vwap']:.2f}")
     print(f"  limit_price: {metrics['limit_price']}")
     print(f"  price_improvement: {metrics['price_improvement']:.2f}")
@@ -155,9 +152,7 @@ def test_sell_order():
 def test_prefix_application():
     """Test sim_ prefix application."""
     print("\n=== Test 3: Prefix Application ===")
-    
-    calculator = TradeMetricsCalculator()
-    
+
     trades = pd.DataFrame({
         'orderid': [1],
         'tradetime': [1000],
@@ -177,7 +172,7 @@ def test_prefix_application():
     })
     
     # Calculate with sim_ prefix
-    result = calculator.calculate_metrics(trades, orders, prefix='sim_')
+    result = calculate_trade_metrics(trades, orders, prefix='sim_')
     metrics = result['per_order_metrics']
     
     print(f"  Columns: {list(metrics.columns[:10])}...")
@@ -200,9 +195,7 @@ def test_prefix_application():
 def test_role_filtering():
     """Test aggressor role filtering."""
     print("\n=== Test 4: Role Filtering ===")
-    
-    calculator = TradeMetricsCalculator()
-    
+
     # Trades with mixed aggressor/passive rows
     trades = pd.DataFrame({
         'orderid': [1, 1, 1, 1],
@@ -223,7 +216,7 @@ def test_role_filtering():
     })
     
     # Filter for aggressor only
-    result = calculator.calculate_metrics(trades, orders, role_filter='aggressor')
+    result = calculate_trade_metrics(trades, orders, role_filter='aggressor')
     
     print(f"  Total trades: 4")
     print(f"  Aggressor trades: {len(result['per_trade_metrics'])}")
@@ -239,11 +232,9 @@ def test_role_filtering():
 def test_edge_cases():
     """Test edge cases."""
     print("\n=== Test 5: Edge Cases ===")
-    
-    calculator = TradeMetricsCalculator()
-    
+
     # Empty trades
-    result = calculator.calculate_metrics(pd.DataFrame(), pd.DataFrame())
+    result = calculate_trade_metrics(pd.DataFrame(), pd.DataFrame())
     assert len(result['per_order_metrics']) == 0, "Empty trades should return empty result"
     print("  ✓ Empty trades handled")
     
@@ -264,9 +255,9 @@ def test_edge_cases():
         'national_offer': [101]
     })
     
-    result = calculator.calculate_metrics(trades, orders)
+    result = calculate_trade_metrics(trades, orders)
     metrics = result['per_order_metrics'].iloc[0]
-    
+
     assert metrics['execution_duration_sec'] == 0.0, "Single fill should have 0 execution duration"
     assert metrics['avg_time_between_fills'] == 0.0, "Single fill should have 0 avg time between"
     print("  ✓ Single fill handled")
