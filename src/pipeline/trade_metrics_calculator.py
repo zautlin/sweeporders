@@ -642,14 +642,36 @@ def _apply_prefix(metrics_df: pd.DataFrame, prefix: str) -> pd.DataFrame:
     """Apply prefix to all metric columns except identifiers (orderid, orderbookid)."""
     if not prefix or len(metrics_df) == 0:
         return metrics_df
-    
+
     # Columns that should NOT be prefixed
     identifier_columns = ['orderid', 'orderbookid']
-    
+
     # Rename all columns except identifiers
     rename_map = {}
     for col in metrics_df.columns:
         if col not in identifier_columns:
             rename_map[col] = f"{prefix}{col}"
-    
+
     return metrics_df.rename(columns=rename_map)
+
+
+class TradeMetricsCalculator:
+    """Thin class wrapper around calculate_trade_metrics for test compatibility."""
+
+    def calculate_metrics(
+        self,
+        trades_df: pd.DataFrame,
+        orders_df: pd.DataFrame,
+        prefix: str = '',
+        role_filter: Optional[str] = None,
+        nbbo_df: Optional[pd.DataFrame] = None,
+        is_simulated: bool = False,
+    ) -> Dict[str, pd.DataFrame]:
+        return calculate_trade_metrics(
+            trades_df,
+            orders_df,
+            nbbo_df=nbbo_df,
+            role_filter=role_filter,
+            prefix=prefix,
+            is_simulated=is_simulated,
+        )
