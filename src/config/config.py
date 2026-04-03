@@ -44,9 +44,12 @@ MAX_PARALLEL_WORKERS = NUM_WORKERS  # Number of parallel workers for partition p
 #   'stream': Feed orders through the matching engine as dict iterators instead of DataFrames.
 #             Eliminates per-sweep DataFrame slice/copy/iterrows — same correctness,
 #             lower per-sweep allocation overhead.  Phase 2 resting still uses DataFrames.
-PROCESSING_MODE = 'file'  # 'file' | 'memory' | 'stream'
+#   'stream_file': Like 'file' (reads from data/processed/ per partition, no Stage 1 data
+#             kept in memory across partitions) but runs the streaming matching engine
+#             (dict iterators, heapq) instead of the DataFrame-based engine.
+PROCESSING_MODE = 'file'  # 'file' | 'memory' | 'stream' | 'stream_file'
 
-_VALID_PROCESSING_MODES = {'file', 'memory', 'stream'}
+_VALID_PROCESSING_MODES = {'file', 'memory', 'stream', 'stream_file'}
 if PROCESSING_MODE not in _VALID_PROCESSING_MODES:
     raise ValueError(f"Invalid PROCESSING_MODE '{PROCESSING_MODE}'. Must be one of {_VALID_PROCESSING_MODES}")
 
@@ -57,6 +60,7 @@ if PROCESSING_MODE not in _VALID_PROCESSING_MODES:
 
 USE_DUCKDB_IO         = False   # Use DuckDB for CSV I/O (Phases 2–3)
 USE_POLARS_TRANSFORMS = False   # Use Polars for in-memory transforms (Phase 4)
+STREAM_CHUNK_SIZE     = 10_000  # Rows per CSV chunk when PROCESSING_MODE='stream'
 
 
 # ============================================================================

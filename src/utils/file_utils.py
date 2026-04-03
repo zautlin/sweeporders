@@ -1,8 +1,12 @@
 """File I/O utilities for pipeline operations."""
 
 import pandas as pd
-import polars as pl
 from pathlib import Path
+
+try:
+    import polars as pl
+except ImportError:
+    pl = None
 
 import sys
 import os
@@ -52,7 +56,7 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        if isinstance(df, pl.DataFrame):
+        if pl is not None and isinstance(df, pl.DataFrame):
             df.write_csv(filepath)
         else:
             df.to_csv(filepath, compression=compression, index=False, **kwargs)
@@ -60,7 +64,7 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
         raise IOError(f"Error writing {filepath}: {e}")
 
 
-def query_partitions(base_dir, filename, where_sql="") -> pl.DataFrame:
+def query_partitions(base_dir, filename, where_sql=""):
     """Query one file across every date/orderbookid partition in a single DuckDB pass.
 
     Usage::

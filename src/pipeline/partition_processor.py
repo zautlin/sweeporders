@@ -423,6 +423,44 @@ def simulate_sweep_matching_streaming_sequential(orders_by_partition, order_stat
     return simulation_results_by_partition
 
 
+def simulate_sweep_matching_file_streaming_sequential(partition_keys, processed_dir, output_dir,
+                                                      reference_results=None):
+    """
+    Step 7 (stream_file): Load each partition's data from data/processed/ CSVs one at a
+    time, then run the streaming matching engine (dict iterators, heapq).
+
+    Like 'file' mode in that no Stage-1 DataFrames are kept in memory across partitions,
+    but uses simulate_partition_streaming (lower per-sweep allocation) instead of
+    simulate_partition.
+    """
+    print("\n[7/11] Simulating sweep matching (file-streaming mode)...")
+
+    simulation_results_by_partition = {}
+
+    for partition_key in partition_keys:
+        partition_data = dp.load_partition_data(partition_key, processed_dir)
+        if not partition_data or 'orders_before' not in partition_data:
+            continue
+
+        _inject_lit_orders(partition_data, partition_key)
+
+        sim_results = ss.simulate_partition_streaming(partition_key, partition_data)
+        if not sim_results:
+            continue
+
+        fu.save_simulation_results(sim_results, output_dir, partition_key)
+        if cfg.SIMULATE_RESTING_PHASE and 'resting_trades' in sim_results:
+            fu.save_resting_simulation_results(sim_results, output_dir, partition_key)
+
+        simulation_results_by_partition[partition_key] = {
+            'order_summary':    sim_results['order_summary'],
+            'simulated_trades': sim_results['simulated_trades'],
+        }
+
+    print(f"   Completed file-streaming sweep simulation for {len(simulation_results_by_partition)} partitions")
+    return simulation_results_by_partition
+
+
 def calculate_simulated_metrics_sequential(orders_by_partition, simulation_results_by_partition,
                                            processed_dir, output_dir, order_states=None):
     """Step 8: Calculate simulated metrics for all partitions (sequential processing)."""

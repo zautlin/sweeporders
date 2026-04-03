@@ -119,6 +119,12 @@ def _run_simulation_and_metrics(data):
             config.OUTPUTS_DIR,
             reference_results=data.get('reference'),
         )
+    elif config.PROCESSING_MODE == 'stream_file':
+        simulation_results_by_partition = pp.simulate_sweep_matching_file_streaming_sequential(
+            data['partition_keys'],
+            config.PROCESSED_DIR,
+            config.OUTPUTS_DIR,
+        )
     else:
         simulation_results_by_partition = pp.simulate_sweep_matching_sequential(
             data['orders'],
@@ -180,6 +186,12 @@ def run_stage_2_simulation(data, enable_parallel):
             data['last_execution'],
             data['nbbo'],
             config.OUTPUTS_DIR
+        )
+    elif config.PROCESSING_MODE == 'stream_file':
+        return pp.simulate_sweep_matching_file_streaming_sequential(
+            data['partition_keys'],
+            config.PROCESSED_DIR,
+            config.OUTPUTS_DIR,
         )
     else:
         return pp.simulate_sweep_matching_sequential(

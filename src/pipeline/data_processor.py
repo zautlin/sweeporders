@@ -1000,3 +1000,218 @@ def stream_partition_data(partition_data):
         'sweep_orders_iter': stream_sweep_orders_for_partition(partition_data),
         'all_orders_iter':   stream_orders_for_partition(partition_data),
     }
+
+
+# ============================================================================
+# FILE-LEVEL STREAMING (read CSV on-disk row-by-row, never full DataFrame)
+# ============================================================================
+
+# Sentinel and default constants (mirrored from sweep_simulator to avoid
+# a circular import at module level).
+_INT64_SENTINEL   = -9223372036854775808
+_MIDTICK_NO       = 2
+_CR_NEW_ORDER     = 6
+_ORDERTYPE_LIMIT  = 1
+_PRIORITY_LOSS_CR = {7, 8, 39}
+
+
+def _safe_int(val, default=0):
+    """Cast val to int with a fallback for None / NaN / empty string."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        return default if f != f else int(f)  # f != f is the NaN test
+    except (ValueError, TypeError):
+        return default
+
+
+def _eff_ts(ts, tc, obp, cr):
+    """Compute effective_timestamp for a single row (mirrors _get_effective_timestamp)."""
+    if obp > 0 or cr in _PRIORITY_LOSS_CR:
+        return tc if tc else ts
+    return ts
+
+
+def _normalise_contra_row(row):
+    """
+    Normalise one raw CSV row dict into a matching-ready contra order dict.
+    Mirrors the per-column casts in _prepare_all_orders_for_matching.
+    """
+    ts  = _safe_int(row.get('timestamp', 0))
+    tc  = _safe_int(row.get('timechanged'), ts) or ts
+    obp = _safe_int(row.get('orderbookposition', 0))
+    cr  = _safe_int(row.get('changereason'), _CR_NEW_ORDER)
+
+    dq_raw = row.get('display_quantity')
+    dq = (None if dq_raw is None or (isinstance(dq_raw, float) and dq_raw != dq_raw)
+          else _safe_int(dq_raw))
+
+    return {
+        'orderid':                   _safe_int(row.get('orderid', 0)),
+        'timestamp':                 ts,
+        'sequence':                  _safe_int(row.get('sequence', 0)),
+        'side':                      _safe_int(row.get('side', 0)),
+        'quantity':                  _safe_int(row.get('quantity', 0)),
+        'orderbookid':               _safe_int(row.get('orderbookid', 0)),
+        'bid':                       _safe_int(row.get('bid', 0)),
+        'offer':                     _safe_int(row.get('offer', 0)),
+        'national_bid':              _safe_int(row.get('national_bid'), _INT64_SENTINEL),
+        'national_offer':            _safe_int(row.get('national_offer'), _INT64_SENTINEL),
+        'minimumquantity':           _safe_int(row.get('minimumquantity', 0)),
+        'singlefillminimumquantity': _safe_int(row.get('singlefillminimumquantity', 0)),
+        'crossingkey':               _safe_int(row.get('crossingkey', 0)),
+        'participantid':             _safe_int(row.get('participantid', 0)),
+        'midtick':                   _safe_int(row.get('midtick'), _MIDTICK_NO),
+        'timevalidity':              _safe_int(row.get('timevalidity'), 1536),
+        'price':                     _safe_int(row.get('price', 0)),
+        'changereason':              cr,
+        'orderbookposition':         obp,
+        'timechanged':               tc,
+        'ordertype':                 _safe_int(row.get('ordertype'), _ORDERTYPE_LIMIT),
+        'display_quantity':          dq,
+        'exchangeordertype':         _safe_int(row.get('exchangeordertype', 0)),
+        'effective_timestamp':       _eff_ts(ts, tc, obp, cr),
+    }
+
+
+def _normalise_sweep_row(row, le):
+    """
+    Normalise one raw orders_after row dict merged with a last_execution entry.
+    Mirrors the per-column casts in _prepare_sweep_orders.
+    """
+    ts  = _safe_int(row.get('timestamp', 0))
+    tc  = _safe_int(row.get('timechanged'), ts) or ts
+    obp = _safe_int(row.get('orderbookposition', 0))
+    cr  = _safe_int(row.get('changereason'), _CR_NEW_ORDER)
+
+    dq_raw = row.get('display_quantity')
+    dq = (None if dq_raw is None or (isinstance(dq_raw, float) and dq_raw != dq_raw)
+          else _safe_int(dq_raw))
+
+    eff = _eff_ts(ts, tc, obp, cr)
+
+    return {
+        'orderid':                   _safe_int(row.get('orderid', 0)),
+        'timestamp':                 ts,
+        'sequence':                  _safe_int(row.get('sequence', 0)),
+        'side':                      _safe_int(row.get('side', 0)),
+        'leavesquantity':            _safe_int(row.get('leavesquantity', 0)),
+        'matched_quantity':          _safe_int(row.get('matched_quantity',
+                                               row.get('totalmatchedquantity', 0))),
+        'price':                     _safe_int(row.get('price', 0)),
+        'first_execution_time':      _safe_int(le.get('first_execution_time'), ts),
+        'last_execution_time':       _safe_int(le.get('last_execution_time'), ts),
+        'orderbookid':               _safe_int(row.get('orderbookid', 0)),
+        'minimumquantity':           _safe_int(row.get('minimumquantity', 0)),
+        'singlefillminimumquantity': _safe_int(row.get('singlefillminimumquantity', 0)),
+        'crossingkey':               _safe_int(row.get('crossingkey', 0)),
+        'participantid':             _safe_int(row.get('participantid', 0)),
+        'midtick':                   _safe_int(row.get('midtick'), _MIDTICK_NO),
+        'changereason':              cr,
+        'orderbookposition':         obp,
+        'timechanged':               tc,
+        'display_quantity':          dq,
+        'preferenceonly':            _safe_int(row.get('preferenceonly', 0)),
+        'effective_timestamp':       eff,
+        'lost_priority':             (obp > 0) or (cr in _PRIORITY_LOSS_CR),
+    }
+
+
+def stream_orders_from_file(orders_path, eligible_order_types=None, chunk_size=None):
+    """
+    Generator: stream contra-pool orders from a CSV file, yielding normalised
+    order dicts in (effective_timestamp, sequence) order.
+
+    Reads chunk_size rows at a time — only that many rows are in memory at once.
+    Each chunk is sorted internally; heapq.merge produces a globally-sorted
+    stream (correct when the file is roughly time-ordered, as order logs are).
+    """
+    import heapq
+    if eligible_order_types is None:
+        from pipeline.sweep_simulator import ELIGIBLE_MATCHING_ORDER_TYPES
+        eligible_order_types = ELIGIBLE_MATCHING_ORDER_TYPES
+    if chunk_size is None:
+        chunk_size = _cfg.STREAM_CHUNK_SIZE
+
+    orders_path = Path(orders_path)
+    if not orders_path.exists():
+        return
+
+    et_col = 'exchangeordertype'
+
+    def _chunk_to_sorted_iter(chunk):
+        if et_col in chunk.columns:
+            chunk = chunk[chunk[et_col].isin(eligible_order_types)]
+        if len(chunk) == 0:
+            return iter([])
+        rows = [_normalise_contra_row(r) for r in chunk.to_dict('records')]
+        rows.sort(key=lambda r: (r['effective_timestamp'], r['sequence']))
+        return iter(rows)
+
+    chunk_iters = [_chunk_to_sorted_iter(c)
+                   for c in pd.read_csv(orders_path, chunksize=chunk_size)]
+    yield from heapq.merge(*chunk_iters,
+                           key=lambda r: (r['effective_timestamp'], r['sequence']))
+
+
+def stream_sweep_orders_from_file(orders_after_path, last_execution_df, chunk_size=None):
+    """
+    Generator: stream sweep orders from a CSV file, yielding normalised sweep
+    order dicts in (effective_timestamp, sequence) order.
+
+    last_execution_df stays in memory (small — one row per sweep order).
+    Only rows whose orderid appears in last_execution_df are yielded.
+    """
+    import heapq
+    if chunk_size is None:
+        chunk_size = _cfg.STREAM_CHUNK_SIZE
+
+    orders_after_path = Path(orders_after_path)
+    if not orders_after_path.exists():
+        return
+    if last_execution_df is None or len(last_execution_df) == 0:
+        return
+
+    # Build lookup: orderid → last_execution row dict (small, stays in memory)
+    le_lookup = {int(r['orderid']): r
+                 for r in last_execution_df.to_dict('records')}
+
+    et_col = 'exchangeordertype'
+
+    def _chunk_to_sorted_iter(chunk):
+        if et_col in chunk.columns:
+            chunk = chunk[chunk[et_col] == SWEEP_ORDER_TYPE]
+        if len(chunk) == 0:
+            return iter([])
+        rows = []
+        for r in chunk.to_dict('records'):
+            le = le_lookup.get(_safe_int(r.get('orderid', 0)))
+            if le is None:
+                continue
+            rows.append(_normalise_sweep_row(r, le))
+        rows.sort(key=lambda r: (r['effective_timestamp'], r['sequence']))
+        return iter(rows)
+
+    chunk_iters = [_chunk_to_sorted_iter(c)
+                   for c in pd.read_csv(orders_after_path, chunksize=chunk_size)]
+    yield from heapq.merge(*chunk_iters,
+                           key=lambda r: (r['effective_timestamp'], r['sequence']))
+
+
+def stream_partition_data_from_file(partition_key, processed_dir, last_execution_df=None):
+    """
+    Return streaming iterators that read directly from processed partition CSV files.
+
+    Unlike stream_partition_data (which wraps DataFrames already in memory),
+    this function never loads a full DataFrame — only chunk_size rows at a time.
+    """
+    date, sec = partition_key.split('/')
+    partition_dir = Path(processed_dir) / date / sec
+
+    return {
+        'sweep_orders_iter': stream_sweep_orders_from_file(
+            partition_dir / 'orders_after_matching.csv', last_execution_df),
+        'all_orders_iter': stream_orders_from_file(
+            partition_dir / 'orders_before_matching.csv'),
+    }
