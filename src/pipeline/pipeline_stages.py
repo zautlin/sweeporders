@@ -110,14 +110,24 @@ def _run_sequential_processing(data):
 
 def _run_simulation_and_metrics(data):
     """Run simulation and calculate metrics (Steps 7-8)."""
-    simulation_results_by_partition = pp.simulate_sweep_matching_sequential(
-        data['orders'],
-        data['order_states'],
-        data['last_execution'],
-        data['nbbo'],
-        config.OUTPUTS_DIR,
-        reference_results=data.get('reference'),
-    )
+    if config.PROCESSING_MODE == 'stream':
+        simulation_results_by_partition = pp.simulate_sweep_matching_streaming_sequential(
+            data['orders'],
+            data['order_states'],
+            data['last_execution'],
+            data['nbbo'],
+            config.OUTPUTS_DIR,
+            reference_results=data.get('reference'),
+        )
+    else:
+        simulation_results_by_partition = pp.simulate_sweep_matching_sequential(
+            data['orders'],
+            data['order_states'],
+            data['last_execution'],
+            data['nbbo'],
+            config.OUTPUTS_DIR,
+            reference_results=data.get('reference'),
+        )
 
     pp.calculate_simulated_metrics_sequential(
         data['orders'],
@@ -162,6 +172,14 @@ def run_stage_2_simulation(data, enable_parallel):
             config.PROCESSED_DIR,
             config.OUTPUTS_DIR,
             config.MAX_PARALLEL_WORKERS
+        )
+    elif config.PROCESSING_MODE == 'stream':
+        return pp.simulate_sweep_matching_streaming_sequential(
+            data['orders'],
+            data['order_states'],
+            data['last_execution'],
+            data['nbbo'],
+            config.OUTPUTS_DIR
         )
     else:
         return pp.simulate_sweep_matching_sequential(

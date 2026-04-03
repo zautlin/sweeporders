@@ -41,9 +41,14 @@ MAX_PARALLEL_WORKERS = NUM_WORKERS  # Number of parallel workers for partition p
 #   'memory': Skip all intermediate partition writes. DataFrames are passed directly
 #             between stages in memory. Faster, no disk I/O overhead, but the pipeline
 #             must run end-to-end (cannot resume from a mid-pipeline stage).
-#   'stream': (future) Event-driven streaming — process the raw feed row-by-row through
-#             a live order book per security, matching as events arrive. Not yet implemented.
-PROCESSING_MODE = 'file'  # 'file' | 'memory' | 'stream' (stream = future)
+#   'stream': Feed orders through the matching engine as dict iterators instead of DataFrames.
+#             Eliminates per-sweep DataFrame slice/copy/iterrows — same correctness,
+#             lower per-sweep allocation overhead.  Phase 2 resting still uses DataFrames.
+PROCESSING_MODE = 'file'  # 'file' | 'memory' | 'stream'
+
+_VALID_PROCESSING_MODES = {'file', 'memory', 'stream'}
+if PROCESSING_MODE not in _VALID_PROCESSING_MODES:
+    raise ValueError(f"Invalid PROCESSING_MODE '{PROCESSING_MODE}'. Must be one of {_VALID_PROCESSING_MODES}")
 
 
 # ============================================================================

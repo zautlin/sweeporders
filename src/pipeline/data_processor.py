@@ -950,5 +950,53 @@ def classify_order_groups(orders_by_partition, processed_dir):
         }
         
         print(f"  {partition_key}: G1={len(group1):,}, G2={len(group2):,}, G3={len(group3):,} (sweep orders only)")
-    
+
     return groups_by_partition
+
+
+# ============================================================================
+# STREAMING GENERATORS (PROCESSING_MODE = 'stream')
+# ============================================================================
+
+def stream_orders_for_partition(partition_data):
+    """
+    Generator: yield contra-pool order dicts in (effective_timestamp, sequence) order.
+
+    Wraps _prepare_all_orders_for_matching so that the matching engine
+    receives one dict at a time instead of a full DataFrame.  The DataFrame
+    is still built internally for normalisation; the generator just avoids
+    handing a large object to the caller.
+    """
+    # Import locally to avoid circular import (sweep_simulator imports data_processor)
+    from pipeline.sweep_simulator import _prepare_all_orders_for_matching
+    all_orders = _prepare_all_orders_for_matching(partition_data)
+    for _, row in all_orders.iterrows():
+        yield row.to_dict()
+
+
+def stream_sweep_orders_for_partition(partition_data):
+    """
+    Generator: yield sweep order dicts in (effective_timestamp, sequence) order.
+
+    Wraps _prepare_sweep_orders so the matching engine receives one sweep
+    dict at a time.
+    """
+    from pipeline.sweep_simulator import _prepare_sweep_orders
+    sweep_orders = _prepare_sweep_orders(partition_data)
+    for _, row in sweep_orders.iterrows():
+        yield row.to_dict()
+
+
+def stream_partition_data(partition_data):
+    """
+    Return a dict containing lazy streaming iterators for both sweep orders and
+    contra-pool orders drawn from partition_data.
+
+    All other partition_data keys (nbbo, session_states, reference, etc.) are
+    passed through unchanged so callers can build reference_loader etc. as normal.
+    """
+    return {
+        **partition_data,
+        'sweep_orders_iter': stream_sweep_orders_for_partition(partition_data),
+        'all_orders_iter':   stream_orders_for_partition(partition_data),
+    }

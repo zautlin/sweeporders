@@ -361,6 +361,68 @@ def simulate_sweep_matching_sequential(orders_by_partition, order_states_by_part
     return simulation_results_by_partition
 
 
+def simulate_sweep_matching_streaming_sequential(orders_by_partition, order_states_by_partition,
+                                                last_execution_by_partition, nbbo_by_partition,
+                                                output_dir, reference_results=None):
+    """
+    Step 7 (streaming): same as simulate_sweep_matching_sequential but routes each
+    partition through simulate_partition_streaming (dict iterators, no per-sweep
+    DataFrame copies).  Behaviorally identical; faster for large contra pools.
+    """
+    print("\n[7/11] Simulating sweep matching (streaming mode)...")
+
+    simulation_results_by_partition = {}
+
+    for partition_key in orders_by_partition.keys():
+        if cfg.PROCESSING_MODE == 'memory' or cfg.PROCESSING_MODE == 'stream':
+            states = order_states_by_partition.get(partition_key, {})
+            if not states or 'before' not in states:
+                continue
+            date = partition_key.split('/')[0]
+            ref  = reference_results or {}
+            partition_data = {
+                'orders_before':  states['before'],
+                'orders_after':   states['after'],
+                'last_execution': last_execution_by_partition.get(partition_key, pd.DataFrame(
+                    columns=['orderid', 'first_execution_time', 'last_execution_time'])),
+                'nbbo':           nbbo_by_partition.get(partition_key),
+                'session':        ref.get('session', {}).get(date, pd.DataFrame()),
+                'reference':      ref.get('reference', {}).get(date, pd.DataFrame()),
+                'participants':   ref.get('participants', {}).get(date, pd.DataFrame()),
+            }
+        else:
+            partition_data = dp.load_partition_data(
+                partition_key,
+                Path(output_dir).parent / 'processed'
+            )
+            if not partition_data or 'orders_before' not in partition_data:
+                continue
+            if partition_key in order_states_by_partition:
+                partition_data['orders_before'] = order_states_by_partition[partition_key]['before']
+                partition_data['orders_after']  = order_states_by_partition[partition_key]['after']
+            if partition_key in last_execution_by_partition:
+                partition_data['last_execution'] = last_execution_by_partition[partition_key]
+            partition_data['nbbo'] = nbbo_by_partition.get(partition_key)
+
+        _inject_lit_orders(partition_data, partition_key)
+
+        sim_results = ss.simulate_partition_streaming(partition_key, partition_data)
+        if not sim_results:
+            continue
+
+        fu.save_simulation_results(sim_results, output_dir, partition_key)
+        if cfg.SIMULATE_RESTING_PHASE and 'resting_trades' in sim_results:
+            fu.save_resting_simulation_results(sim_results, output_dir, partition_key)
+
+        simulation_results_by_partition[partition_key] = {
+            'order_summary':    sim_results['order_summary'],
+            'simulated_trades': sim_results['simulated_trades'],
+        }
+
+    print(f"   Completed streaming sweep simulation for {len(simulation_results_by_partition)} partitions")
+    return simulation_results_by_partition
+
+
 def calculate_simulated_metrics_sequential(orders_by_partition, simulation_results_by_partition,
                                            processed_dir, output_dir, order_states=None):
     """Step 8: Calculate simulated metrics for all partitions (sequential processing)."""

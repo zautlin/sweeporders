@@ -998,6 +998,433 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data, nbbo_source=Non
     }
 
 
+def _generate_sweep_utilization_from_list(sweep_dicts, sweep_usage):
+    """Streaming variant of _generate_sweep_utilization that works from a list of dicts."""
+    utilization = []
+    for sweep in sweep_dicts:
+        sweep_id = int(sweep[col.common.orderid])
+        available_qty = sweep[col.orders.leaves_quantity]
+        if sweep_id not in sweep_usage:
+            continue
+        usage = sweep_usage[sweep_id]
+        matched_qty = usage['matched_quantity']
+        utilization.append({
+            'orderid': sweep_id,
+            'leavesquantity': available_qty,
+            'matched_quantity': matched_qty,
+            'remaining_quantity': available_qty - matched_qty,
+            'utilization_ratio': matched_qty / available_qty if available_qty > 0 else 0,
+            'num_matches': usage['num_matches']
+        })
+    return pd.DataFrame(utilization)
+
+
+def simulate_sweep_matching_streaming(sweep_orders_iter, all_orders_iter, nbbo_data,
+                                      nbbo_source=None, tick_size_override=None,
+                                      tick_size_table=None, price_limits=None,
+                                      participants_dict=None, session_states_df=None):
+    """
+    Streaming variant of simulate_sweep_matching.
+
+    Accepts iterators of order dicts instead of DataFrames.  all_orders_iter is
+    consumed eagerly into a list (required for the per-sweep eligible-window
+    filter); sweep_orders_iter is consumed one sweep at a time.
+
+    Key difference from simulate_sweep_matching:
+    - No per-sweep DataFrame slice / .sort_values() / .iterrows()
+    - Eligible contras are found via a single list comprehension directly into
+      the heapq — one pass, no intermediate copy.
+    - Session pre-filtering (Polars join_asof) is skipped; the per-match
+      _is_valid_trading_session check inside the while loop still runs.
+    """
+    if nbbo_source is None:
+        nbbo_source = cfg.NBBO_SOURCE
+    if nbbo_source not in ['INTERNAL', 'EXTERNAL']:
+        raise ValueError(f"Invalid NBBO_SOURCE: '{nbbo_source}'")
+
+    # Consume contra iterator eagerly — must arrive pre-sorted by
+    # (effective_timestamp, sequence), which stream_orders_for_partition guarantees.
+    all_orders_list: list = list(all_orders_iter)
+
+    order_remaining: dict = {int(o[col.common.orderid]): int(o[col.common.quantity])
+                             for o in all_orders_list}
+    iceberg_slice_consumed: dict = {}
+    sweep_usage: dict = {}
+
+    simulated_trades: list = []
+    sweep_summaries: list = []
+    sweep_dicts: list = []  # for utilization report
+
+    row_counter = 1
+    match_counter = 0
+    base_matchgroupid = 7904794000999000001
+    tradedate = None
+
+    if nbbo_source == 'EXTERNAL':
+        if nbbo_data is None or len(nbbo_data) == 0:
+            raise ValueError("NBBO_SOURCE is 'EXTERNAL' but no NBBO data available")
+        nbbo_sorted = nbbo_data.sort_values('timestamp').reset_index(drop=True)
+        print(f"    Using NBBO source: EXTERNAL ({len(nbbo_data):,} snapshots)")
+        _nbbo_ts  = nbbo_sorted['timestamp'].to_numpy()
+        _nbbo_bid = nbbo_sorted[col.orders.bid].to_numpy()
+        _nbbo_ask = nbbo_sorted[col.orders.offer].to_numpy()
+    else:
+        _nbbo_ts = _nbbo_bid = _nbbo_ask = None
+        print(f"    Using NBBO source: INTERNAL")
+
+    for sweep in sweep_orders_iter:
+        sweep_id          = int(sweep[col.common.orderid])
+        sweep_side        = int(sweep[col.common.side])
+        sweep_qty_available = sweep[col.orders.leaves_quantity]
+        sweep_orderbookid = sweep[col.common.orderbookid]
+
+        first_exec_time   = int(sweep['effective_timestamp'])
+        last_exec_time    = int(sweep['last_execution_time'])
+        sweep_lost_priority  = bool(sweep.get('lost_priority', False))
+        sweep_changereason   = int(sweep.get('changereason', CHANGEREASON_NEW_ORDER))
+
+        if tradedate is None:
+            tradedate = pd.to_datetime(first_exec_time, unit='ns').strftime('%Y-%m-%d')
+
+        sweep_dicts.append(sweep)
+        sweep_usage.setdefault(sweep_id, {'matched_quantity': 0, 'num_matches': 0})
+
+        if sweep_qty_available <= 0:
+            sweep_summaries.append({
+                'orderid': sweep_id, 'timestamp': sweep[col.common.timestamp],
+                'side': sweep_side, 'quantity': sweep_qty_available,
+                'matched_quantity': 0, 'remaining_quantity': 0,
+                'fill_ratio': 0, 'num_matches': 0,
+                'orderbookid': sweep_orderbookid,
+                'lost_priority': sweep_lost_priority,
+                'changereason': sweep_changereason,
+            })
+            continue
+
+        # Build heap directly from all_orders_list — no DataFrame copy or iterrows.
+        # The list is already sorted by (effective_timestamp, sequence).
+        _p1_heap: list = []
+        _p1_counter = 0
+        for o in all_orders_list:
+            if (first_exec_time <= o['effective_timestamp'] <= last_exec_time
+                    and int(o[col.common.orderid]) != sweep_id
+                    and int(o[col.common.orderbookid]) == sweep_orderbookid
+                    and int(o[col.common.side]) != sweep_side):
+                heapq.heappush(_p1_heap, (
+                    o['effective_timestamp'], o['sequence'], _p1_counter, o
+                ))
+                _p1_counter += 1
+
+        sweep_remaining_qty = sweep_qty_available
+        sweep_matched_qty   = 0
+        sweep_num_matches   = 0
+
+        while _p1_heap and sweep_remaining_qty > 0:
+            _, _, _, order = heapq.heappop(_p1_heap)
+
+            order_id = int(order[col.common.orderid])
+            order_available = order_remaining.get(order_id, 0)
+            if order_available <= 0:
+                continue
+
+            order_available = min(
+                order_available,
+                _get_iceberg_available_qty(order, iceberg_slice_consumed.get(order_id, 0)),
+            )
+
+            sweep_maq        = int(sweep.get('minimumquantity', 0)) if 'minimumquantity' in sweep else 0
+            sweep_single_fill = int(sweep.get('singlefillminimumquantity', 0)) if 'singlefillminimumquantity' in sweep else 0
+            contra_maq        = int(order.get('minimumquantity', 0))
+            contra_single_fill = int(order.get('singlefillminimumquantity', 0))
+            potential_match_qty = min(sweep_remaining_qty, order_available)
+
+            if sweep_maq > 0:
+                if sweep_single_fill == 1:
+                    if potential_match_qty < sweep_maq:
+                        continue
+                else:
+                    if sweep_remaining_qty < sweep_maq and sweep_matched_qty > 0:
+                        break
+                    elif potential_match_qty < sweep_maq and sweep_matched_qty == 0:
+                        continue
+
+            if contra_maq > 0:
+                if contra_single_fill == 1:
+                    if potential_match_qty < contra_maq:
+                        continue
+                else:
+                    if order_available < contra_maq:
+                        continue
+
+            sweep_participant  = int(sweep.get('participantid', 0))
+            contra_participant = int(order.get('participantid', 0))
+            sweep_crossing_key  = int(sweep.get('crossingkey', 0))
+            contra_crossing_key = int(order.get('crossingkey', 0))
+
+            if sweep_participant > 0 and sweep_participant == contra_participant:
+                if sweep_crossing_key == 0 or contra_crossing_key == 0:
+                    continue
+                elif sweep_crossing_key != contra_crossing_key:
+                    continue
+
+            match_qty       = min(sweep_remaining_qty, order_available)
+            match_timestamp = int(order['effective_timestamp'])
+
+            if not _is_valid_trading_session(match_timestamp, session_states_df):
+                continue
+
+            contra_midtick = int(order.get('midtick', MIDTICK_NO))
+            is_apb = (
+                int(order.get('exchangeordertype', 0)) == ORDERTYPE_BLOCK_LIMIT
+                and contra_midtick in (MIDTICK_ANY_PRICE_BLOCK, MIDTICK_ANY_PRICE_BLOCK_WITH_MIDTICK)
+            )
+
+            if is_apb:
+                contra_limit = int(order.get('price', 0))
+                sweep_limit  = int(sweep.get('price', 0))
+                if sweep_side == 1:
+                    if sweep_limit < contra_limit:
+                        continue
+                else:
+                    if sweep_limit > contra_limit:
+                        continue
+                execution_price = float(contra_limit)
+                if cfg.MIN_BLOCK_SIZE > 0 and match_qty * execution_price < cfg.MIN_BLOCK_SIZE:
+                    continue
+                is_pref = (
+                    cfg.RESTING_APPLY_PREFERENCING
+                    and sweep_participant > 0
+                    and contra_participant > 0
+                    and sweep_participant == contra_participant
+                )
+                match_type = 'BLOCK_PREF' if is_pref else 'BLOCK'
+                nbbo_bid = nbbo_offer = 0
+            else:
+                if nbbo_source == 'EXTERNAL':
+                    if _nbbo_ts is not None:
+                        _idx = int(np.searchsorted(_nbbo_ts, match_timestamp, side='right')) - 1
+                        nbbo_bid   = int(_nbbo_bid[_idx]) if _idx >= 0 else 0
+                        nbbo_offer = int(_nbbo_ask[_idx]) if _idx >= 0 else 0
+                    else:
+                        nbbo_bid, nbbo_offer, _ = _get_nbbo_at_timestamp(
+                            None, match_timestamp, sweep_orderbookid)
+                    if nbbo_bid == 0 or nbbo_offer == 0:
+                        continue
+                else:
+                    nbbo_bid   = int(order[col.orders.national_bid])
+                    nbbo_offer = int(order[col.orders.national_offer])
+                    if nbbo_bid == INT64_SENTINEL or nbbo_offer == INT64_SENTINEL:
+                        nbbo_bid   = int(order[col.orders.bid])
+                        nbbo_offer = int(order[col.orders.offer])
+                    if nbbo_bid <= 0 or nbbo_offer <= 0:
+                        continue
+
+                midpoint = (nbbo_bid + nbbo_offer) / 2
+                if not _is_price_within_limits(midpoint, price_limits):
+                    continue
+                if not _validate_order_price_limit(order, midpoint, sweep_side):
+                    continue
+
+                sweep_midtick     = int(sweep.get('midtick', MIDTICK_NO))
+                effective_midtick = max(sweep_midtick, contra_midtick)
+                execution_price   = _apply_midtick_improvement(
+                    midpoint, nbbo_bid, nbbo_offer, sweep_side, effective_midtick,
+                    tick_size_override=tick_size_override,
+                    tick_size_table=tick_size_table,
+                    price=midpoint
+                )
+                match_type = 'SWEEP_TO_SWEEP' if order.get('exchangeordertype') == 2048 else 'SWEEP_TO_REGULAR'
+
+            match_timestamp = _add_execution_delay(match_timestamp)
+            matchgroupid    = base_matchgroupid + match_counter
+            match_counter  += 1
+
+            sweep_side_val = int(sweep[col.common.side])
+            order_side     = int(order[col.common.side])
+            contra_participant_type = _get_participant_type(contra_participant, participants_dict)
+
+            simulated_trades.append({
+                'EXCHANGE': 3, 'sequence': row_counter, 'tradedate': tradedate,
+                'tradetime': match_timestamp, 'securitycode': sweep_orderbookid,
+                'orderid': sweep_id, 'dealsource': _get_deal_source(match_type),
+                'exchangeinfo': '', 'matchgroupid': matchgroupid,
+                'nationalbidpricesnapshot': nbbo_bid,
+                'nationalofferpricesnapshot': nbbo_offer,
+                'tradeprice': int(execution_price), 'quantity': int(match_qty),
+                'side': sweep_side_val, 'participantid': 0,
+                'passiveaggressive': 1, 'row_num': row_counter,
+                'match_type': match_type, 'contra_participant_type': contra_participant_type,
+            })
+            row_counter += 1
+            simulated_trades.append({
+                'EXCHANGE': 3, 'sequence': row_counter, 'tradedate': tradedate,
+                'tradetime': match_timestamp, 'securitycode': sweep_orderbookid,
+                'orderid': order_id, 'dealsource': _get_deal_source(match_type),
+                'exchangeinfo': '', 'matchgroupid': matchgroupid,
+                'nationalbidpricesnapshot': nbbo_bid,
+                'nationalofferpricesnapshot': nbbo_offer,
+                'tradeprice': int(execution_price), 'quantity': int(match_qty),
+                'side': order_side, 'participantid': 0,
+                'passiveaggressive': 0, 'row_num': row_counter,
+                'match_type': match_type, 'contra_participant_type': contra_participant_type,
+            })
+            row_counter += 1
+
+            sweep_remaining_qty -= match_qty
+            order_remaining[order_id] -= match_qty
+            sweep_matched_qty   += match_qty
+            sweep_num_matches   += 1
+
+            _iceberg_dq = order.get('display_quantity', None)
+            if _iceberg_dq is not None and not pd.isna(_iceberg_dq):
+                _iceberg_dq = int(_iceberg_dq)
+                _new_consumed = iceberg_slice_consumed.get(order_id, 0) + match_qty
+                if _new_consumed >= _iceberg_dq:
+                    iceberg_slice_consumed[order_id] = _new_consumed - _iceberg_dq
+                    if order_remaining.get(order_id, 0) > 0:
+                        heapq.heappush(_p1_heap, (
+                            int(order['effective_timestamp']),
+                            _p1_counter, _p1_counter, order,
+                        ))
+                        _p1_counter += 1
+                else:
+                    iceberg_slice_consumed[order_id] = _new_consumed
+
+        sweep_usage[sweep_id]['matched_quantity'] = sweep_matched_qty
+        sweep_usage[sweep_id]['num_matches']      = sweep_num_matches
+
+        sweep_summaries.append({
+            'orderid': sweep_id, 'timestamp': sweep[col.common.timestamp],
+            'side': sweep_side, 'quantity': sweep_qty_available,
+            'matched_quantity': sweep_matched_qty,
+            'remaining_quantity': sweep_remaining_qty,
+            'fill_ratio': sweep_matched_qty / sweep_qty_available if sweep_qty_available > 0 else 0,
+            'num_matches': sweep_num_matches, 'orderbookid': sweep_orderbookid,
+            'lost_priority': sweep_lost_priority, 'changereason': sweep_changereason,
+        })
+
+    if simulated_trades:
+        simulated_trades_df = pd.DataFrame(simulated_trades)
+        int_columns = [
+            'EXCHANGE', 'sequence', 'tradetime', 'securitycode', 'orderid',
+            'dealsource', 'matchgroupid', 'nationalbidpricesnapshot',
+            'nationalofferpricesnapshot', 'tradeprice', 'quantity', 'side',
+            'participantid', 'passiveaggressive', 'row_num'
+        ]
+        for col_name in int_columns:
+            if col_name in simulated_trades_df.columns:
+                simulated_trades_df[col_name] = simulated_trades_df[col_name].astype('int64')
+    else:
+        simulated_trades_df = pd.DataFrame(columns=[
+            'EXCHANGE', 'sequence', 'tradedate', 'tradetime', 'securitycode',
+            'orderid', 'dealsource', 'exchangeinfo', 'matchgroupid',
+            'nationalbidpricesnapshot', 'nationalofferpricesnapshot',
+            'tradeprice', 'quantity', 'side', 'participantid',
+            'passiveaggressive', 'row_num', 'match_type', 'contra_participant_type'
+        ])
+
+    order_summary_df      = pd.DataFrame(sweep_summaries)
+    sweep_utilization_df  = _generate_sweep_utilization_from_list(sweep_dicts, sweep_usage)
+
+    return {
+        'order_summary':      order_summary_df,
+        'sweep_utilization':  sweep_utilization_df,
+        'simulated_trades':   simulated_trades_df,
+        'sweep_usage':        sweep_usage,
+    }
+
+
+def simulate_partition_streaming(partition_key, partition_data, reference_loader=None):
+    """
+    Streaming variant of simulate_partition.
+
+    Phase 1 matching is fed via dict iterators from data_processor streaming
+    generators — no per-sweep DataFrame copies or .iterrows() calls.
+    Phase 2 (resting simulation) still uses DataFrames via load_and_prepare_orders.
+    """
+    import pipeline.data_processor as _dp
+    try:
+        # Prepare DataFrames once for metadata (orderbookid, counts) and Phase 2.
+        # Phase 1 matching will use the streaming generators below.
+        sweep_orders_check, all_orders_check = load_and_prepare_orders(partition_data)
+        if len(sweep_orders_check) == 0:
+            print(f"  {partition_key}: No sweep orders, skipping")
+            return None
+        if len(all_orders_check) == 0:
+            print(f"  {partition_key}: No matching orders, skipping")
+            return None
+
+        sweep_orders_iter = _dp.stream_sweep_orders_for_partition(partition_data)
+        all_orders_iter   = _dp.stream_orders_for_partition(partition_data)
+
+        nbbo_data = partition_data.get('nbbo')
+        if cfg.NBBO_SOURCE == 'EXTERNAL':
+            if nbbo_data is None or len(nbbo_data) == 0:
+                raise ValueError(
+                    f"NBBO_SOURCE is 'EXTERNAL' but no NBBO data found for partition {partition_key}")
+
+        if reference_loader is None:
+            processed_dir    = Path(partition_data.get('processed_dir', 'data/processed'))
+            reference_loader = ReferenceDataLoader(processed_dir)
+
+        partition_dir = Path(partition_data.get('partition_dir', f'data/processed/{partition_key}'))
+        orderbookid   = sweep_orders_check[col.common.orderbookid].iloc[0] if len(sweep_orders_check) > 0 else None
+
+        tick_size       = reference_loader.get_tick_size(str(partition_dir), orderbookid)
+        tick_size_table = reference_loader.get_tick_size_table(orderbookid)
+        price_limits    = reference_loader.get_price_limits(orderbookid)
+        reference_loader.load_participants()
+        participants_dict = reference_loader.participants
+        session_states_df = partition_data.get('session_states')
+
+        print(f"    Using tick size: {tick_size} (from reference data) [streaming]")
+
+        results = simulate_sweep_matching_streaming(
+            sweep_orders_iter, all_orders_iter, nbbo_data,
+            tick_size_override=tick_size,
+            tick_size_table=tick_size_table,
+            price_limits=price_limits,
+            participants_dict=participants_dict,
+            session_states_df=session_states_df,
+        )
+
+        num_matches = len(results['simulated_trades']) // 2 if len(results['simulated_trades']) > 0 else 0
+        print(f"  {partition_key}: {num_matches:,} matches, {len(sweep_orders_check):,} sweep orders [streaming]")
+
+        # Phase 2: resting simulation still uses DataFrames (reuse the already-prepared ones)
+        if cfg.SIMULATE_RESTING_PHASE:
+            sweep_orders_prepared, all_orders_prepared = sweep_orders_check, all_orders_check
+            remainder_df = build_remainder_df(sweep_orders_prepared, results['sweep_usage'])
+            if len(remainder_df) > 0:
+                print(f"  {partition_key}: Phase 2 — {len(remainder_df)} orders with remaining qty")
+                lit_orders_raw = partition_data.get('lit_orders_raw')
+                resting_results = simulate_resting_phase(
+                    sweep_orders=sweep_orders_prepared,
+                    remainder_df=remainder_df,
+                    all_cp_orders=all_orders_prepared,
+                    lit_orders_raw=lit_orders_raw,
+                    nbbo_data=nbbo_data,
+                    session_states_df=session_states_df,
+                    tick_size_override=tick_size,
+                    tick_size_table=tick_size_table,
+                    participants_dict=participants_dict,
+                )
+                results['resting_trades']  = resting_results['resting_trades']
+                results['resting_summary'] = resting_results['resting_summary']
+                n_resting = len(resting_results['resting_trades']) // 2
+                print(f"  {partition_key}: Phase 2 — {n_resting} resting matches")
+            else:
+                print(f"  {partition_key}: Phase 2 — no remaining qty after Phase 1, skipping")
+                results['resting_trades']  = pd.DataFrame()
+                results['resting_summary'] = pd.DataFrame()
+
+        return results
+    except ValueError as e:
+        print(f"\n{'='*80}\nERROR: NBBO Configuration Issue for {partition_key}\n{'='*80}")
+        print(f"{str(e)}\n{'='*80}\n")
+        raise
+
+
 def _calc_resting_price(limit_price, tick_size, side):
     """
     Calculate effective passive resting price for Centre Point.
