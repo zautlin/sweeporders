@@ -426,21 +426,60 @@ def simulate_sweep_matching_streaming_sequential(orders_by_partition, order_stat
 def simulate_sweep_matching_file_streaming_sequential(partition_keys, processed_dir, output_dir,
                                                       reference_results=None):
     """
-    Step 7 (stream_file): Load each partition's data from data/processed/ CSVs one at a
-    time, then run the streaming matching engine (dict iterators, heapq).
+    Step 7 (stream_file): True file-level streaming — reads each partition's CSVs in
+    chunks without ever loading full orders_before / orders_after DataFrames into memory.
 
-    Like 'file' mode in that no Stage-1 DataFrames are kept in memory across partitions,
-    but uses simulate_partition_streaming (lower per-sweep allocation) instead of
-    simulate_partition.
+    Small files (last_execution, nbbo, session, reference, participants) are loaded
+    normally.  Sweep orders and contra pool are fed to the matching engine via chunked
+    generators (stream_sweep_orders_from_file / stream_orders_from_file).
+
+    DataFrames for orders_before / orders_after are loaded lazily only when
+    SIMULATE_RESTING_PHASE is True.
     """
     print("\n[7/11] Simulating sweep matching (file-streaming mode)...")
 
     simulation_results_by_partition = {}
 
+    def _read_if_exists(path):
+        p = Path(path)
+        return pd.read_csv(p) if p.exists() else pd.DataFrame()
+
     for partition_key in partition_keys:
-        partition_data = dp.load_partition_data(partition_key, processed_dir)
-        if not partition_data or 'orders_before' not in partition_data:
+        date, sec      = partition_key.split('/')
+        partition_dir  = Path(processed_dir) / date / sec
+        date_dir       = Path(processed_dir) / date
+
+        # Validation: last_execution determines whether any sweep orders exist.
+        le_path = partition_dir / 'last_execution_time.csv'
+        if not le_path.exists():
             continue
+        last_execution_df = pd.read_csv(le_path)
+        if len(last_execution_df) == 0:
+            print(f"  {partition_key}: No sweep orders, skipping")
+            continue
+
+        before_path = partition_dir / 'orders_before_matching.csv'
+        if not before_path.exists():
+            print(f"  {partition_key}: No matching orders, skipping")
+            continue
+
+        # Build partition_data from small files only — no full orders DataFrames.
+        partition_data = {
+            'last_execution': last_execution_df,
+            'nbbo':           _read_if_exists(partition_dir / 'nbbo.csv.gz'),
+            'session':        _read_if_exists(date_dir / 'session.csv.gz'),
+            'reference':      _read_if_exists(date_dir / 'reference.csv.gz'),
+            'participants':   _read_if_exists(date_dir / 'participants.csv.gz'),
+            'orderbookid':    int(sec),
+            'sweep_count':    len(last_execution_df),
+            'processed_dir':  str(processed_dir),
+            'partition_dir':  str(partition_dir),
+        }
+
+        # Inject chunked file-based iterators (replaces stream_*_for_partition wrappers).
+        file_iters = dp.stream_partition_data_from_file(
+            partition_key, processed_dir, last_execution_df)
+        partition_data.update(file_iters)
 
         _inject_lit_orders(partition_data, partition_key)
 

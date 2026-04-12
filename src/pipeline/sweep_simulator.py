@@ -1338,24 +1338,63 @@ def simulate_partition_streaming(partition_key, partition_data, reference_loader
     """
     Streaming variant of simulate_partition.
 
-    Phase 1 matching is fed via dict iterators from data_processor streaming
-    generators — no per-sweep DataFrame copies or .iterrows() calls.
-    Phase 2 (resting simulation) still uses DataFrames via load_and_prepare_orders.
+    Phase 1 matching is fed via dict iterators — no per-sweep DataFrame copies or
+    .iterrows() calls.
+
+    Two iterator sources are supported:
+      • Normal (stream mode): iterators are generated from in-memory DataFrames already
+        in partition_data['orders_before'] / ['orders_after'].
+      • Pre-built (stream_file mode): caller supplies 'sweep_orders_iter' and
+        'all_orders_iter' directly, along with 'orderbookid' and 'sweep_count'.
+        Full DataFrames are never loaded for Phase 1; they are loaded lazily only
+        when Phase 2 resting simulation is enabled.
+
+    Phase 2 (resting simulation) still uses DataFrames.
     """
     import pipeline.data_processor as _dp
     try:
-        # Prepare DataFrames once for metadata (orderbookid, counts) and Phase 2.
-        # Phase 1 matching will use the streaming generators below.
-        sweep_orders_check, all_orders_check = load_and_prepare_orders(partition_data)
-        if len(sweep_orders_check) == 0:
-            print(f"  {partition_key}: No sweep orders, skipping")
-            return None
-        if len(all_orders_check) == 0:
-            print(f"  {partition_key}: No matching orders, skipping")
-            return None
+        # ------------------------------------------------------------------ #
+        # Determine iterator source and orderbookid                           #
+        # ------------------------------------------------------------------ #
+        if 'sweep_orders_iter' in partition_data:
+            # Pre-built iterators supplied by stream_file mode — skip DataFrame load.
+            sweep_orders_iter = partition_data['sweep_orders_iter']
+            all_orders_iter   = partition_data['all_orders_iter']
+            orderbookid       = (partition_data.get('orderbookid')
+                                 or int(partition_key.split('/')[1]))
+            sweep_count       = partition_data.get('sweep_count', 0)
+            if sweep_count == 0:
+                print(f"  {partition_key}: No sweep orders, skipping")
+                return None
 
-        sweep_orders_iter = _dp.stream_sweep_orders_for_partition(partition_data)
-        all_orders_iter   = _dp.stream_orders_for_partition(partition_data)
+            # Phase 2 needs prepared DataFrames — load lazily only if required.
+            if cfg.SIMULATE_RESTING_PHASE:
+                if 'orders_before' not in partition_data or 'orders_after' not in partition_data:
+                    part_dir = Path(partition_data.get(
+                        'partition_dir', f'data/processed/{partition_key}'))
+                    before_p = part_dir / 'orders_before_matching.csv'
+                    after_p  = part_dir / 'orders_after_matching.csv'
+                    if before_p.exists():
+                        partition_data['orders_before'] = pd.read_csv(before_p)
+                    if after_p.exists():
+                        partition_data['orders_after']  = pd.read_csv(after_p)
+                sweep_orders_check, all_orders_check = load_and_prepare_orders(partition_data)
+            else:
+                sweep_orders_check = all_orders_check = None
+        else:
+            # Normal path: load DataFrames, then wrap as iterators.
+            sweep_orders_check, all_orders_check = load_and_prepare_orders(partition_data)
+            if len(sweep_orders_check) == 0:
+                print(f"  {partition_key}: No sweep orders, skipping")
+                return None
+            if len(all_orders_check) == 0:
+                print(f"  {partition_key}: No matching orders, skipping")
+                return None
+
+            sweep_orders_iter = _dp.stream_sweep_orders_for_partition(partition_data)
+            all_orders_iter   = _dp.stream_orders_for_partition(partition_data)
+            orderbookid       = sweep_orders_check[col.common.orderbookid].iloc[0]
+            sweep_count       = len(sweep_orders_check)
 
         nbbo_data = partition_data.get('nbbo')
         if cfg.NBBO_SOURCE == 'EXTERNAL':
@@ -1368,7 +1407,6 @@ def simulate_partition_streaming(partition_key, partition_data, reference_loader
             reference_loader = ReferenceDataLoader(processed_dir)
 
         partition_dir = Path(partition_data.get('partition_dir', f'data/processed/{partition_key}'))
-        orderbookid   = sweep_orders_check[col.common.orderbookid].iloc[0] if len(sweep_orders_check) > 0 else None
 
         tick_size       = reference_loader.get_tick_size(str(partition_dir), orderbookid)
         tick_size_table = reference_loader.get_tick_size_table(orderbookid)
@@ -1389,10 +1427,10 @@ def simulate_partition_streaming(partition_key, partition_data, reference_loader
         )
 
         num_matches = len(results['simulated_trades']) // 2 if len(results['simulated_trades']) > 0 else 0
-        print(f"  {partition_key}: {num_matches:,} matches, {len(sweep_orders_check):,} sweep orders [streaming]")
+        print(f"  {partition_key}: {num_matches:,} matches, {sweep_count:,} sweep orders [streaming]")
 
-        # Phase 2: resting simulation still uses DataFrames (reuse the already-prepared ones)
-        if cfg.SIMULATE_RESTING_PHASE:
+        # Phase 2: resting simulation uses DataFrames.
+        if cfg.SIMULATE_RESTING_PHASE and sweep_orders_check is not None:
             sweep_orders_prepared, all_orders_prepared = sweep_orders_check, all_orders_check
             remainder_df = build_remainder_df(sweep_orders_prepared, results['sweep_usage'])
             if len(remainder_df) > 0:
