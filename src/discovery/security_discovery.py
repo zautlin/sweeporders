@@ -15,6 +15,7 @@ from typing import List, Dict, Optional, Tuple
 import logging
 from dataclasses import dataclass
 import re
+import config.config as _cfg
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -51,10 +52,12 @@ class SecurityDiscovery:
     Discovers all available securities from raw data files
     """
     
-    def __init__(self, raw_data_dir: str = 'data/raw', 
-                 min_orders: int = 100, 
+    def __init__(self, raw_data_dir: str = None,
+                 min_orders: int = 100,
                  min_trades: int = 10):
         """Initialize security discovery with thresholds for minimum orders and trades."""
+        if raw_data_dir is None:
+            raw_data_dir = str(_cfg.PROJECT_ROOT / 'data' / 'raw')
         self.raw_data_dir = Path(raw_data_dir)
         self.min_orders = min_orders
         self.min_trades = min_trades

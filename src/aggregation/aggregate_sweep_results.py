@@ -17,6 +17,10 @@ from config.column_schema import col
 import os
 from pathlib import Path
 import logging
+import config.config as _cfg
+
+_OUTPUTS_DIR = str(_cfg.PROJECT_ROOT / 'data' / 'outputs')
+_AGGREGATED_CSV = str(_cfg.PROJECT_ROOT / 'data' / 'aggregated' / 'aggregated_sweep_comparison.csv')
 
 # Configure logging
 logging.basicConfig(
@@ -34,9 +38,9 @@ SECURITY_MAPPING = {
 }
 
 
-def find_detailed_comparison_files(outputs_dir='data/outputs'):
+def find_detailed_comparison_files(outputs_dir=None):
     """Scan the outputs directory for all sweep_order_comparison_detailed.csv files."""
-    outputs_path = Path(outputs_dir)
+    outputs_path = Path(outputs_dir or _OUTPUTS_DIR)
     found_files = []
     
     if not outputs_path.exists():
@@ -92,7 +96,7 @@ def load_and_tag_file(file_path, date_str, orderbookid, ticker):
         return None
 
 
-def aggregate_results(outputs_dir='data/outputs'):
+def aggregate_results(outputs_dir=None):
     """Aggregate all sweep order comparison results into a single dataset."""
     logger.info("Starting aggregation of sweep order results...")
     
@@ -170,8 +174,11 @@ def print_summary_stats(df):
     logger.info("="*80 + "\n")
 
 
-def save_aggregated_results(df, output_path='data/aggregated/aggregated_sweep_comparison.csv'):
+def save_aggregated_results(df, output_path=None):
     """Save the aggregated DataFrame to CSV."""
+    if output_path is None:
+        output_path = _AGGREGATED_CSV
+    output_path = str(Path(output_path))
     try:
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -204,7 +211,7 @@ def main():
     print_summary_stats(df)
     
     # Save results
-    output_path = 'data/aggregated/aggregated_sweep_comparison.csv'
+    output_path = _AGGREGATED_CSV
     success = save_aggregated_results(df, output_path)
     
     if success:

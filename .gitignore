@@ -5,6 +5,15 @@ venv/
 env/
 .venv/
 
+# AI tool directories (Claude, Qwen, agent runners)
+.agent/
+.agents/
+.claude/
+.qwen/
+QWEN.md
+haiku.py
+skills-lock.json
+
 # Python cache
 __pycache__/
 *.pyc
@@ -38,13 +47,16 @@ build/
 htmlcov/
 .tox/
 
-# Data directories - processed and output files (keep raw data)
+# Data directories - generated files (keep raw data)
 data/processed/
 data/outputs/
 data/output/
 data/aggregated/
 data/exploration/
 data/debug/
+
+# Stale data output that ended up inside src/
+src/data/
 
 # Logs
 *.log
@@ -58,8 +70,9 @@ logs/
 extract_partitioned_old.py
 extract_partitioned.py.backup
 
-# Archived code
-archive/old_multidataset_architecture/
+# Archived and one-off scripts
+archive/
+scripts/refactoring/
 
 # Configuration
 .env

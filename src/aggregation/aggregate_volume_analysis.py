@@ -21,6 +21,9 @@ from pathlib import Path
 import logging
 from utils.statistics_layer import StatisticsEngine
 from typing import List, Tuple, Dict, Any
+import config.config as _cfg
+
+_OUTPUTS_DIR = str(_cfg.PROJECT_ROOT / 'data' / 'outputs')
 
 # Try to import scipy for backward compatibility
 try:
@@ -46,9 +49,9 @@ SECURITY_MAPPING = {
 }
 
 
-def find_volume_analysis_files(outputs_dir: str = 'data/outputs') -> List[Tuple[str, str, str, str]]:
+def find_volume_analysis_files(outputs_dir: str = None) -> List[Tuple[str, str, str, str]]:
     """Scan the outputs directory for all volume_bucket_summary.csv files."""
-    outputs_path = Path(outputs_dir)
+    outputs_path = Path(outputs_dir or _OUTPUTS_DIR)
     found_files = []
     
     if not outputs_path.exists():
@@ -104,7 +107,7 @@ def load_and_tag_volume_file(file_path: str, date_str: str, orderbookid: str, ti
         return pd.DataFrame()
 
 
-def aggregate_volume_summaries(outputs_dir: str = 'data/outputs') -> pd.DataFrame:
+def aggregate_volume_summaries(outputs_dir: str = None) -> pd.DataFrame:
     """Aggregate all volume bucket summaries into a single DataFrame."""
     logger.info("=" * 80)
     logger.info("AGGREGATING VOLUME BUCKET SUMMARIES")

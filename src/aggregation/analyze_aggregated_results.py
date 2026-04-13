@@ -27,6 +27,9 @@ import numpy as np
 import logging
 from pathlib import Path
 from utils.statistics_layer import StatisticsEngine
+import config.config as _cfg
+
+_AGGREGATED_CSV = str(_cfg.PROJECT_ROOT / 'data' / 'aggregated' / 'aggregated_sweep_comparison.csv')
 
 # Try to import scipy for backward compatibility
 try:
@@ -89,8 +92,10 @@ METRIC_UNITS = {
 }
 
 
-def load_aggregated_data(input_path='data/aggregated/aggregated_sweep_comparison.csv'):
+def load_aggregated_data(input_path=None):
     """Load the aggregated sweep comparison data."""
+    if input_path is None:
+        input_path = _AGGREGATED_CSV
     try:
         df = pd.read_csv(input_path)
         logger.info(f"Loaded {len(df):,} orders from {input_path}")
@@ -776,7 +781,7 @@ def main(stats_engine=None):
     logger.info("="*80)
     
     # Load data
-    input_path = 'data/aggregated/aggregated_sweep_comparison.csv'
+    input_path = _AGGREGATED_CSV
     df = load_aggregated_data(input_path)
     
     if df is None:
