@@ -66,18 +66,29 @@ Three clean layers with explicit boundaries. `sweep_simulator.py` (1861 lines) b
 
 ### Package layout
 
+Consolidated per the "≤5 Python scripts per sprint" constraint. The three-layer architecture (prep / kernel / emit) is preserved via **sections inside `_rewrite.py`**, not filesystem boundaries. Class/function boundaries inside the file still enforce layer isolation.
+
 ```
 src/pipeline/sweep_simulator/
-    __init__.py       # public surface: simulate_partition, simulate_sweep_matching, ...
-    prep.py           # Layer A — Polars data prep
-    kernel.py         # Layer B — numpy hot loop (Phase 1 + Phase 2)
-    emit.py           # Layer C — output assembly
-    context.py        # SimContext dataclass + column-mapping constants
-    rules.py          # Pure rule helpers: MAQ, crossing, APB, midtick, iceberg,
-                      # session-state, price-limit. Independently testable.
+    __init__.py       # public surface: re-exports from _legacy (now) and _rewrite (as sections land)
+    _legacy.py        # the current monolithic simulator (renamed, 0-byte move)
+    _rewrite.py       # all new code — SimContext, rules, prep, kernel, emit — in one file
+                      # with section headers (Sprint 1 → Sprint 5) as it grows
 ```
 
 Public entry points (`simulate_partition`, `simulate_sweep_matching`, `simulate_resting_phase`) are re-exported from `__init__.py` so existing callers are unchanged.
+
+**Sprint-by-sprint section layout inside `_rewrite.py`:**
+
+| Section | Sprint | Content |
+|---|---|---|
+| Sprint 1 — Foundations | 1 | `SimFlags`, `SimContext`, `Decision` enum, rule helpers (`check_maq`, `check_crossing`, `validate_price_limit`, `is_valid_session`, `iceberg_available`, `apply_midtick`, `is_apb`) |
+| Sprint 2 — Prep | 2 | `build_sim_context`, `build_sim_context_from_parquet`, `build_sim_context_from_csv` |
+| Sprint 3 — Phase 1 kernel | 3 | `run_phase1`, `_run_sweep` |
+| Sprint 4 — Phase 2 kernel | 4 | `run_phase2` |
+| Sprint 5 — Emit + mapping | 5 | `emit_trades`, `emit_summary`, `apply_legacy_aliases` |
+
+Expected file size at Sprint 5: ~800–1200 lines. Still smaller than today's `_legacy.py` (1861 lines). If the file becomes unwieldy after the rewrite lands, decomposition into `prep.py`/`kernel.py`/`emit.py` is a mechanical post-rewrite refactor — each section is already class/function-scoped.
 
 ### SimContext — the boundary contract
 
