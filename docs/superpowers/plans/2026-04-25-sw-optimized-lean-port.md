@@ -10,6 +10,19 @@
 
 ---
 
+## ⚠️ Local Parity Gate — Known Coverage Gap
+
+The CBA/20240505 dataset on the laptop produces ZERO simulator matches: the contra pool contains only `ordertype=1` (regular orders), nothing in `ELIGIBLE_MATCHING_ORDER_TYPES = {64, 256, 2048, 4096, 4098}`. Consequently:
+
+- ✅ **Local parity validates Stage 1** (sweep eligibility filtering, partitioning, contra-pool construction, reference-data joins).
+- ❌ **Local parity does NOT validate Stage 2 matching logic** (midpoint calc, MAQ/SFMQ, iceberg, crossing keys, APB, Phase 2 resting). Both legacy and ported code produce empty `simulated_trades.csv`, so any matching-logic regression in `process.py` will silently pass `tests/test_parity.py`.
+
+**Mitigation:** Task 9 (deferred, server-side) is the load-bearing gate for the simulator. Before declaring "port complete" beyond `sw_optimized` branch, the server multi-day × multi-ticker run MUST execute, and any byte-diff there is a release blocker.
+
+**Implementer note (Task 1):** Harness uses content-hash (decompressed) rather than raw byte-equality for `.csv.gz` files because gzip embeds an mtime header. Plain `.csv` files remain true byte-equality. See `tests/test_parity.py`.
+
+---
+
 ## Pre-flight context
 
 **Cuts (definitively dropped, do not port):**
