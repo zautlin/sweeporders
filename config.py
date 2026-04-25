@@ -68,6 +68,12 @@ WARN_APPROXIMATE_STATS     = True   # Show warnings when using approximate stati
 PROCESSING_MODE  = 'file'      # 'file' | 'memory'  (stream removed)
 NBBO_SOURCE      = 'INTERNAL'  # Only INTERNAL supported; EXTERNAL branch dropped
 
+# Backend selection — kept off by default to preserve parity with legacy pandas
+# behaviour captured in tests/parity_baseline/. Flipping these to True is a
+# follow-up migration task (post-port).
+USE_DUCKDB_IO         = False  # DuckDB glob-based partition scanning
+USE_POLARS_TRANSFORMS = False  # Polars vectorised in-memory transforms
+
 VOLUME_BUCKET_METHOD     = 'quartile'                    # 'quartile', 'quintile', or 'custom'
 VOLUME_CUSTOM_THRESHOLDS = [100, 500, 1000, 5000]        # Used only if method='custom'
 

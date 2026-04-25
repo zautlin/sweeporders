@@ -40,9 +40,10 @@ def test_config_imports_and_exposes_expected_names():
     # Stream mode removed (PROCESSING_MODE may still exist as 'file' or 'memory')
     assert config.PROCESSING_MODE in ("file", "memory")
     assert config.NBBO_SOURCE == "INTERNAL"
-    # No-longer-existing flags should be gone
-    assert not hasattr(config, "USE_DUCKDB_IO")
-    assert not hasattr(config, "USE_POLARS_TRANSFORMS")
+    # Backend flags retained (structural-only port; backend migration is follow-up).
+    # Defaults match the parity-baseline configuration (pandas codepaths).
+    assert config.USE_DUCKDB_IO is False
+    assert config.USE_POLARS_TRANSFORMS is False
 
 
 def test_column_accessor_returns_real_column_names():

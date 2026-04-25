@@ -36,7 +36,7 @@ The CBA/20240505 dataset on the laptop produces ZERO simulator matches: the cont
 | `src/aggregation/analyze_aggregated_results.py` | 858 | research artifact, replaced by report.py multi-cuts |
 | `src/discovery/security_discovery.py` | 338 | replaced by inline auto-discovery (~30 LOC) inside process.py |
 | `src/utils/statistics_layer.py` | 492 | scipy 3-tier engine, off by default |
-| pandas branches inside `file_utils.py` and transforms | scattered | Polars+DuckDB only |
+| ~~pandas branches inside `file_utils.py` and transforms~~ | — | **REVERSED** — port is structural-only; pandas codepaths preserved to match parity baseline. Backend migration is a follow-up. |
 | `PROCESSING_MODE='stream'` references | scattered | unimplemented |
 
 **Total LOC dropped: ~3.7k.**
@@ -253,10 +253,11 @@ Order inside the file:
 8. System helpers (worker-count auto-detect from `system_config.py`)
 
 **Drop while merging:**
-- `USE_DUCKDB_IO` flag (always `True` semantics — used everywhere unconditionally)
-- `USE_POLARS_TRANSFORMS` flag (always `True`)
 - `PROCESSING_MODE='stream'` references
 - `NBBO_SOURCE='EXTERNAL'` branches (keep `'INTERNAL'` only — confirm with user if EXTERNAL is needed)
+
+**KEEP (reversed 2026-04-25):**
+- `USE_DUCKDB_IO = False` and `USE_POLARS_TRANSFORMS = False` — preserved to match the parity-baseline (pandas codepaths). The lean port is structural-only; backend migration to polars+duckdb is deferred to a follow-up sprint after the port settles.
 
 - [ ] **Step 3: Smoke-test the new config**
 
@@ -324,7 +325,7 @@ import config
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 1: Logging + helpers (from utils/normalization, utils/data_utils)
 # ─────────────────────────────────────────────────────────────────────────────
-# Section 2: I/O backend (from utils/io_backend, utils/file_utils — Polars+DuckDB only)
+# Section 2: I/O backend (from utils/io_backend, utils/file_utils — preserve all branches)
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 3: Reference data loaders (from pipeline/reference_data)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,7 +346,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Fill Section 1 (helpers) + Section 2 (I/O)**
 
-Copy bodies from `src/utils/normalization.py`, `src/utils/data_utils.py`, `src/utils/file_utils.py`, `src/utils/io_backend.py`. **Drop pandas branches** in `file_utils.py` — keep only Polars/DuckDB code paths.
+Copy bodies from `src/utils/normalization.py`, `src/utils/data_utils.py`, `src/utils/file_utils.py`, `src/utils/io_backend.py` **verbatim** — preserve all branches (pandas + DuckDB + Polars). Structural-only port; behaviour must match parity baseline.
 
 After this step, run:
 ```bash
@@ -923,7 +924,7 @@ Add a line to the plan under "Server Parity" status (✅ passed on `<date>` agai
   - "1 file to aggregate and match" → `aggregate.py` (Task 4) ✓
   - "1 file for reporting" → `report.py` (Task 5) ✓
   - "directly under where the file is processed" → top-level co-located with `data/` ✓
-  - Polars + DuckDB only → pandas branches dropped in Tasks 2, 3 ✓
+  - ~~Polars + DuckDB only~~ → **structural-only port: all backends preserved at False default to match parity baseline; backend migration deferred** ✓
   - Multiprocessing kept and verified → Tasks 3 + 6 ✓
   - Phase 2 resting kept → Phase 2 flags preserved verbatim in Task 2 ✓
   - Port `_legacy.py` (rewrite later) → Task 0 archives rewrite WIP; Task 3 step 6 copies legacy verbatim ✓
