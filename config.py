@@ -22,7 +22,8 @@ except ImportError:
 
 
 # ── Path constants ─────────────────────────────────────────────────────────────
-DATA_DIR      = Path(__file__).parent / "data"
+PROJECT_ROOT  = Path(__file__).parent.resolve()
+DATA_DIR      = PROJECT_ROOT / "data"
 RAW_DIR       = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 OUTPUTS_DIR   = DATA_DIR / "outputs"
