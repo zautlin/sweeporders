@@ -201,8 +201,32 @@ def get_partition_dir(base_dir, partition_key):
     return Path(base_dir) / date / security
 
 
+def _glob_raw_inputs(folder):
+    """List raw input files under folder, preferring .parquet over .csv per stem.
+
+    Run convert_raw.py once to materialise parquet copies; this helper then routes
+    everything to the parquet versions automatically.
+    """
+    folder = Path(folder)
+    if not folder.is_dir():
+        return []
+    seen = set()
+    out = []
+    for f in sorted(folder.glob('*.parquet')):
+        out.append(f)
+        seen.add(f.stem)
+    for f in sorted(folder.glob('*.csv')):
+        if f.stem not in seen:
+            out.append(f)
+    return out
+
+
 def safe_read_csv(filepath, required=True, compression='infer', **kwargs):
-    """Read CSV with existence check and error handling."""
+    """Read tabular data with format auto-detection (Parquet or CSV).
+
+    Dispatches on file extension: .parquet → pd.read_parquet, else CSV.
+    Name kept for backward compatibility with legacy call sites.
+    """
     filepath = Path(filepath)
 
     if not filepath.exists():
@@ -210,15 +234,15 @@ def safe_read_csv(filepath, required=True, compression='infer', **kwargs):
             raise FileNotFoundError(f"Required file not found: {filepath}")
         return None
 
-    if config.USE_DUCKDB_IO:
-        try:
-            from utils.io_backend import get_conn, duck_to_polars
+    try:
+        if filepath.suffix == '.parquet':
+            kwargs.pop('compression', None)
+            return pd.read_parquet(filepath, **kwargs)
+
+        if config.USE_DUCKDB_IO:
             rel = get_conn().execute(f"SELECT * FROM read_csv_auto('{filepath}')")
             return duck_to_polars(rel).to_pandas()
-        except Exception as e:
-            raise IOError(f"Error reading {filepath}: {e}")
 
-    try:
         return pd.read_csv(filepath, compression=compression, **kwargs)
     except pd.errors.EmptyDataError:
         return None
@@ -227,9 +251,10 @@ def safe_read_csv(filepath, required=True, compression='infer', **kwargs):
 
 
 def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
-    """Write CSV with directory creation and error handling.
+    """Write tabular data with format auto-detection (Parquet or CSV).
 
-    Accepts both pandas DataFrames and Polars DataFrames.
+    Dispatches on file extension: .parquet → zstd parquet, else CSV.
+    Accepts both pandas and Polars DataFrames.
     """
     filepath = Path(filepath)
 
@@ -237,6 +262,13 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
     try:
+        if filepath.suffix == '.parquet':
+            if isinstance(df, pl.DataFrame):
+                df.write_parquet(filepath, compression='zstd')
+            else:
+                df.to_parquet(filepath, compression='zstd', index=False)
+            return
+
         if isinstance(df, pl.DataFrame):
             df.write_csv(filepath)
         else:
@@ -248,61 +280,56 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
 def query_partitions(base_dir, filename, where_sql="") -> pl.DataFrame:
     """Query one file across every date/orderbookid partition in a single DuckDB pass.
 
+    Dispatches the reader on filename extension (.parquet → read_parquet, else read_csv_auto).
+
     Usage::
 
-        # All sweep orders across all partitions
-        df = query_partitions(PROCESSED_DIR, 'orders_before_matching.csv',
+        df = query_partitions(PROCESSED_DIR, 'orders_before_matching.parquet',
                               "WHERE exchangeordertype = 2048")
-
-        # All real trade metrics for cross-security aggregation
-        df = query_partitions(OUTPUTS_DIR, 'real_trade_metrics.csv')
-
-        # Works on gzip files too (DuckDB auto-detects)
-        df = query_partitions(PROCESSED_DIR, 'cp_trades_matched.csv.gz')
-
-    Returns a Polars DataFrame with all rows union'd; column order normalised by name.
+        df = query_partitions(OUTPUTS_DIR, 'real_trade_metrics.parquet')
+        df = query_partitions(PROCESSED_DIR, 'cp_trades_matched.parquet')
     """
-    from utils.io_backend import get_conn, duck_to_polars
     glob_pattern = str(Path(base_dir) / '*' / '*' / filename)
+    reader = "read_parquet" if filename.endswith(".parquet") else "read_csv_auto"
     conn = get_conn()
-    sql = f"SELECT * FROM read_csv_auto('{glob_pattern}', union_by_name=True) {where_sql}"
+    sql = f"SELECT * FROM {reader}('{glob_pattern}', union_by_name=True) {where_sql}"
     return duck_to_polars(conn.execute(sql))
 
 
 def load_orders_before(partition_dir):
-    """Load orders_before_matching.csv from partition directory."""
-    filepath = Path(partition_dir) / "orders_before_matching.csv"
+    """Load orders_before_matching parquet from partition directory."""
+    filepath = Path(partition_dir) / "orders_before_matching.parquet"
     return safe_read_csv(filepath, required=False)
 
 
 def load_orders_after(partition_dir):
-    """Load orders_after_matching.csv from partition directory."""
-    filepath = Path(partition_dir) / "orders_after_matching.csv"
+    """Load orders_after_matching parquet from partition directory."""
+    filepath = Path(partition_dir) / "orders_after_matching.parquet"
     return safe_read_csv(filepath, required=False)
 
 
 def load_trades_matched(partition_dir):
-    """Load cp_trades_matched.csv.gz from partition directory."""
-    filepath = Path(partition_dir) / "cp_trades_matched.csv.gz"
-    return safe_read_csv(filepath, required=False, compression='gzip')
+    """Load cp_trades_matched parquet from partition directory."""
+    filepath = Path(partition_dir) / "cp_trades_matched.parquet"
+    return safe_read_csv(filepath, required=False)
 
 
 def load_trades_aggregated(partition_dir):
-    """Load cp_trades_aggregated.csv.gz from partition directory."""
-    filepath = Path(partition_dir) / "cp_trades_aggregated.csv.gz"
-    return safe_read_csv(filepath, required=False, compression='gzip')
+    """Load cp_trades_aggregated parquet from partition directory."""
+    filepath = Path(partition_dir) / "cp_trades_aggregated.parquet"
+    return safe_read_csv(filepath, required=False)
 
 
 def load_last_execution(partition_dir):
-    """Load last_execution_time.csv from partition directory."""
-    filepath = Path(partition_dir) / "last_execution_time.csv"
+    """Load last_execution_time parquet from partition directory."""
+    filepath = Path(partition_dir) / "last_execution_time.parquet"
     return safe_read_csv(filepath, required=False)
 
 
 def load_nbbo(partition_dir):
-    """Load nbbo.csv.gz from partition directory."""
-    filepath = Path(partition_dir) / "nbbo.csv.gz"
-    return safe_read_csv(filepath, required=False, compression='gzip')
+    """Load nbbo parquet from partition directory."""
+    filepath = Path(partition_dir) / "nbbo.parquet"
+    return safe_read_csv(filepath, required=False)
 
 
 def save_simulation_results(sim_results, output_dir, partition_key):
@@ -314,7 +341,7 @@ def save_simulation_results(sim_results, output_dir, partition_key):
     if 'order_summary' in sim_results and sim_results['order_summary'] is not None:
         safe_write_csv(
             sim_results['order_summary'],
-            partition_output_dir / 'simulation_order_summary.csv',
+            partition_output_dir / 'simulation_order_summary.parquet',
             create_dirs=False
         )
     
@@ -327,11 +354,10 @@ def save_simulation_results(sim_results, output_dir, partition_key):
             partition_processed_dir = processed_dir / partition_key
             partition_processed_dir.mkdir(parents=True, exist_ok=True)
             
-            trades_filename = 'cp_trades_simulation.csv'
+            trades_filename = 'cp_trades_simulation.parquet'
             safe_write_csv(
                 simulated_trades,
                 partition_processed_dir / trades_filename,
-                compression=None,  # Uncompressed for easier access
                 create_dirs=False
             )
 
@@ -346,8 +372,7 @@ def save_resting_simulation_results(sim_results, output_dir, partition_key):
     if resting_trades is not None and len(resting_trades) > 0:
         safe_write_csv(
             resting_trades,
-            partition_processed_dir / 'cp_trades_simulation_resting.csv',
-            compression=None,
+            partition_processed_dir / 'cp_trades_simulation_resting.parquet',
             create_dirs=False,
         )
 
@@ -357,7 +382,7 @@ def save_resting_simulation_results(sim_results, output_dir, partition_key):
         partition_output_dir.mkdir(parents=True, exist_ok=True)
         safe_write_csv(
             resting_summary,
-            partition_output_dir / 'resting_order_summary.csv',
+            partition_output_dir / 'resting_order_summary.parquet',
             create_dirs=False,
         )
 
@@ -367,7 +392,7 @@ def save_orders_with_metrics(orders_with_metrics, output_dir, partition_key):
     partition_output_dir = Path(output_dir) / partition_key
     safe_write_csv(
         orders_with_metrics,
-        partition_output_dir / 'orders_with_simulated_metrics.csv'
+        partition_output_dir / 'orders_with_simulated_metrics.parquet'
     )
 
 
@@ -378,13 +403,13 @@ def save_trade_comparison(comparison_df, accuracy_df, output_dir, partition_key)
     if comparison_df is not None and len(comparison_df) > 0:
         safe_write_csv(
             comparison_df,
-            partition_output_dir / 'trade_level_comparison.csv'
+            partition_output_dir / 'trade_level_comparison.parquet'
         )
     
     if accuracy_df is not None and len(accuracy_df) > 0:
         safe_write_csv(
             accuracy_df,
-            partition_output_dir / 'trade_accuracy_summary.csv'
+            partition_output_dir / 'trade_accuracy_summary.parquet'
         )
 
 
@@ -395,13 +420,13 @@ def save_trade_metrics(real_metrics_df, sim_metrics_df, output_dir, partition_ke
     if real_metrics_df is not None and len(real_metrics_df) > 0:
         safe_write_csv(
             real_metrics_df,
-            partition_output_dir / 'real_trade_metrics.csv'
+            partition_output_dir / 'real_trade_metrics.parquet'
         )
     
     if sim_metrics_df is not None and len(sim_metrics_df) > 0:
         safe_write_csv(
             sim_metrics_df,
-            partition_output_dir / 'simulated_trade_metrics.csv'
+            partition_output_dir / 'simulated_trade_metrics.parquet'
         )
 
 
@@ -409,8 +434,8 @@ def load_trade_metrics(output_dir, partition_key):
     """Load pre-calculated trade metrics from Stage 2 output directory."""
     partition_output_dir = Path(output_dir) / partition_key
     
-    real_metrics_path = partition_output_dir / 'real_trade_metrics.csv'
-    sim_metrics_path = partition_output_dir / 'simulated_trade_metrics.csv'
+    real_metrics_path = partition_output_dir / 'real_trade_metrics.parquet'
+    sim_metrics_path = partition_output_dir / 'simulated_trade_metrics.parquet'
     
     real_metrics_df = safe_read_csv(real_metrics_path, required=False)
     sim_metrics_df = safe_read_csv(sim_metrics_path, required=False)
@@ -419,14 +444,14 @@ def load_trade_metrics(output_dir, partition_key):
 
 
 def load_simulation_trades(partition_dir):
-    """Load cp_trades_simulation.csv from partition processed directory."""
-    filepath = Path(partition_dir) / "cp_trades_simulation.csv"
+    """Load cp_trades_simulation parquet from partition processed directory."""
+    filepath = Path(partition_dir) / "cp_trades_simulation.parquet"
     return safe_read_csv(filepath, required=False)
 
 
 def load_simulation_order_summary(partition_dir):
-    """Load simulation_order_summary.csv from partition output directory."""
-    filepath = Path(partition_dir) / "simulation_order_summary.csv"
+    """Load simulation_order_summary parquet from partition output directory."""
+    filepath = Path(partition_dir) / "simulation_order_summary.parquet"
     return safe_read_csv(filepath, required=False)
 
 # ============================================================================
@@ -462,10 +487,10 @@ class ReferenceDataLoader:
         
     def load_participants(self):
         """Load participant reference data."""
-        participants_file = self.processed_dir / 'participants.csv.gz'
+        participants_file = self.processed_dir / 'participants.parquet'
         if not participants_file.exists():
             return None
-        participants = pd.read_csv(participants_file)
+        participants = pd.read_parquet(participants_file)
         if 'Id' in participants.columns:
             self.participants = participants.set_index('Id').to_dict('index')
         return participants
@@ -486,14 +511,14 @@ class ReferenceDataLoader:
         if orderbookid in self.tick_size_tables:
             return self.tick_size_tables[orderbookid]
         
-        reference_file = self.processed_dir / 'reference.csv.gz'
+        reference_file = self.processed_dir / 'reference.parquet'
         if not reference_file.exists():
             self.tick_size_tables[orderbookid] = None
             return None
-        
-        reference = pd.read_csv(reference_file)
+
+        reference = pd.read_parquet(reference_file)
         orderbook_ref = reference[reference.get('OrderBookId', reference.get('orderbookid')) == orderbookid]
-        
+
         if len(orderbook_ref) == 0:
             self.tick_size_tables[orderbookid] = None
             return None
@@ -536,10 +561,10 @@ class ReferenceDataLoader:
     
     def load_tick_sizes_from_nbbo(self, partition_dir):
         """Load/estimate tick sizes from NBBO data."""
-        nbbo_file = Path(partition_dir) / 'nbbo.csv.gz'
+        nbbo_file = Path(partition_dir) / 'nbbo.parquet'
         if not nbbo_file.exists():
             return 10
-        nbbo = pd.read_csv(nbbo_file)
+        nbbo = pd.read_parquet(nbbo_file)
         if len(nbbo) == 0:
             return 10
         if 'bid' in nbbo.columns and 'offer' in nbbo.columns:
@@ -553,10 +578,10 @@ class ReferenceDataLoader:
     
     def load_tick_sizes_from_orders(self, partition_dir):
         """Estimate tick size from order prices."""
-        orders_file = Path(partition_dir) / 'orders_before_matching.csv'
+        orders_file = Path(partition_dir) / 'orders_before_matching.parquet'
         if not orders_file.exists():
             return 10
-        orders = pd.read_csv(orders_file, nrows=1000)
+        orders = pd.read_parquet(orders_file).head(1000)
         if 'price' not in orders.columns:
             return 10
         prices = orders['price'].dropna().unique()
@@ -582,12 +607,12 @@ class ReferenceDataLoader:
         if orderbookid in self.price_limits:
             return self.price_limits[orderbookid]
         
-        reference_file = self.processed_dir / 'reference.csv.gz'
+        reference_file = self.processed_dir / 'reference.parquet'
         if not reference_file.exists():
             self.price_limits[orderbookid] = None
             return None
-        
-        reference = pd.read_csv(reference_file)
+
+        reference = pd.read_parquet(reference_file)
         orderbook_ref = reference[reference.get('OrderBookId', reference.get('orderbookid')) == orderbookid]
         
         if len(orderbook_ref) == 0:
@@ -725,13 +750,16 @@ def load_session_data(date, orderbookid):
     """
     # Normalize date format
     date_str = date.replace('-', '')
-    session_file = PROJECT_ROOT / 'data' / 'raw' / 'session' / f'{date_str}_session.csv'
-    
+    session_dir = PROJECT_ROOT / 'data' / 'raw' / 'session'
+    session_pq = session_dir / f'{date_str}_session.parquet'
+    session_csv = session_dir / f'{date_str}_session.csv'
+    session_file = session_pq if session_pq.exists() else session_csv
+
     if not session_file.exists():
         print(f"  Warning: Session file not found: {session_file}")
         return None
-    
-    session_df = pd.read_csv(session_file)
+
+    session_df = pd.read_parquet(session_file) if session_file.suffix == '.parquet' else pd.read_csv(session_file)
     
     # Clean column names (remove leading spaces)
     session_df.columns = session_df.columns.str.strip()
@@ -908,7 +936,8 @@ def _read_csv_files_concat(file_list):
 
     dfs = []
     for file in file_list:
-        df = pd.read_csv(file)
+        f = Path(file)
+        df = pd.read_parquet(f) if f.suffix == '.parquet' else pd.read_csv(f)
         dfs.append(df)
 
     if not dfs:
@@ -918,7 +947,7 @@ def _read_csv_files_concat(file_list):
 
 
 def _partition_by_date_and_save(df, unique_dates, processed_dir, filename, date_col):
-    """Partition DataFrame by date and save each partition as compressed CSV."""
+    """Partition DataFrame by date and save each partition. Format dispatched on filename extension."""
     results = {}
 
     for date in unique_dates:
@@ -930,7 +959,7 @@ def _partition_by_date_and_save(df, unique_dates, processed_dir, filename, date_
                 date_dir = Path(processed_dir) / date
                 date_dir.mkdir(parents=True, exist_ok=True)
                 output_file = date_dir / filename
-                date_data.to_csv(output_file, index=False, compression='gzip')
+                safe_write_csv(date_data, output_file, create_dirs=False, compression='gzip')
                 size_kb = output_file.stat().st_size / 1024
                 print(f"    {date}/{filename}: {len(date_data):,} records ({size_kb:.1f} KB)")
             else:
@@ -942,7 +971,7 @@ def _partition_by_date_and_save(df, unique_dates, processed_dir, filename, date_
 
 
 def _partition_by_date_security_and_save(df, orders_by_partition, processed_dir, filename, date_col, security_col):
-    """Partition DataFrame by date/security and save each partition as compressed CSV."""
+    """Partition DataFrame by date/security and save each partition. Format dispatched on filename extension."""
     results = {}
 
     for partition_key in orders_by_partition.keys():
@@ -961,7 +990,7 @@ def _partition_by_date_security_and_save(df, orders_by_partition, processed_dir,
                 partition_dir = Path(processed_dir) / date / orderbookid
                 partition_dir.mkdir(parents=True, exist_ok=True)
                 output_file = partition_dir / filename
-                partition_data_normalized.to_csv(output_file, index=False, compression='gzip')
+                safe_write_csv(partition_data_normalized, output_file, create_dirs=False, compression='gzip')
                 size_kb = output_file.stat().st_size / 1024
                 print(f"    {partition_key}/{filename}: {len(partition_data):,} records ({size_kb:.1f} KB)")
             else:
@@ -1009,18 +1038,18 @@ def _process_participants_with_fallback(file_list, timestamp_col, unique_dates, 
     
     for date in unique_dates:
         date_data = df[df[col.common.date] == date].copy()
-        
+
         if len(date_data) > 0:
             results[date] = date_data
             if _should_save():
                 date_dir = Path(processed_dir) / date
                 date_dir.mkdir(parents=True, exist_ok=True)
-                output_file = date_dir / "participants.csv.gz"
-                date_data.to_csv(output_file, index=False, compression='gzip')
+                output_file = date_dir / "participants.parquet"
+                safe_write_csv(date_data, output_file, create_dirs=False)
                 size_kb = output_file.stat().st_size / 1024
-                print(f"    {date}/participants.csv.gz: {len(date_data):,} records ({size_kb:.1f} KB)")
+                print(f"    {date}/participants.parquet: {len(date_data):,} records ({size_kb:.1f} KB)")
             else:
-                print(f"    {date}/participants.csv.gz: {len(date_data):,} records (in-memory)")
+                print(f"    {date}/participants.parquet: {len(date_data):,} records (in-memory)")
         else:
             latest_date = max(all_participant_dates)
             fallback_data = df[df[col.common.date] == latest_date].copy()
@@ -1028,13 +1057,13 @@ def _process_participants_with_fallback(file_list, timestamp_col, unique_dates, 
             if _should_save():
                 date_dir = Path(processed_dir) / date
                 date_dir.mkdir(parents=True, exist_ok=True)
-                output_file = date_dir / "participants.csv.gz"
-                fallback_data.to_csv(output_file, index=False, compression='gzip')
+                output_file = date_dir / "participants.parquet"
+                safe_write_csv(fallback_data, output_file, create_dirs=False)
                 size_kb = output_file.stat().st_size / 1024
-                print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records ({size_kb:.1f} KB) [FALLBACK from {latest_date}]")
+                print(f"    {date}/participants.parquet: {len(fallback_data):,} records ({size_kb:.1f} KB) [FALLBACK from {latest_date}]")
             else:
-                print(f"    {date}/participants.csv.gz: {len(fallback_data):,} records (in-memory) [FALLBACK from {latest_date}]")
-    
+                print(f"    {date}/participants.parquet: {len(fallback_data):,} records (in-memory) [FALLBACK from {latest_date}]")
+
     return results
 
 
@@ -1048,7 +1077,7 @@ def _process_nbbo_data(file_list, timestamp_col, orders_by_partition, processed_
         return {}
     
     df = add_date_column(df, timestamp_col)
-    return _partition_by_date_security_and_save(df, orders_by_partition, processed_dir, "nbbo.csv.gz", col.common.date, security_col)
+    return _partition_by_date_security_and_save(df, orders_by_partition, processed_dir, "nbbo.parquet", col.common.date, security_col)
 
 
 def _filter_sweep_orders_by_execution(orders_df):
@@ -1112,54 +1141,80 @@ def _save_execution_times(partition_key, execution_times_df, processed_dir):
     date, security_code = partition_key.split('/')
     partition_dir = Path(processed_dir) / date / security_code
     partition_dir.mkdir(parents=True, exist_ok=True)
-    execution_times_df.to_csv(partition_dir / "last_execution_time.csv", index=False)
+    safe_write_csv(execution_times_df, partition_dir / "last_execution_time.parquet", create_dirs=False)
 
 
-def extract_orders(input_file, processed_dir, order_types, chunk_size):
-    """Extract Centre Point orders and partition by date/security."""
-    print(f"\n[1/11] Extracting Centre Point orders from {input_file}...")
+def extract_orders(input_file, processed_dir, order_types, chunk_size,
+                   orderbookids_filter=None, dates_filter=None):
+    """Extract Centre Point orders from one-or-more raw files; partition by (date, orderbookid).
 
-    if _cfg.USE_DUCKDB_IO:
-        import polars as pl
-        from utils.io_backend import get_conn, duck_to_polars
-        conn = get_conn()
-        types_sql = ','.join(str(t) for t in order_types)
-        orders_pl = duck_to_polars(conn.execute(f"""
-            SELECT * FROM read_csv_auto('{input_file}')
-            WHERE {col.orders.order_type} IN ({types_sql})
-        """))
-        total_rows = conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{input_file}')").fetchone()[0]
-        # Replicate add_date_column: UTC ns epoch → AEST → '%Y-%m-%d'
-        orders_pl = orders_pl.with_columns(
-            pl.from_epoch(pl.col(col.orders.timestamp), time_unit='ns')
-              .dt.replace_time_zone('UTC')
-              .dt.convert_time_zone('Australia/Sydney')
-              .dt.strftime('%Y-%m-%d')
-              .alias(col.common.date)
-        )
-        orders = orders_pl.to_pandas()
-        if len(orders) == 0:
-            print("  No Centre Point orders found!")
-            return {}
-        print(f"  Found {len(orders):,} Centre Point orders from {total_rows:,} total rows")
+    `input_file` may be a single path (str/Path) or a list — each file is read,
+    filtered by `order_types` (and optionally `orderbookids_filter` pushed down at the
+    parquet level), then concatenated. The natural groupby downstream produces
+    data/processed/{date}/{orderbookid}/ regardless of how the inputs were sliced.
+    `dates_filter` is applied post-read (after add_date_column) and accepts
+    'YYYY-MM-DD' strings.
+    """
+    if isinstance(input_file, (str, Path)):
+        input_files = [Path(input_file)]
     else:
-        orders_list = []
-        total_rows = 0
+        input_files = [Path(f) for f in input_file]
 
-        for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
-            total_rows += len(chunk)
-            cp_chunk = chunk[chunk[col.orders.order_type].isin(order_types)].copy()
+    print(f"\n[1/11] Extracting Centre Point orders from {len(input_files)} file(s)...")
+    for f in input_files:
+        print(f"        {f}")
 
-            if len(cp_chunk) > 0:
-                cp_chunk = add_date_column(cp_chunk, col.orders.timestamp)
-                orders_list.append(cp_chunk)
+    frames = []
+    total_rows = 0
+    for fp in input_files:
+        if fp.suffix == '.parquet':
+            import pyarrow.parquet as _pq
+            total_rows += _pq.ParquetFile(fp).metadata.num_rows
+            filters = [(col.orders.order_type, 'in', list(order_types))]
+            if orderbookids_filter:
+                filters.append((col.orders.security_code, 'in', list(orderbookids_filter)))
+            chunk = pd.read_parquet(fp, filters=filters)
+            if len(chunk) > 0:
+                frames.append(chunk)
+        elif _cfg.USE_DUCKDB_IO:
+            import polars as pl
+            conn = get_conn()
+            types_sql = ','.join(str(t) for t in order_types)
+            where = f"{col.orders.order_type} IN ({types_sql})"
+            if orderbookids_filter:
+                obid_sql = ','.join(str(x) for x in orderbookids_filter)
+                where += f" AND {col.orders.security_code} IN ({obid_sql})"
+            orders_pl = duck_to_polars(conn.execute(f"""
+                SELECT * FROM read_csv_auto('{fp}')
+                WHERE {where}
+            """))
+            total_rows += conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{fp}')").fetchone()[0]
+            chunk = orders_pl.to_pandas()
+            if len(chunk) > 0:
+                frames.append(chunk)
+        else:
+            for sub in pd.read_csv(fp, chunksize=chunk_size, low_memory=False):
+                total_rows += len(sub)
+                f = sub[sub[col.orders.order_type].isin(order_types)]
+                if orderbookids_filter:
+                    f = f[f[col.orders.security_code].isin(orderbookids_filter)]
+                if len(f) > 0:
+                    frames.append(f.copy())
 
-        if not orders_list:
-            print("  No Centre Point orders found!")
+    if not frames:
+        print("  No Centre Point orders found!")
+        return {}
+
+    orders = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    orders = add_date_column(orders, col.orders.timestamp)
+
+    if dates_filter:
+        orders = orders[orders[col.common.date].isin(dates_filter)]
+        if len(orders) == 0:
+            print(f"  No Centre Point orders match dates_filter={dates_filter}")
             return {}
 
-        orders = pd.concat(orders_list, ignore_index=True)
-        print(f"  Found {len(orders):,} Centre Point orders from {total_rows:,} total rows")
+    print(f"  Found {len(orders):,} Centre Point orders from {total_rows:,} total rows")
     
     # Partition by date/security
     partitions = {}
@@ -1175,8 +1230,8 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size):
         if _should_save():
             partition_dir = Path(processed_dir) / date / str(security_code_val)
             partition_dir.mkdir(parents=True, exist_ok=True)
-            partition_file = partition_dir / "cp_orders_filtered.csv.gz"
-            group_df_normalized.to_csv(partition_file, index=False, compression='gzip')
+            partition_file = partition_dir / "cp_orders_filtered.parquet"
+            safe_write_csv(group_df_normalized, partition_file, create_dirs=False)
             size_mb = partition_file.stat().st_size / (1024 * 1024)
             print(f"  {partition_key}: {len(group_df):,} orders ({size_mb:.2f} MB)")
         else:
@@ -1186,65 +1241,63 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size):
 
 
 def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
-    """Extract trades matching order_ids from partitions."""
-    print(f"\n[2/11] Extracting matching trades from {input_file}...")
-    
+    """Extract trades matching order_ids from partitions; supports list-of-files."""
+    if isinstance(input_file, (str, Path)):
+        input_files = [Path(input_file)]
+    else:
+        input_files = [Path(f) for f in input_file]
+
+    print(f"\n[2/11] Extracting matching trades from {len(input_files)} file(s)...")
+
     order_id_col_orders = 'orderid'
-    
-    # Collect all order IDs
+
+    # Collect all order IDs across all order partitions
     all_order_ids = set()
     partition_order_ids = {}
-    
     for partition_key, orders_df in orders_by_partition.items():
         order_ids = set(orders_df[order_id_col_orders].unique())
         partition_order_ids[partition_key] = order_ids
         all_order_ids.update(order_ids)
-    
+
     print(f"  Looking for {len(all_order_ids):,} order IDs across {len(orders_by_partition)} partitions")
 
-    if _cfg.USE_DUCKDB_IO:
-        import polars as pl
-        from utils.io_backend import get_conn, duck_to_polars
-        conn = get_conn()
-        # Use a temp table join to avoid huge IN-list string interpolation
-        conn.execute("CREATE OR REPLACE TEMP TABLE _target_ids (orderid BIGINT)")
-        conn.executemany("INSERT INTO _target_ids VALUES (?)", [(int(i),) for i in all_order_ids])
-        trades_pl = duck_to_polars(conn.execute(f"""
-            SELECT t.* FROM read_csv_auto('{input_file}') t
-            JOIN _target_ids i ON t.{col.trades.order_id} = i.orderid
-        """))
-        total_rows = conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{input_file}')").fetchone()[0]
-        trades_pl = trades_pl.with_columns(
-            pl.from_epoch(pl.col(col.trades.trade_time), time_unit='ns')
-              .dt.replace_time_zone('UTC')
-              .dt.convert_time_zone('Australia/Sydney')
-              .dt.strftime('%Y-%m-%d')
-              .alias(col.common.date)
-        )
-        all_trades = trades_pl.to_pandas()
-        if len(all_trades) == 0:
-            print("  No matching trades found!")
-            return {}
-        print(f"  Found {len(all_trades):,} trades from {total_rows:,} total rows")
-    else:
-        # Read and filter trades
-        trades_list = []
-        total_rows = 0
+    frames = []
+    total_rows = 0
+    for fp in input_files:
+        if fp.suffix == '.parquet':
+            import pyarrow.parquet as _pq
+            total_rows += _pq.ParquetFile(fp).metadata.num_rows
+            trades = pd.read_parquet(fp)
+            matched = trades[trades[col.trades.order_id].isin(all_order_ids)].copy()
+            if len(matched) > 0:
+                frames.append(matched)
+        elif _cfg.USE_DUCKDB_IO:
+            import polars as pl
+            conn = get_conn()
+            conn.execute("CREATE OR REPLACE TEMP TABLE _target_ids (orderid BIGINT)")
+            conn.executemany("INSERT INTO _target_ids VALUES (?)", [(int(i),) for i in all_order_ids])
+            trades_pl = duck_to_polars(conn.execute(f"""
+                SELECT t.* FROM read_csv_auto('{fp}') t
+                JOIN _target_ids i ON t.{col.trades.order_id} = i.orderid
+            """))
+            total_rows += conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{fp}')").fetchone()[0]
+            chunk = trades_pl.to_pandas()
+            if len(chunk) > 0:
+                frames.append(chunk)
+        else:
+            for sub in pd.read_csv(fp, chunksize=chunk_size, low_memory=False):
+                total_rows += len(sub)
+                matched_chunk = sub[sub[col.trades.order_id].isin(all_order_ids)].copy()
+                if len(matched_chunk) > 0:
+                    frames.append(matched_chunk)
 
-        for chunk in pd.read_csv(input_file, chunksize=chunk_size, low_memory=False):
-            total_rows += len(chunk)
-            matched_chunk = chunk[chunk[col.trades.order_id].isin(all_order_ids)].copy()
+    if not frames:
+        print("  No matching trades found!")
+        return {}
 
-            if len(matched_chunk) > 0:
-                matched_chunk = add_date_column(matched_chunk, col.trades.trade_time)
-                trades_list.append(matched_chunk)
-
-        if not trades_list:
-            print("  No matching trades found!")
-            return {}
-
-        all_trades = pd.concat(trades_list, ignore_index=True)
-        print(f"  Found {len(all_trades):,} trades from {total_rows:,} total rows")
+    all_trades = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+    all_trades = add_date_column(all_trades, col.trades.trade_time)
+    print(f"  Found {len(all_trades):,} trades from {total_rows:,} total rows")
     
     # Partition trades to match order partitions
     trades_by_partition = {}
@@ -1264,8 +1317,8 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
                 date, security_code = partition_key.split('/')
                 partition_dir = Path(processed_dir) / date / security_code
                 partition_dir.mkdir(parents=True, exist_ok=True)
-                partition_file = partition_dir / "cp_trades_matched.csv.gz"
-                partition_trades_normalized.to_csv(partition_file, index=False, compression='gzip')
+                partition_file = partition_dir / "cp_trades_matched.parquet"
+                safe_write_csv(partition_trades_normalized, partition_file, create_dirs=False)
                 size_mb = partition_file.stat().st_size / (1024 * 1024)
                 print(f"  {partition_key}: {len(partition_trades):,} trades, {unique_orders:,} orders ({size_mb:.2f} MB)")
             else:
@@ -1286,7 +1339,6 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir):
         
         if _cfg.USE_DUCKDB_IO:
             import polars as pl
-            from utils.io_backend import get_conn, duck_to_polars
             conn = get_conn()
             conn.register('_trades', trades_df.to_arrow() if hasattr(trades_df, 'to_arrow') else __import__('pyarrow').Table.from_pandas(trades_df))
             agg_pl = duck_to_polars(conn.execute(f"""
@@ -1348,8 +1400,8 @@ def aggregate_trades(orders_by_partition, trades_by_partition, processed_dir):
         partition_dir = Path(processed_dir) / date / security_code
         partition_dir.mkdir(parents=True, exist_ok=True)
         
-        partition_file = partition_dir / "cp_trades_aggregated.csv.gz"
-        trades_agg.to_csv(partition_file, index=False, compression='gzip')
+        partition_file = partition_dir / "cp_trades_aggregated.parquet"
+        safe_write_csv(trades_agg, partition_file, create_dirs=False)
         
         size_mb = partition_file.stat().st_size / (1024 * 1024)
         print(f"  {partition_key}: {len(trades_agg):,} orders with trades ({size_mb:.2f} MB)")
@@ -1379,25 +1431,25 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition):
     
     results = {'session': {}, 'reference': {}, 'participants': {}, 'nbbo': {}}
     
-    session_files = list(Path(raw_folders['session']).glob('*.csv'))
+    session_files = _glob_raw_inputs(raw_folders['session'])
     if session_files:
         print(f"\n  Processing Session data from {len(session_files)} file(s)...")
         results['session'] = _process_single_reference_type(
-            session_files, col.session.timestamp, unique_dates, processed_dir, 'session.csv.gz', 'session'
+            session_files, col.session.timestamp, unique_dates, processed_dir, 'session.parquet', 'session'
         )
     else:
         print(f"\n  Processing Session data from 0 file(s)...")
     
-    reference_files = list(Path(raw_folders['reference']).glob('*.csv'))
+    reference_files = _glob_raw_inputs(raw_folders['reference'])
     if reference_files:
         print(f"\n  Processing Reference data from {len(reference_files)} file(s)...")
         results['reference'] = _process_single_reference_type(
-            reference_files, col.reference.timestamp, unique_dates, processed_dir, 'reference.csv.gz', 'reference'
+            reference_files, col.reference.timestamp, unique_dates, processed_dir, 'reference.parquet', 'reference'
         )
     else:
         print(f"\n  Processing Reference data from 0 file(s)...")
     
-    participants_files = list(Path(raw_folders['participants']).glob('*.csv'))
+    participants_files = _glob_raw_inputs(raw_folders['participants'])
     if participants_files:
         print(f"\n  Processing Participants data from {len(participants_files)} file(s)...")
         results['participants'] = _process_participants_with_fallback(
@@ -1406,7 +1458,7 @@ def process_reference_data(raw_folders, processed_dir, orders_by_partition):
     else:
         print(f"\n  Processing Participants data from 0 file(s)...")
     
-    nbbo_files = list(Path(raw_folders['nbbo']).glob('*.csv'))
+    nbbo_files = _glob_raw_inputs(raw_folders['nbbo'])
     if nbbo_files:
         print(f"\n  Processing NBBO data from {len(nbbo_files)} file(s)...")
         results['nbbo'] = _process_nbbo_data(
@@ -1472,8 +1524,8 @@ def get_orders_state(orders_by_partition, processed_dir):
         if _should_save():
             partition_dir = Path(processed_dir) / date / security_code
             partition_dir.mkdir(parents=True, exist_ok=True)
-            orders_before.to_csv(partition_dir / "orders_before_matching.csv", index=False)
-            orders_after.to_csv(partition_dir / "orders_after_matching.csv", index=False)
+            safe_write_csv(orders_before, partition_dir / "orders_before_matching.parquet", create_dirs=False)
+            safe_write_csv(orders_after, partition_dir / "orders_after_matching.parquet", create_dirs=False)
 
         print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after")
     
@@ -1527,50 +1579,49 @@ def load_partition_data(partition_key, processed_dir):
     # ===== PARTITION-LEVEL DATA =====
     
     # Load orders_before_matching
-    before_file = partition_dir / "orders_before_matching.csv"
+    before_file = partition_dir / "orders_before_matching.parquet"
     if before_file.exists():
-        partition_data['orders_before'] = pd.read_csv(before_file)
-    
+        partition_data['orders_before'] = pd.read_parquet(before_file)
+
     # Load orders_after_matching
-    after_file = partition_dir / "orders_after_matching.csv"
+    after_file = partition_dir / "orders_after_matching.parquet"
     if after_file.exists():
-        partition_data['orders_after'] = pd.read_csv(after_file)
-    
+        partition_data['orders_after'] = pd.read_parquet(after_file)
+
     # Load last_execution_time
-    exec_file = partition_dir / "last_execution_time.csv"
+    exec_file = partition_dir / "last_execution_time.parquet"
     if exec_file.exists():
-        partition_data['last_execution'] = pd.read_csv(exec_file)
+        partition_data['last_execution'] = pd.read_parquet(exec_file)
     else:
-        # Create empty DataFrame if no execution times
         partition_data['last_execution'] = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
-    
+
     # ===== REFERENCE DATA =====
-    
+
     # Load NBBO (partition-specific)
-    nbbo_file = partition_dir / "nbbo.csv.gz"
+    nbbo_file = partition_dir / "nbbo.parquet"
     if nbbo_file.exists():
-        partition_data['nbbo'] = pd.read_csv(nbbo_file)
+        partition_data['nbbo'] = pd.read_parquet(nbbo_file)
     else:
         partition_data['nbbo'] = pd.DataFrame()
-    
+
     # Load session data (date-level)
-    session_file = date_dir / "session.csv.gz"
+    session_file = date_dir / "session.parquet"
     if session_file.exists():
-        partition_data['session'] = pd.read_csv(session_file)
+        partition_data['session'] = pd.read_parquet(session_file)
     else:
         partition_data['session'] = pd.DataFrame()
-    
+
     # Load reference data (date-level)
-    reference_file = date_dir / "reference.csv.gz"
+    reference_file = date_dir / "reference.parquet"
     if reference_file.exists():
-        partition_data['reference'] = pd.read_csv(reference_file)
+        partition_data['reference'] = pd.read_parquet(reference_file)
     else:
         partition_data['reference'] = pd.DataFrame()
-    
+
     # Load participants data (date-level)
-    participants_file = date_dir / "participants.csv.gz"
+    participants_file = date_dir / "participants.parquet"
     if participants_file.exists():
-        partition_data['participants'] = pd.read_csv(participants_file)
+        partition_data['participants'] = pd.read_parquet(participants_file)
     else:
         partition_data['participants'] = pd.DataFrame()
     
@@ -1587,12 +1638,12 @@ def classify_order_groups(orders_by_partition, processed_dir):
         # Load orders_after_matching.csv to get REAL execution results
         date, security_code = partition_key.split('/')
         partition_dir = Path(processed_dir) / date / security_code
-        after_file = partition_dir / "orders_after_matching.csv"
-        
+        after_file = partition_dir / "orders_after_matching.parquet"
+
         if not after_file.exists():
             continue
-        
-        orders_after = pd.read_csv(after_file)
+
+        orders_after = pd.read_parquet(after_file)
         
         # Filter for sweep orders ONLY (type 2048)
         sweep_orders = orders_after[orders_after[col.common.exchangeordertype] == SWEEP_ORDER_TYPE].copy()
@@ -4482,8 +4533,8 @@ def run_stage_3_calculate_metrics(data, enable_parallel):
             from pathlib import Path
             output_partition_dir = Path(config.OUTPUTS_DIR) / partition_key
             output_partition_dir.mkdir(parents=True, exist_ok=True)
-            sim_metrics_path = output_partition_dir / 'simulated_trade_metrics.csv'
-            sim_aggregated.to_csv(sim_metrics_path, index=False)
+            sim_metrics_path = output_partition_dir / 'simulated_trade_metrics.parquet'
+            safe_write_csv(sim_aggregated, sim_metrics_path, create_dirs=False)
             print(f"  Saved simulated metrics for {partition_key}: {len(sim_aggregated)} orders")
         
         return {
@@ -5272,50 +5323,90 @@ def _make_legacy_args(date, ticker, stages, workers):
 
 
 def cli_multi():
-    """Top-level multi-date/multi-ticker CLI for the lean port."""
+    """Bulk-ingest CLI: process every file under data/raw/{orders,trades}/ in one pass.
+
+    --dates / --tickers / --orderbookids are all optional post-read filters.
+    Absent → process everything found in raw. The natural groupby(date, orderbookid)
+    downstream still partitions output into data/processed/{date}/{orderbookid}/.
+    """
     parser = _argparse.ArgumentParser(
         prog="process.py",
-        description="Stage 1+2: ingest + simulate (multi-date/multi-ticker)."
+        description="Stage 1+2: bulk ingest from data/raw/, partition by (date, orderbookid)."
     )
-    parser.add_argument("--dates", required=True,
-                        help="Comma-separated YYYYMMDD list, e.g. 20240505,20240905")
-    g = parser.add_mutually_exclusive_group(required=True)
-    g.add_argument("--tickers", help="Comma-separated ticker list, e.g. cba,drr,wtc")
-    g.add_argument("--auto-tickers", action="store_true",
-                   help="Auto-discover tickers per date from data/raw/orders/")
+    parser.add_argument("--dates", default=None,
+                        help="Optional comma-separated YYYYMMDD trade-date filter (post-read).")
+    parser.add_argument("--tickers", default=None,
+                        help="Optional comma-separated ticker filter (matches filename substring).")
+    parser.add_argument("--orderbookids", default=None,
+                        help="Optional comma-separated orderbookid filter (parquet predicate-pushdown).")
     parser.add_argument("--workers", type=int, default=None,
-                        help="Worker pool size (default: auto)")
+                        help="Worker pool size for Stage 2 (default: auto).")
     args = parser.parse_args()
 
-    dates = [d.strip() for d in args.dates.split(",") if d.strip()]
-    tickers = None if args.auto_tickers else [t.strip() for t in args.tickers.split(",") if t.strip()]
+    dates_filter = None
+    if args.dates:
+        dates_filter = []
+        for d in (x.strip() for x in args.dates.split(",") if x.strip()):
+            dates_filter.append(f"{d[0:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d)
 
-    partitions = resolve_partitions(dates, tickers)
-    if not partitions:
-        print("No partitions resolved from --dates/--tickers. Exiting.", file=_sys.stderr)
+    orderbookids_filter = None
+    if args.orderbookids:
+        orderbookids_filter = {int(x) for x in args.orderbookids.split(",") if x.strip()}
+
+    tickers_hint = None
+    if args.tickers:
+        tickers_hint = [t.strip().lower() for t in args.tickers.split(",") if t.strip()]
+
+    orders_files = _glob_raw_inputs(config.RAW_FOLDERS['orders'])
+    trades_files = _glob_raw_inputs(config.RAW_FOLDERS['trades'])
+
+    if tickers_hint:
+        def _match(p): return any(t in p.name.lower() for t in tickers_hint)
+        orders_files = [f for f in orders_files if _match(f)]
+        trades_files = [f for f in trades_files if _match(f)]
+
+    if not orders_files:
+        print(f"[process] No orders files found in {config.RAW_FOLDERS['orders']}.", file=_sys.stderr)
         _sys.exit(2)
 
-    print(f"[process] Resolved {len(partitions)} partition(s): {partitions}")
+    print(f"[process] Discovered {len(orders_files)} orders + {len(trades_files)} trades file(s).")
+    if dates_filter:        print(f"[process] dates filter (post-read): {dates_filter}")
+    if orderbookids_filter: print(f"[process] orderbookids filter (push-down): {sorted(orderbookids_filter)}")
+    if tickers_hint:        print(f"[process] tickers hint (filename substring): {tickers_hint}")
+
     setup_directories()
 
-    failures = []
-    for (date, ticker) in partitions:
-        try:
-            print(f"\n[process] === {ticker.upper()} / {date} ===")
-            ns = _make_legacy_args(date, ticker, stages=[1, 2], workers=args.workers)
-            runtime_config = build_runtime_config(ns)
-            execute_pipeline_stages(runtime_config)
-        except SystemExit:
-            raise
-        except BaseException as exc:
-            failures.append((date, ticker, repr(exc)))
-            print(f"[process] FAILED {ticker}/{date}: {exc!r}", file=_sys.stderr)
+    print("\n" + "=" * 80)
+    print("STAGE 1: DATA EXTRACTION & PREPARATION (Steps 1-6)")
+    print("=" * 80)
 
-    if failures:
-        print(f"\n[process] {len(failures)} partition(s) failed:", file=_sys.stderr)
-        for d, t, e in failures:
-            print(f"  - {t}/{d}: {e}", file=_sys.stderr)
-        _sys.exit(1)
+    orders_by_partition = extract_orders(
+        orders_files, config.PROCESSED_DIR,
+        config.CENTRE_POINT_ORDER_TYPES, config.CHUNK_SIZE,
+        orderbookids_filter=orderbookids_filter,
+        dates_filter=dates_filter,
+    )
+    if not orders_by_partition:
+        print("\nNo Centre Point orders found. Exiting.")
+        return
+
+    trades_by_partition = extract_trades(
+        trades_files, orders_by_partition, config.PROCESSED_DIR, config.CHUNK_SIZE,
+    )
+
+    process_reference_data(config.RAW_FOLDERS, config.PROCESSED_DIR, orders_by_partition)
+    get_orders_state(orders_by_partition, config.PROCESSED_DIR)
+    extract_last_execution_times(orders_by_partition, trades_by_partition, config.PROCESSED_DIR)
+
+    partition_keys = list(orders_by_partition.keys())
+    workers = args.workers or config.MAX_PARALLEL_WORKERS
+
+    print("\n" + "=" * 80)
+    print(f"STAGE 2: SIMULATION (Step 7) — {len(partition_keys)} partition(s), {workers} worker(s)")
+    print("=" * 80)
+    process_partitions_parallel_stage_2(partition_keys, config.PROCESSED_DIR, config.OUTPUTS_DIR, workers)
+
+    print(f"\n✓ Stage 1+2 complete for {len(partition_keys)} partition(s)")
 
 
 if __name__ == '__main__':

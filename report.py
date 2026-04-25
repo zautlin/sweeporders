@@ -67,7 +67,7 @@ METRIC_COLUMNS = [
 
 
 def _discover_partition_csvs(dates_filter: list[str] | None):
-    """Yield (date_dir, orderbookid_dir, csv_path) for every real_trade_metrics.csv under data/outputs/."""
+    """Yield (date_dir, orderbookid_dir, metrics_path) for every real_trade_metrics under data/outputs/."""
     root = Path(config.OUTPUTS_DIR)
     if not root.exists():
         return
@@ -75,16 +75,13 @@ def _discover_partition_csvs(dates_filter: list[str] | None):
         if not date_dir.is_dir():
             continue
         if dates_filter is not None and date_dir.name not in dates_filter:
-            # Date-filter compares against the partition-path date (which is the
-            # trade date, not necessarily the raw filename date). Accept matches
-            # on YYYY-MM-DD or YYYYMMDD forms.
             compact = date_dir.name.replace("-", "")
             if compact not in dates_filter:
                 continue
         for obid_dir in sorted(date_dir.iterdir()):
             if not obid_dir.is_dir():
                 continue
-            metrics = obid_dir / "real_trade_metrics.csv"
+            metrics = obid_dir / "real_trade_metrics.parquet"
             if metrics.exists():
                 yield date_dir.name, obid_dir.name, metrics
 
@@ -122,8 +119,8 @@ def _read_all_partitions(dates_filter):
     ticker_map = _build_ticker_map()
     frames = []
     partitions = []
-    for date_dir, obid_dir, csv_path in _discover_partition_csvs(dates_filter):
-        df = pl.read_csv(csv_path, try_parse_dates=False, infer_schema_length=10000)
+    for date_dir, obid_dir, metrics_path in _discover_partition_csvs(dates_filter):
+        df = pl.read_parquet(metrics_path)
         try:
             obid_int = int(obid_dir)
         except ValueError:
@@ -140,8 +137,6 @@ def _read_all_partitions(dates_filter):
     if not frames:
         return pl.DataFrame(), partitions
 
-    # Unify dtypes (some CSVs may infer ints where others infer floats for the
-    # same column). Cast all metric columns to Float64 before concat.
     for i, df in enumerate(frames):
         casts = []
         for c in METRIC_COLUMNS:

@@ -1,0 +1,2 @@
+# participantid not present in real_trade_metrics.csv — needs join against raw orders; deferred.
+date,ticker,participantid,n_orders

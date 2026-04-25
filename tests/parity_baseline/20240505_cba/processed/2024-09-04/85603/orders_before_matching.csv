@@ -1,1 +1,0 @@
-orderid,exchange,timestamp,orderbookid,price,side,changereason,orderstatus,quantity,leavesquantity,ordertype,exchangeordertype,national_bid,national_offer,bid,offer,participantid,preferenceonly,midtick,singlefillminimumquantity,minimumquantity,sequence,crossingkey,matched_quantity,shortsellquantity,triggercondition,timevaliditydecoded,row_num,timevalidity,date

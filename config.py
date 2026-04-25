@@ -69,10 +69,13 @@ WARN_APPROXIMATE_STATS     = True   # Show warnings when using approximate stati
 PROCESSING_MODE  = 'file'      # 'file' | 'memory'  (stream removed)
 NBBO_SOURCE      = 'INTERNAL'  # Only INTERNAL supported; EXTERNAL branch dropped
 
-# Backend selection — kept off by default to preserve parity with legacy pandas
-# behaviour captured in tests/parity_baseline/. Flipping these to True is a
-# follow-up migration task (post-port).
-USE_DUCKDB_IO         = False  # DuckDB glob-based partition scanning
+# Backend selection — kept off by default. The DuckDB ingest path is wired and
+# functional but produces a small per-row drift vs the pandas path (off by one
+# sweep on CBA/20240505) — likely the polars `from_epoch + tz convert` lands an
+# order on a different partition than pandas `to_datetime + tz convert` near a
+# date boundary. Flipping to True is a follow-up: investigate the off-by-one,
+# then re-baseline tests/parity_baseline/.
+USE_DUCKDB_IO         = False  # DuckDB-driven raw CSV ingest (Stage 1)
 USE_POLARS_TRANSFORMS = False  # Polars vectorised in-memory transforms
 
 VOLUME_BUCKET_METHOD     = 'quartile'                    # 'quartile', 'quintile', or 'custom'
@@ -163,19 +166,28 @@ RESTING_APPLY_ICEBERG = True
 # ── Input file helpers ─────────────────────────────────────────────────────────
 
 def get_input_files(ticker=None, date=None):
-    """Build input file paths from ticker and date. Uses config defaults if not provided."""
+    """Build input file paths from ticker and date. Prefers .parquet over .csv when both exist.
+
+    Run convert_raw.py once to materialise parquet copies; subsequent pipeline
+    runs then bypass the slow CSV parser.
+    """
     ticker = ticker or TICKER
     date   = date   or DATE
 
     base = RAW_DIR
-    return {
-        'orders':       str(base / f'orders/{ticker}_{date}_orders.csv'),
-        'trades':       str(base / f'trades/{ticker}_{date}_trades.csv'),
-        'nbbo':         str(base / f'nbbo/{ticker}_{date}_nbbo.csv'),
-        'session':      str(base / f'session/{date}_session.csv'),
-        'reference':    str(base / f'reference/{date}_ob.csv'),
-        'participants': str(base / f'participants/{date}_par.csv'),
+    stems = {
+        'orders':       f'orders/{ticker}_{date}_orders',
+        'trades':       f'trades/{ticker}_{date}_trades',
+        'nbbo':         f'nbbo/{ticker}_{date}_nbbo',
+        'session':      f'session/{date}_session',
+        'reference':    f'reference/{date}_ob',
+        'participants': f'participants/{date}_par',
     }
+    out = {}
+    for k, stem in stems.items():
+        pq = base / f'{stem}.parquet'
+        out[k] = str(pq) if pq.exists() else str(base / f'{stem}.csv')
+    return out
 
 
 def validate_input_files(files):
@@ -199,25 +211,23 @@ def validate_input_files(files):
 # Default INPUT_FILES using config defaults
 INPUT_FILES = get_input_files()
 
-# Output file name constants
+# Output file name constants. Intermediates use Parquet (zstd); final reports stay CSV.
 OUTPUT_FILES = {
-    'centrepoint_orders_raw':          'centrepoint_orders_raw.csv.gz',
-    'centrepoint_trades_raw':          'centrepoint_trades_raw.csv.gz',
-    'centrepoint_trades_agg':          'centrepoint_trades_agg.csv.gz',
-    'dark_book_state':                 'dark_book_state.pkl',
-    'order_index':                     'order_index.pkl',
-    'sweep_orders_with_trades':        'sweep_orders_with_trades.csv.gz',
-    'scenario_a_immediate_full':       'scenario_a_immediate_full.csv.gz',
-    'scenario_b_eventual_full':        'scenario_b_eventual_full.csv.gz',
-    'scenario_c_partial_none':         'scenario_c_partial_none.csv.gz',
+    'centrepoint_orders_raw':          'centrepoint_orders_raw.parquet',
+    'centrepoint_trades_raw':          'centrepoint_trades_raw.parquet',
+    'centrepoint_trades_agg':          'centrepoint_trades_agg.parquet',
+    'sweep_orders_with_trades':        'sweep_orders_with_trades.parquet',
+    'scenario_a_immediate_full':       'scenario_a_immediate_full.parquet',
+    'scenario_b_eventual_full':        'scenario_b_eventual_full.parquet',
+    'scenario_c_partial_none':         'scenario_c_partial_none.parquet',
     'scenario_summary':                'scenario_summary.csv',
-    'scenario_a_simulation_results':   'scenario_a_simulation_results.csv.gz',
-    'scenario_b_simulation_results':   'scenario_b_simulation_results.csv.gz',
-    'scenario_c_simulation_results':   'scenario_c_simulation_results.csv.gz',
-    'scenario_comparison_summary':     'scenario_comparison_summary.csv.gz',
-    'scenario_detailed_comparison':    'scenario_detailed_comparison.csv.gz',
-    'order_level_detail':              'order_level_detail.csv.gz',
-    'execution_cost_comparison':       'execution_cost_comparison.csv.gz',
+    'scenario_a_simulation_results':   'scenario_a_simulation_results.parquet',
+    'scenario_b_simulation_results':   'scenario_b_simulation_results.parquet',
+    'scenario_c_simulation_results':   'scenario_c_simulation_results.parquet',
+    'scenario_comparison_summary':     'scenario_comparison_summary.parquet',
+    'scenario_detailed_comparison':    'scenario_detailed_comparison.parquet',
+    'order_level_detail':              'order_level_detail.parquet',
+    'execution_cost_comparison':       'execution_cost_comparison.parquet',
     'by_participant':                  'by_participant.csv.gz',
 }
 

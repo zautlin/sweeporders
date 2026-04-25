@@ -46,6 +46,9 @@ data/aggregated/
 data/exploration/
 data/debug/
 
+# Raw parquet — derivable from data/raw/**/*.csv via convert_raw.py
+data/raw/**/*.parquet
+
 # Logs
 *.log
 logs/
