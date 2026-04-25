@@ -184,7 +184,7 @@ from pathlib import Path
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# (lean port) legacy sys.path hack removed; flat layout finds config.py natively.
 # (consolidated) import config.config as config
 
 

@@ -189,7 +189,9 @@ from pathlib import Path
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# (lean port) original line `sys.path.insert(0, dirname(dirname(__file__)))` removed —
+# legacy hack from src/-layout days. The flat layout has config.py next to this
+# script, so Python's normal resolution finds it without help.
 # (consolidated) import config.config as config
 
 
