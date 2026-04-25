@@ -1,163 +1,151 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working on this repository.
 
 ## Project Overview
 
-**SweepOrders** is a quantitative finance research pipeline that analyzes Centre Point sweep order execution quality on the ASX. It compares actual lit market execution against simulated dark pool (midpoint matching) execution to determine optimal order routing strategies.
+**SweepOrders** is a quantitative finance research pipeline that analyses Centre Point sweep order execution quality on the ASX. It compares actual lit market execution against simulated dark pool (midpoint matching) execution to determine optimal order routing strategies.
+
+## Layout (post-lean-port, 2026-04-25)
+
+The codebase was consolidated from a deep `src/`-tree (~14k LOC across 8 packages) into 4 flat top-level Python files. The legacy structure is preserved on branches `final` and `main`; the current branch (`sw_optimized`) carries the lean version.
+
+```
+sweeporders/
+├── config.py        796 LOC   constants, column schema, knobs
+├── process.py     5,323 LOC   Stages 1+2 (ingest + simulate)
+├── aggregate.py   5,219 LOC   Stages 3+4 (metrics + real-vs-sim comparison)
+├── report.py        279 LOC   Stages 5+6 (per-security + multi-cut rollups)
+├── requirements.txt
+├── activate.sh                venv activation
+├── data/
+│   ├── raw/                   input CSVs (orders, trades, nbbo, session, reference, participants)
+│   ├── processed/{date}/{orderbookid}/   process.py output
+│   ├── outputs/{date}/{orderbookid}/     aggregate.py output
+│   └── reports/                          report.py output (FLAT — cross-date rollups)
+├── tests/
+│   ├── test_parity.py         byte-diff harness against captured baseline
+│   ├── test_config_smoke.py   config import + key-knob assertions
+│   └── parity_baseline/       captured legacy outputs for CBA/20240505
+├── bundle/                    167 MB email-portable artifact (gitignored)
+└── docs/
+    ├── bi.txt                 ASX Centre Point behaviour spec
+    └── dd.txt                 ASX Centre Point data dictionary spec
+```
 
 ## Environment Setup
 
 ```bash
-source activate.sh          # Activates swp_env/ virtual environment
-pip install -r requirements.txt  # pandas>=2.0, numpy>=1.24, scipy>=1.10, psutil>=5.9
+source activate.sh                   # activates swp_env/
+pip install -r requirements.txt      # polars, duckdb, pandas, numpy, scipy, psutil, pyarrow
 ```
 
 ## Running the Pipeline
 
-`main.py` **must be run from `src/`** — imports are module-relative (`from config.column_schema import col`).
+Each stage is a standalone CLI. All scripts run from the repo root.
 
 ```bash
-cd src
-python main.py                                        # Default: DRR, 2024-09-05
-python main.py --ticker bhp --date 20240905           # Specific security/date
-python main.py --auto-discover --date 20240905        # All valid securities
-python main.py --stage 1 --stage 2                    # Run specific stages only
-python main.py --enable-stats                         # Enable scipy statistical tests
-python main.py --parallel                             # Enable parallel processing
-python main.py --list-dates                           # Show available dates
-python main.py --list-securities --date 20240905      # Show securities for a date
-python console.py                                     # Interactive console variant
+# Stage 1+2: ingest + simulate
+python process.py --dates 20240505 --tickers cba
+python process.py --dates 20240505,20240905 --auto-tickers --workers 4
+
+# Stage 3+4: metrics + real-vs-sim comparison
+python aggregate.py --dates 20240505 --tickers cba
+
+# Stage 5+6: per-security + multi-cut rollups
+python report.py                              # report on everything in data/outputs/
+python report.py --dates 20240505,20240905    # restrict
 ```
 
-### Spec sources
-
-`docs/bi.txt` and `docs/dd.txt` are the ASX Centre Point behaviour specs that drive simulator semantics — consult them before changing matching logic. Design notes live in `docs/SIMULATION_DESIGN.md` and `docs/CROSS_SECURITY_METRIC_ANALYSIS.md`. User-facing guide (if present): `docs/EXECUTION_GUIDE.md`. There is no `README.md` at the repo root.
+Outputs flow `data/raw/` → `data/processed/` → `data/outputs/` → `data/reports/`. The reports include 5 cuts: `by_day.csv`, `by_ticker.csv`, `by_volume_bucket.csv` (active) plus `by_participant.csv` and `by_session_phase.csv` (stubs — need joins against raw orders / session data).
 
 ## Tests
 
 ```bash
-python -m pytest tests/                              # All tests
-python -m pytest tests/test_metrics_simple.py        # Single test file
-python tests/test_integration_drr.py                 # Integration test (requires DRR data)
+python -m pytest tests/                             # all (5 tests, ~0.2s)
+python -m pytest tests/test_parity.py -v            # byte-diff against CBA/20240505 baseline
+python -m pytest tests/test_config_smoke.py -v
 ```
+
+**Local parity gate caveat:** the CBA/20240505 dataset on the laptop produces zero simulator matches (contra pool has only `ordertype=1`). Local parity validates Stage 1 (extraction, partitioning, contra-pool construction) but **does not exercise the simulator's matching logic**. Real multi-day × multi-ticker parity must run on the 32-core server before declaring "port complete" beyond the laptop.
 
 ## Architecture
 
-### 6-Stage Pipeline
+### 6-Stage Pipeline (re-mapped onto 4 flat files)
 
-| Stage | Steps | Purpose |
-|-------|-------|---------|
-| 1 | 1-6 | Extract Centre Point orders, match trades, load reference data, partition by date/security |
-| 2 | 7 | Simulate dark pool midpoint matching |
-| 3 | 8-9 | Calculate real and simulated trade metrics (36 metrics across 5 groups) |
-| 4 | 10 | Compare real vs. simulated execution quality |
-| 5 | 11-12+ | Per-security analysis (sweep execution, unmatched orders, volume quartiles) |
-| 6 | — | Cross-security aggregation and portfolio-level insights |
+| Stage | Steps | File | Purpose |
+|-------|-------|------|---------|
+| 1 | 1–6 | `process.py` | Extract Centre Point orders, match trades, load reference, partition by `{date}/{orderbookid}` |
+| 2 | 7 | `process.py` | Simulate dark pool midpoint matching |
+| 3 | 8–9 | `aggregate.py` | Calculate 36 real + simulated metrics (5 groups: fill, price, exec cost, timing, market) |
+| 4 | 10 | `aggregate.py` | Compare real vs. simulated metrics, generate per-partition comparison CSV |
+| 5 | 11–12 | `report.py` | Per-security summaries written to `data/reports/per_security/` |
+| 6 | — | `report.py` | Cross-cut rollups: by_day, by_ticker, by_volume_bucket (active); by_participant, by_session_phase (stubs) |
+
+### Spec sources
+
+`docs/bi.txt` and `docs/dd.txt` are the ASX Centre Point behaviour specs that drive simulator semantics — consult them before changing matching logic.
 
 ### Key Design Patterns
 
-**Partition Key:** `{date}/{orderbookid}` (e.g., `20240905/100`). All processing is partitioned this way. Data flows: `data/raw/` → `data/processed/{date}/{orderbookid}/` → `data/outputs/{date}/{orderbookid}/` → `data/aggregated/`.
+**Partition Key:** `{trade_date}/{orderbookid}` (e.g., `2024-09-05/85603`). Note the trade date may differ from the raw filename's date label — the pipeline partitions by actual trade timestamps from inside the file. Data flows: `data/raw/` → `data/processed/{date}/{orderbookid}/` → `data/outputs/{date}/{orderbookid}/` → `data/reports/`.
 
 **Centre Point Sweep Orders:** Order type `2048`. Only sessions `OPEN`/`CONTINUOUS` allow matching; `PRE_OPEN`, `AUCTION`, etc. do not.
 
-**Schema-Independent Columns:** All column name mappings are centralized in `config/config.py` → `COLUMN_MAPPING`. The `ColumnAccessor` in `config/column_schema.py` provides a single point of change for schema variations — use `col.common.orderid`, `col.common.timestamp`, etc. instead of raw string column names.
+**Schema-Independent Columns:** All column-name mappings are centralised in `config.COLUMN_MAPPING`. The `ColumnAccessor` exposes them as `config.col.common.orderid`, `config.col.common.timestamp`, etc. Use these instead of raw string column names — schema variations only need to change `COLUMN_MAPPING`.
 
-**3-Tier Statistics:** `utils/statistics_layer.py` implements graceful degradation — Tier 1 (always: descriptive via pandas/numpy), Tier 2 (approximate: normal approximation, no scipy), Tier 3 (exact: scipy t-tests, p-values, CI). Enable with `--enable-stats`.
+**Multi-Backend (legacy paths preserved):** `config.USE_DUCKDB_IO` and `config.USE_POLARS_TRANSFORMS` are both `False` by default — the lean port preserves the pandas codepath that produced the parity baseline. Backend migration to polars/duckdb is a follow-up sprint (decision logged in commit `1639336`).
 
-**Parallel Processing:** Off by default (`ENABLE_PARALLEL_PROCESSING = False`). Uses `ProcessPoolExecutor` in `pipeline/partition_processor.py`. Worker count auto-detected from CPU/memory via `config/system_config.py`.
+**Module Self-Aliases inside Consolidated Files:** `process.py` and `aggregate.py` set `dp = pp = ec = fu = du = ss = sys.modules[__name__]` near their CLI sections so legacy intra-module references like `dp.load_partition_data` and `pp.process_partitions_parallel` continue to resolve to the same-file functions after consolidation.
 
-**Optional IO/Transform Backends:** Feature flags in `config/config.py` — `USE_DUCKDB_IO = False` (glob-based partition scanning via DuckDB) and `USE_POLARS_TRANSFORMS = False` (vectorized in-memory transforms). Both fall back to pandas when disabled with no behavioral change. Per-worker DuckDB connections live in `utils/io_backend.py` (thread-local, in-memory).
+**Parallel Processing:** `ENABLE_PARALLEL_PROCESSING = True` by default. Worker count auto-detected via helpers in `config.py`. Override with `--workers N`.
 
-**Processing Mode:** `PROCESSING_MODE` in `config/config.py` controls inter-stage persistence:
-- `'file'` (default) — writes each stage's partitions to `data/processed/`, allowing resume from any stage.
-- `'memory'` — skips intermediate writes; DataFrames passed directly between stages. Faster, but must run end-to-end.
-- `'stream'` — reserved for future event-driven mode (not implemented).
+**Inline `SecurityDiscovery` Shim:** `process.py` and `aggregate.py` each contain a ~30-LOC `SecurityDiscovery` class replacing the original 338-LOC discovery package. It reads `data/raw/orders/{ticker}_{date}_orders.csv` to map ticker → orderbookid using `csv.DictReader`.
 
-### Stage 2 semantics (the simulator)
+### Stage 2 semantics (the simulator) — non-obvious rules
 
-These are the non-obvious rules that drive `pipeline/sweep_simulator.py` — easy to regress if you don't know them.
+These drive `process.py`'s simulator section (originally `src/pipeline/sweep_simulator/_legacy.py`) — easy to regress if you don't know them.
 
-**Sweep selection funnel (Stage 1 pre-filter).** Only sweeps that pass *all three* filters in `data_processor.py` reach the simulator:
+**Sweep selection funnel (Stage 1 pre-filter).** Only sweeps that pass *all three* filters reach the simulator:
 1. `exchangeordertype == 2048` (sweep).
-2. Real-world completion: final `changereason == 3` (TRADED) AND final `leavesQuantity == 0` AND a `changereason == 6` (NEW_ORDER) event exists in the order's history.
+2. Real-world completion: final `changereason == 3` (TRADED) AND final `leavesQuantity == 0` AND a `changereason == 6` (NEW_ORDER) event exists.
 3. All of the order's real trades have `dealsource == 1` (lit/continuous).
 
 Sweeps that did not fully fill on the lit market — and sweeps that actually matched via Centre Point in reality — are **not simulated**.
 
-**Per-sweep simulation window.** Each sweep is scanned over `[first_execution_time, last_execution_time]`, where:
-- `first_execution_time` = minimum `timestamp` for that `orderid` in the orders file (arrival).
-- `last_execution_time` = max `tradetime` across the order's real lit trades (real fill-out).
-
-A sweep that filled in 20 ms gets a 20 ms window — not a full-day scan. `MATCHING_SESSION_STATES = {'OPEN', 'CONTINUOUS'}` further filters; all other states (`PRE_OPEN`, `AUCTION`, `POST_CLOSE`, `CLOSED`, `PRE_CSPA`, `CSPA`, `ADJUST`, `ADJUST_ON`, `PURGE_ORDERS`, `SYSTEM_MAINTENANCE`) are rejected both at contra arrival and again at match time.
+**Per-sweep simulation window.** Each sweep is scanned over `[first_execution_time, last_execution_time]`. Session filter `MATCHING_SESSION_STATES = {'OPEN', 'CONTINUOUS'}` rejects all other states (`PRE_OPEN`, `AUCTION`, `POST_CLOSE`, `CLOSED`, `PRE_CSPA`, `CSPA`, `ADJUST`, `ADJUST_ON`, `PURGE_ORDERS`, `SYSTEM_MAINTENANCE`).
 
 **Effective timestamp vs timestamp.** `effective_timestamp = timechanged` when the order has lost priority (`orderbookposition > 0` OR `changereason ∈ {7, 8, 39}`); otherwise `effective_timestamp = timestamp`. Plain `changereason == 5` (user update) does **not** cost priority.
 
-**Shared contra inventory.** `order_remaining` and `iceberg_slice_consumed` are single dicts that persist across every sweep in the partition. Sweeps are processed in `(effective_timestamp, sequence)` order and compete for inventory; do not assume per-sweep independence.
+**Shared contra inventory.** `order_remaining` and `iceberg_slice_consumed` persist across every sweep in the partition. Sweeps are processed in `(effective_timestamp, sequence)` order and compete for inventory.
 
-**MAQ early-break vs skip.** `minimumquantity` / `singlefillminimumquantity` failures either `continue` (skip this contra) or `break` (stop the sweep's scan) — when `sweep_remaining_qty < sweep_maq` *and* the sweep has already partially filled, the simulator `break`s. That asymmetry is spec-mandated.
+**MAQ early-break vs skip.** `minimumquantity` / `singlefillminimumquantity` failures either `continue` (skip this contra) or `break` (stop the sweep's scan). When `sweep_remaining_qty < sweep_maq` AND the sweep has already partially filled, the simulator `break`s. Spec-mandated asymmetry.
 
-**Phase 2 (resting leg).** Gated by `cfg.SIMULATE_RESTING_PHASE` (master switch). When enabled, sweeps with leftover qty rest in the book:
-- `SIMULATE_LIT_RESTING` — include lit TradeMatch leg.
-- `RESTING_LIT_BOOK_MODE` = `'full'` (build a proper book, Option A) or `'scan'` (just scan eligible contras, Option B).
-- `RESTING_USE_MIDTICK`, `RESTING_LIT_USE_LIMIT` — resting-price rules.
-- `RESTING_MODEL_CANCELLATION` — expire at session end.
-- `RESTING_APPLY_*` — toggle crossing-keys, session filter, MAQ, preferencing, iceberg.
-Dark leg uses a contra-centric loop per bi.txt §24.10: same-participant preferencing first, then FIFO. Phase 2 lit leg does **not** reposition on iceberg refresh — that's intentional.
+**Phase 2 (resting leg).** Gated by `cfg.SIMULATE_RESTING_PHASE`. Sub-flags: `SIMULATE_LIT_RESTING`, `RESTING_LIT_BOOK_MODE` (`'full'` / `'scan'`), `RESTING_USE_MIDTICK`, `RESTING_LIT_USE_LIMIT`, `RESTING_MODEL_CANCELLATION`, `RESTING_APPLY_*`. Dark leg uses contra-centric loop per bi.txt §24.10. Phase 2 lit leg does **not** reposition on iceberg refresh — intentional.
 
-**Simulator invariants** (regression hazards):
-- `SWEEP_ORDER_TYPE = 2048`; `ELIGIBLE_MATCHING_ORDER_TYPES = {64, 256, 2048, 4096, 4098}` — do not filter passive types out of the contra pool.
-- NBBO sentinel `INT64_SENTINEL = -9223372036854775808` on `national_bid`/`national_offer` means "unavailable"; fall back to order-level `bid`/`offer`.
+**Simulator invariants:**
+- `SWEEP_ORDER_TYPE = 2048`; `ELIGIBLE_MATCHING_ORDER_TYPES = {64, 256, 2048, 4096, 4098}`.
+- NBBO sentinel `INT64_SENTINEL = -9223372036854775808` means "unavailable"; fall back to order-level `bid`/`offer`.
 - APB (`midtick ∈ {5, 6}` on a type-4096 contra): matches at contra limit price, `MIN_BLOCK_SIZE` enforced, no NBBO constraint, dealsources 50/51.
 - Dealsources: 1 = lit continuous, 46 = preference, 47 = Centre Point, 50/51 = APB.
 
-### Stage 3 ground truth
-
-The "real" metric set in Stage 3 comes from the lit `data/raw/trades/*.csv` (dealsource 1), aggregated per `orderid`. The "simulated" set comes from `simulated_trades` emitted by Stage 2. `execution_comparison.py` joins the two on `orderid` in Stage 4.
-
-### Module Responsibilities
-
-| Module | Responsibility |
-|--------|---------------|
-| `main.py` | Entry point; orchestrates all stages |
-| `console.py` | Interactive console variant of the entry point |
-| `pipeline/pipeline_config.py` | CLI argument parsing; runtime config building |
-| `pipeline/pipeline_stages.py` | Stage execution logic |
-| `pipeline/data_processor.py` | Order/trade extraction, session filtering, partitioning |
-| `pipeline/sweep_simulator.py` | Core simulation engine (midpoint matching, amendments, iceberg, sweep-to-sweep) |
-| `pipeline/trade_metrics_calculator.py` | 36-metric calculator (fill, price, exec cost, timing, market) |
-| `pipeline/execution_comparison.py` | Real vs. simulated metrics comparison and report generation |
-| `pipeline/reference_data.py` | Tick size and participant info loading |
-| `discovery/security_discovery.py` | Auto-discovery of securities from raw data |
-| `analysis/sweep_execution_analyzer.py` | Per-security execution analysis with statistics |
-| `analysis/unmatched_analyzer.py` | Root cause analysis for unmatched orders |
-| `analysis/volume_analyzer.py` | Order volume quartile/bucket analysis |
-| `aggregation/aggregate_sweep_results.py` | Cross-security result merging |
-| `utils/file_utils.py` | Safe CSV I/O, partition path management, DuckDB glob queries |
-| `utils/io_backend.py` | Per-worker DuckDB connection + DuckDB/Polars/pandas bridges |
-| `utils/normalization.py` | Column-name normalisation helpers |
-| `utils/data_utils.py` | Shared DataFrame utilities |
-| `utils/statistics_layer.py` | 3-tier statistical engine |
-| `config/config.py` | Central configuration (paths, thresholds, order types, NBBO source) |
-| `config/column_schema.py` | `ColumnAccessor` — schema-independent column access |
-
-### Configuration Defaults (`config/config.py`)
+### Configuration Defaults (`config.py`)
 
 ```python
 TICKER = 'drr'
 DATE = '20240905'
 SWEEP_ORDER_TYPE = 2048
 ELIGIBLE_MATCHING_ORDER_TYPES = {64, 256, 2048, 4096, 4098}
-NBBO_SOURCE = 'INTERNAL'          # 'INTERNAL' (orders file) or 'EXTERNAL' (nbbo.csv.gz)
+NBBO_SOURCE = 'INTERNAL'              # only INTERNAL supported (EXTERNAL branch dropped)
 MIN_ORDERS_THRESHOLD = 100
 MIN_TRADES_THRESHOLD = 10
-ENABLE_PARALLEL_PROCESSING = False
+ENABLE_PARALLEL_PROCESSING = True     # flipped True for the lean port
 ENABLE_STATISTICAL_TESTS = False
-USE_DUCKDB_IO = False             # DuckDB glob-based aggregation (Phase 2-3 optimization)
-USE_POLARS_TRANSFORMS = False     # Polars for in-memory transforms (Phase 4 optimization)
-PROCESSING_MODE = 'file'          # 'file' | 'memory' | 'stream' (stream = future)
-SIMULATE_RESTING_PHASE = …        # Master switch for Phase 2 (resting leg)
-VOLUME_BUCKET_METHOD = 'quartile' # 'quartile', 'quintile', or 'custom'
+USE_DUCKDB_IO = False                 # preserved at False to match parity baseline
+USE_POLARS_TRANSFORMS = False         # preserved at False to match parity baseline
+PROCESSING_MODE = 'file'              # 'file' | 'memory'  (stream removed)
+SIMULATE_RESTING_PHASE = …            # master switch for Phase 2 (resting leg)
+VOLUME_BUCKET_METHOD = 'quartile'     # 'quartile' | 'quintile' | 'custom'
 ```
 
 ### Input Data Layout
@@ -166,8 +154,18 @@ VOLUME_BUCKET_METHOD = 'quartile' # 'quartile', 'quintile', or 'custom'
 data/raw/
   orders/       {ticker}_{date}_orders.csv
   trades/       {ticker}_{date}_trades.csv
-  nbbo/         {ticker}_{date}_nbbo.csv  (optional, used if NBBO_SOURCE='EXTERNAL')
+  nbbo/         {ticker}_{date}_nbbo.csv
   session/      {date}_session.csv
-  reference/    {date}_ob.csv
+  reference/    {date}_orderbook.csv
   participants/ {date}_par.csv
 ```
+
+## Email-portable bundle
+
+`bundle/` (gitignored, 167 MB) is a self-contained release artefact: 4 .py files + requirements.txt + `data/raw/`. `cd bundle && python process.py … && python aggregate.py … && python report.py` runs end-to-end with all outputs landing inside `bundle/data/`. Ship via `tar czf sweeporders-lean.tar.gz -C /Users/agautam/workspace/python/sweeporders bundle/`.
+
+## Branches
+
+- `sw_optimized` (current): lean port — 4 flat files, no `src/`.
+- `rewrite_wip_archive`: Sprint 1 simulator-rewrite WIP (Tasks 1–3 + parity-harness stub) preserved for the post-port rewrite effort.
+- `final`, `main`, etc.: legacy `src/`-tree layout, preserved for reference.
