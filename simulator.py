@@ -281,3 +281,181 @@ def check_maq(sweep_remaining: int, sweep_matched: int,
                 return Decision.SKIP
 
     return Decision.OK
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 2 — Prep layer: pandas DataFrames → SimContext (flat numpy arrays)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# build_sim_context() is the boundary translator. It runs ONCE per partition
+# (not per sweep) so its cost is amortised. The returned SimContext is the
+# *only* state the kernel reads from — no DataFrame access in the inner loop.
+
+# Session-state string → int8 enum used by the kernel.
+SESSION_STATE_ENUM = {
+    'OPEN':       SESSION_OPEN,
+    'CONTINUOUS': SESSION_CONTINUOUS,
+    # Everything else (PRE_OPEN, AUCTION, POST_CLOSE, CLOSED, PRE_CSPA, CSPA,
+    # ADJUST, ADJUST_ON, PURGE_ORDERS, SYSTEM_MAINTENANCE) → SESSION_OTHER (0)
+}
+
+INT64_SENTINEL = -9223372036854775808
+NULL_INT = 0
+
+
+def _col_int64(df, col_name: str, default: int = NULL_INT) -> np.ndarray:
+    """Pull a column as np.int64 with NaNs replaced by `default`."""
+    if col_name not in df.columns:
+        return np.full(len(df), default, dtype=np.int64)
+    return df[col_name].fillna(default).astype(np.int64).to_numpy()
+
+
+def _col_int8(df, col_name: str, default: int = 0) -> np.ndarray:
+    if col_name not in df.columns:
+        return np.full(len(df), default, dtype=np.int8)
+    return df[col_name].fillna(default).astype(np.int8).to_numpy()
+
+
+def _col_int32(df, col_name: str, default: int = 0) -> np.ndarray:
+    if col_name not in df.columns:
+        return np.full(len(df), default, dtype=np.int32)
+    return df[col_name].fillna(default).astype(np.int32).to_numpy()
+
+
+def _col_bool(df, col_name: str, default: bool = False) -> np.ndarray:
+    if col_name not in df.columns:
+        return np.full(len(df), default, dtype=bool)
+    return df[col_name].fillna(default).astype(bool).to_numpy()
+
+
+def _build_session_arrays(session_states_df) -> tuple[np.ndarray, np.ndarray]:
+    """Sort session states by timestamp; encode state strings as int8 enum."""
+    if session_states_df is None or len(session_states_df) == 0:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int8)
+    sorted_df = session_states_df.sort_values('timestamp').reset_index(drop=True)
+    ts = sorted_df['timestamp'].to_numpy(dtype=np.int64)
+    states = sorted_df['session_state'].map(
+        lambda s: SESSION_STATE_ENUM.get(str(s).upper(), SESSION_OTHER)
+    ).to_numpy(dtype=np.int8)
+    return ts, states
+
+
+def build_sim_context(
+    sweep_orders,           # pandas DataFrame, sorted by (effective_timestamp, sequence)
+    all_orders,             # pandas DataFrame of contra-eligible orders
+    partition_data: dict,   # {'nbbo': df_or_None, 'session': df_or_None, ...}
+    sim_flags: SimFlags,
+    *,
+    tick_size: int = 0,
+    tick_size_table=None,
+    price_lower: int = 0,
+    price_upper: int = 0,
+    participants: dict = None,
+) -> SimContext:
+    """Translate the partition's pandas state into a flat numpy SimContext.
+
+    Costs O(N_orders + N_sweeps); runs once per partition. The kernel can then
+    iterate sweeps without ever touching pandas.
+
+    Sweep frame requirements: must contain `effective_timestamp`, `last_execution_time`,
+    `lost_priority`, `changereason` (already present after _prepare_sweep_orders).
+    All-orders frame requirements: must contain `effective_timestamp` and `sequence`.
+    """
+    nbbo_df = partition_data.get('nbbo') if partition_data else None
+    session_df = partition_data.get('session') if partition_data else None
+
+    # ── Sweep arrays ─────────────────────────────────────────────────────────
+    sweep_orderid       = _col_int64(sweep_orders, 'orderid')
+    sweep_eff_ts        = _col_int64(sweep_orders, 'effective_timestamp')
+    sweep_side          = _col_int8 (sweep_orders, 'side')
+    sweep_qty           = _col_int64(sweep_orders, 'leavesquantity')
+    sweep_first_exec    = _col_int64(sweep_orders, 'effective_timestamp')
+    sweep_last_exec     = _col_int64(sweep_orders, 'last_execution_time')
+    sweep_price         = _col_int64(sweep_orders, 'price')
+    sweep_maq           = _col_int64(sweep_orders, 'minimumquantity')
+    sweep_sfmq          = _col_int8 (sweep_orders, 'singlefillminimumquantity')
+    sweep_crossingkey   = _col_int64(sweep_orders, 'crossingkey')
+    sweep_participant   = _col_int32(sweep_orders, 'participantid')
+    sweep_midtick       = _col_int8 (sweep_orders, 'midtick', default=MIDTICK_NO)
+    sweep_orderbookid   = _col_int32(sweep_orders, 'orderbookid')
+    sweep_lost_priority = _col_bool (sweep_orders, 'lost_priority')
+    sweep_changereason  = _col_int8 (sweep_orders, 'changereason')
+
+    # ── Contra arrays ────────────────────────────────────────────────────────
+    contra_orderid      = _col_int64(all_orders, 'orderid')
+    contra_eff_ts       = _col_int64(all_orders, 'effective_timestamp')
+    contra_sequence     = _col_int64(all_orders, 'sequence')
+    contra_side         = _col_int8 (all_orders, 'side')
+    contra_qty          = _col_int64(all_orders, 'quantity')
+    contra_price        = _col_int64(all_orders, 'price')
+    contra_maq          = _col_int64(all_orders, 'minimumquantity')
+    contra_sfmq         = _col_int8 (all_orders, 'singlefillminimumquantity')
+    contra_crossingkey  = _col_int64(all_orders, 'crossingkey')
+    contra_participant  = _col_int32(all_orders, 'participantid')
+    contra_midtick      = _col_int8 (all_orders, 'midtick', default=MIDTICK_NO)
+    contra_orderbookid  = _col_int32(all_orders, 'orderbookid')
+    contra_display_qty  = _col_int64(all_orders, 'display_quantity', default=0)
+    contra_ordertype    = _col_int8 (all_orders, 'exchangeordertype')
+    contra_nbbo_bid     = _col_int64(all_orders, 'national_bid', default=INT64_SENTINEL)
+    contra_nbbo_offer   = _col_int64(all_orders, 'national_offer', default=INT64_SENTINEL)
+    contra_bid          = _col_int64(all_orders, 'bid')
+    contra_offer        = _col_int64(all_orders, 'offer')
+
+    # ── Session ──────────────────────────────────────────────────────────────
+    session_ts, session_state = _build_session_arrays(session_df)
+
+    # ── NBBO (only when EXTERNAL) ────────────────────────────────────────────
+    if sim_flags.nbbo_source == 'EXTERNAL' and nbbo_df is not None and len(nbbo_df) > 0:
+        nbbo_sorted = nbbo_df.sort_values('timestamp').reset_index(drop=True)
+        nbbo_ts    = nbbo_sorted['timestamp'].to_numpy(dtype=np.int64)
+        nbbo_bid   = nbbo_sorted['bid'].to_numpy(dtype=np.int64)
+        nbbo_offer = nbbo_sorted['offer'].to_numpy(dtype=np.int64)
+    else:
+        nbbo_ts = nbbo_bid = nbbo_offer = None
+
+    return SimContext(
+        sweep_orderid=sweep_orderid,
+        sweep_eff_ts=sweep_eff_ts,
+        sweep_side=sweep_side,
+        sweep_qty=sweep_qty,
+        sweep_first_exec=sweep_first_exec,
+        sweep_last_exec=sweep_last_exec,
+        sweep_price=sweep_price,
+        sweep_maq=sweep_maq,
+        sweep_sfmq=sweep_sfmq,
+        sweep_crossingkey=sweep_crossingkey,
+        sweep_participant=sweep_participant,
+        sweep_midtick=sweep_midtick,
+        sweep_orderbookid=sweep_orderbookid,
+        sweep_lost_priority=sweep_lost_priority,
+        sweep_changereason=sweep_changereason,
+        contra_orderid=contra_orderid,
+        contra_eff_ts=contra_eff_ts,
+        contra_sequence=contra_sequence,
+        contra_side=contra_side,
+        contra_qty=contra_qty,
+        contra_price=contra_price,
+        contra_maq=contra_maq,
+        contra_sfmq=contra_sfmq,
+        contra_crossingkey=contra_crossingkey,
+        contra_participant=contra_participant,
+        contra_midtick=contra_midtick,
+        contra_orderbookid=contra_orderbookid,
+        contra_display_qty=contra_display_qty,
+        contra_ordertype=contra_ordertype,
+        contra_nbbo_bid=contra_nbbo_bid,
+        contra_nbbo_offer=contra_nbbo_offer,
+        contra_bid=contra_bid,
+        contra_offer=contra_offer,
+        session_ts=session_ts,
+        session_state=session_state,
+        nbbo_ts=nbbo_ts,
+        nbbo_bid=nbbo_bid,
+        nbbo_offer=nbbo_offer,
+        tick_size=int(tick_size),
+        tick_size_table=tick_size_table,
+        price_lower=int(price_lower),
+        price_upper=int(price_upper),
+        participants=participants if participants is not None else {},
+        cfg_flags=sim_flags,
+    )

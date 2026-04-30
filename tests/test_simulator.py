@@ -503,3 +503,212 @@ class TestCheckMAQ:
                          sweep_maq=100, sweep_sfmq=0,
                          contra_avail=50, contra_maq=100, contra_sfmq=0,
                          potential_match_qty=50) is Decision.SKIP
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# build_sim_context — pandas → SimContext translator
+# ─────────────────────────────────────────────────────────────────────────────
+
+import numpy as np
+import pandas as pd
+import pytest
+
+
+def _flags_kwargs():
+    return dict(
+        nbbo_source='INTERNAL',
+        simulate_resting_phase=False,
+        simulate_lit_resting=False,
+        resting_lit_book_mode='scan',
+        resting_use_midtick=False,
+        resting_lit_use_limit=True,
+        resting_model_cancellation=True,
+        resting_apply_crossing_keys=True,
+        resting_apply_session_filter=True,
+        resting_apply_maq=True,
+        resting_apply_preferencing=True,
+        resting_apply_iceberg=True,
+        use_polars_transforms=False,
+        use_duckdb_io=False,
+        min_block_size=0,
+    )
+
+
+def _toy_sweep_orders():
+    return pd.DataFrame({
+        'orderid':                   [1001, 1002],
+        'effective_timestamp':       [1_000_000_000, 2_000_000_000],
+        'last_execution_time':       [1_500_000_000, 2_500_000_000],
+        'side':                      [1, 2],
+        'leavesquantity':            [500, 300],
+        'price':                     [100, 200],
+        'minimumquantity':           [0, 50],
+        'singlefillminimumquantity': [0, 0],
+        'crossingkey':               [0, 7],
+        'participantid':             [10, 11],
+        'midtick':                   [2, 1],
+        'orderbookid':               [85603, 85603],
+        'lost_priority':             [False, True],
+        'changereason':              [6, 6],
+    })
+
+
+def _toy_all_orders():
+    return pd.DataFrame({
+        'orderid':                   [2001, 2002, 2003],
+        'effective_timestamp':       [1_100_000_000, 1_200_000_000, 2_100_000_000],
+        'sequence':                  [1, 2, 3],
+        'side':                      [2, 2, 1],
+        'quantity':                  [100, 200, 150],
+        'price':                     [99, 101, 200],
+        'minimumquantity':           [0, 0, 0],
+        'singlefillminimumquantity': [0, 0, 0],
+        'crossingkey':               [0, 0, 0],
+        'participantid':             [20, 21, 22],
+        'midtick':                   [2, 2, 2],
+        'orderbookid':               [85603, 85603, 85603],
+        'display_quantity':          [0, 0, 50],
+        'exchangeordertype':         [1, 1, 1],
+        'national_bid':              [99, 99, 200],
+        'national_offer':            [101, 101, 201],
+        'bid':                       [98, 98, 199],
+        'offer':                     [102, 102, 202],
+    })
+
+
+class TestBuildSimContext:
+    def test_returns_sim_context(self):
+        from simulator import build_sim_context, SimContext, SimFlags
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={}, sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        assert isinstance(ctx, SimContext)
+
+    def test_sweep_arrays_have_correct_dtypes_and_lengths(self):
+        from simulator import build_sim_context, SimFlags
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={}, sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        assert ctx.sweep_orderid.dtype == np.int64
+        assert ctx.sweep_side.dtype == np.int8
+        assert ctx.sweep_qty.dtype == np.int64
+        assert ctx.sweep_lost_priority.dtype == bool
+        assert ctx.sweep_orderbookid.dtype == np.int32
+        assert len(ctx.sweep_orderid) == 2
+        assert len(ctx.sweep_qty) == 2
+
+    def test_contra_arrays_have_correct_dtypes_and_lengths(self):
+        from simulator import build_sim_context, SimFlags
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={}, sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        assert ctx.contra_orderid.dtype == np.int64
+        assert ctx.contra_side.dtype == np.int8
+        assert ctx.contra_qty.dtype == np.int64
+        assert ctx.contra_display_qty.dtype == np.int64
+        assert len(ctx.contra_orderid) == 3
+        assert len(ctx.contra_qty) == 3
+
+    def test_sweep_values_round_trip(self):
+        from simulator import build_sim_context, SimFlags
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={}, sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        np.testing.assert_array_equal(ctx.sweep_orderid, [1001, 1002])
+        np.testing.assert_array_equal(ctx.sweep_side, [1, 2])
+        np.testing.assert_array_equal(ctx.sweep_qty, [500, 300])
+        np.testing.assert_array_equal(ctx.sweep_first_exec, [1_000_000_000, 2_000_000_000])
+        np.testing.assert_array_equal(ctx.sweep_last_exec,  [1_500_000_000, 2_500_000_000])
+
+    def test_contra_values_round_trip(self):
+        from simulator import build_sim_context, SimFlags
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={}, sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        np.testing.assert_array_equal(ctx.contra_orderid, [2001, 2002, 2003])
+        np.testing.assert_array_equal(ctx.contra_qty,     [100, 200, 150])
+        np.testing.assert_array_equal(ctx.contra_display_qty, [0, 0, 50])
+        np.testing.assert_array_equal(ctx.contra_sequence, [1, 2, 3])
+
+    def test_missing_columns_get_default_zero(self):
+        """Columns not present in the source DF should produce zero-filled arrays of correct length."""
+        from simulator import build_sim_context, SimFlags
+        sweep = _toy_sweep_orders().drop(columns=['minimumquantity'])
+        ctx = build_sim_context(
+            sweep, _toy_all_orders(),
+            partition_data={}, sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        np.testing.assert_array_equal(ctx.sweep_maq, [0, 0])
+
+    def test_session_arrays_sorted_by_timestamp(self):
+        from simulator import build_sim_context, SimFlags, SESSION_OPEN, SESSION_CONTINUOUS, SESSION_OTHER
+        # Deliberately unsorted input
+        session_df = pd.DataFrame({
+            'timestamp':     [3_000, 1_000, 2_000],
+            'session_state': ['CONTINUOUS', 'OPEN', 'PRE_OPEN'],
+        })
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={'session': session_df},
+            sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        np.testing.assert_array_equal(ctx.session_ts, [1_000, 2_000, 3_000])
+        np.testing.assert_array_equal(
+            ctx.session_state, [SESSION_OPEN, SESSION_OTHER, SESSION_CONTINUOUS]
+        )
+
+    def test_nbbo_external_populates_arrays(self):
+        from simulator import build_sim_context, SimFlags
+        flags = _flags_kwargs(); flags['nbbo_source'] = 'EXTERNAL'
+        nbbo_df = pd.DataFrame({
+            'timestamp': [2_000, 1_000],
+            'bid':       [199, 99],
+            'offer':     [201, 101],
+        })
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={'nbbo': nbbo_df},
+            sim_flags=SimFlags(**flags),
+        )
+        np.testing.assert_array_equal(ctx.nbbo_ts,    [1_000, 2_000])
+        np.testing.assert_array_equal(ctx.nbbo_bid,   [99, 199])
+        np.testing.assert_array_equal(ctx.nbbo_offer, [101, 201])
+
+    def test_nbbo_internal_leaves_nbbo_arrays_none(self):
+        from simulator import build_sim_context, SimFlags
+        ctx = build_sim_context(
+            _toy_sweep_orders(), _toy_all_orders(),
+            partition_data={'nbbo': pd.DataFrame({'timestamp': [1], 'bid': [1], 'offer': [1]})},
+            sim_flags=SimFlags(**_flags_kwargs()),
+        )
+        assert ctx.nbbo_ts is None and ctx.nbbo_bid is None and ctx.nbbo_offer is None
+
+    def test_real_partition_smoke(self):
+        """Integration: build context from the on-disk CBA fixture if present."""
+        from pathlib import Path
+        import duckdb
+        from simulator import build_sim_context, SimFlags
+        partition = Path('data/processed/2024-09-05/85603')
+        if not partition.exists():
+            pytest.skip('CBA fixture not on disk; run process.py first')
+        before = duckdb.sql(f"SELECT * FROM '{partition}/orders_before_matching.parquet'").df()
+        # Stripped-down run — just verify it doesn't crash on real schema
+        # (sweep_orders here is just a placeholder; effective_timestamp etc.
+        #  may not be in orders_before_matching, so this is purely a column-coverage test.)
+        sweep = before.head(5).copy()
+        if 'effective_timestamp' not in sweep.columns:
+            sweep['effective_timestamp'] = sweep['timestamp']
+        if 'last_execution_time' not in sweep.columns:
+            sweep['last_execution_time'] = sweep['timestamp']
+        if 'lost_priority' not in sweep.columns:
+            sweep['lost_priority'] = False
+        if 'leavesquantity' not in sweep.columns:
+            sweep['leavesquantity'] = sweep.get('quantity', 0)
+        ctx = build_sim_context(sweep, before, {}, SimFlags(**_flags_kwargs()))
+        assert len(ctx.sweep_orderid) == 5
+        assert len(ctx.contra_orderid) == len(before)
