@@ -459,3 +459,140 @@ def build_sim_context(
         participants=participants if participants is not None else {},
         cfg_flags=sim_flags,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 3 — Kernel Phase 1 (skeleton — no match emission yet)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Walks every sweep, builds its eligibility window via np.searchsorted, and
+# applies the cheap filters (orderbookid, side, self-match, session state).
+# The match decision currently always SKIPs — match emission lands in the
+# next commit. Output shape matches the legacy simulator's so the parity
+# harness can plug in unchanged.
+
+
+def _session_state_at(ts: int, session_ts: np.ndarray, session_state: np.ndarray) -> int:
+    """Most-recent session state at or before `ts`. Returns SESSION_OTHER if no entry."""
+    if len(session_ts) == 0:
+        # No session info available → permissive (legacy behaviour treats this as OPEN)
+        return SESSION_OPEN
+    idx = int(np.searchsorted(session_ts, ts, side='right')) - 1
+    if idx < 0:
+        return SESSION_OTHER
+    return int(session_state[idx])
+
+
+def _sort_lexicographic(eff_ts: np.ndarray, sequence: np.ndarray) -> np.ndarray:
+    """Return the permutation that puts arrays into (eff_ts, sequence) priority order.
+
+    Mirrors pandas df.sort_values(['effective_timestamp', 'sequence']).
+    """
+    # np.lexsort sorts by the LAST key first → put eff_ts last for primary key.
+    return np.lexsort([sequence, eff_ts])
+
+
+def run_phase1(ctx: SimContext) -> tuple[list, list]:
+    """Phase-1 dark continuous matching kernel.
+
+    SKELETON ONLY (this commit) — walks every sweep + eligibility window but
+    SKIPs every candidate, so no matches emit. Provides the loop structure
+    + np.searchsorted primitives for the next commit, where the match
+    gauntlet (rule helpers) and trade emission land.
+
+    Returns:
+      simulated_trades: list[dict] — trade rows, sweep + contra side per match
+                       (empty here; populated in commit C)
+      sweep_summaries:  list[dict] — one row per sweep with fill statistics
+    """
+    flags = ctx.cfg_flags
+
+    # ── Per-partition one-time prep ─────────────────────────────────────────
+    contra_perm = _sort_lexicographic(ctx.contra_eff_ts, ctx.contra_sequence)
+    c_eff_ts        = ctx.contra_eff_ts[contra_perm]
+    c_orderid       = ctx.contra_orderid[contra_perm]
+    c_orderbookid   = ctx.contra_orderbookid[contra_perm]
+    c_side          = ctx.contra_side[contra_perm]
+
+    # Inventory (mutable across sweeps): one int64 per contra position.
+    # Commit C will decrement entries as matches execute.
+    order_remaining = ctx.contra_qty[contra_perm].copy()
+    # Iceberg slice consumed (commit C uses this; allocated now for shape).
+    iceberg_consumed = np.zeros(len(c_orderid), dtype=np.int64)  # noqa: F841
+
+    simulated_trades: list = []
+    sweep_summaries:  list = []
+
+    n_sweeps = len(ctx.sweep_orderid)
+    for s in range(n_sweeps):
+        sweep_id        = int(ctx.sweep_orderid[s])
+        sweep_side      = int(ctx.sweep_side[s])
+        sweep_qty_avail = int(ctx.sweep_qty[s])
+        sweep_obid      = int(ctx.sweep_orderbookid[s])
+        first_exec_time = int(ctx.sweep_first_exec[s])
+        last_exec_time  = int(ctx.sweep_last_exec[s])
+        sweep_lost_pri  = bool(ctx.sweep_lost_priority[s])
+        sweep_changeres = int(ctx.sweep_changereason[s])
+
+        # ── Zero-quantity sweep — emit empty summary, continue ──────────────
+        if sweep_qty_avail <= 0:
+            sweep_summaries.append({
+                'orderid': sweep_id, 'timestamp': int(ctx.sweep_eff_ts[s]),
+                'side': sweep_side, 'quantity': sweep_qty_avail,
+                'matched_quantity': 0, 'remaining_quantity': 0,
+                'fill_ratio': 0, 'num_matches': 0,
+                'orderbookid': sweep_obid,
+                'lost_priority': sweep_lost_pri,
+                'changereason': sweep_changeres,
+            })
+            continue
+
+        # ── Build candidate window via binary search on pre-sorted contras ──
+        lo = int(np.searchsorted(c_eff_ts, first_exec_time, side='left'))
+        hi = int(np.searchsorted(c_eff_ts, last_exec_time,  side='right'))
+        # Cheap mask: orderbookid match, opposite side, not self
+        idx_window = np.arange(lo, hi)
+        mask = (
+            (c_orderbookid[idx_window] == sweep_obid)
+            & (c_side[idx_window] != sweep_side)
+            & (c_orderid[idx_window] != sweep_id)
+        )
+        candidates = idx_window[mask]
+
+        sweep_remaining = sweep_qty_avail
+        sweep_matched   = 0
+        sweep_n_matches = 0
+
+        # ── Walk candidates in priority order (already sorted by lexsort) ───
+        for ci in candidates:
+            if sweep_remaining <= 0:
+                break
+
+            order_avail = int(order_remaining[ci])
+            if order_avail <= 0:
+                continue
+
+            # Session-state gate at contra's effective_timestamp
+            ts = int(c_eff_ts[ci])
+            if not is_valid_session(_session_state_at(ts, ctx.session_ts, ctx.session_state)):
+                continue
+
+            # ─── Match gauntlet stub — always SKIP for now (commit C wires it in) ───
+            # Rule helpers (check_maq, check_crossing, validate_price_limit, etc.)
+            # will be applied here. Until then no matches emit, so the kernel
+            # produces zero-fill summaries for every sweep.
+            continue
+
+        sweep_summaries.append({
+            'orderid': sweep_id, 'timestamp': int(ctx.sweep_eff_ts[s]),
+            'side': sweep_side, 'quantity': sweep_qty_avail,
+            'matched_quantity': sweep_matched,
+            'remaining_quantity': sweep_remaining,
+            'fill_ratio': sweep_matched / sweep_qty_avail if sweep_qty_avail else 0,
+            'num_matches': sweep_n_matches,
+            'orderbookid': sweep_obid,
+            'lost_priority': sweep_lost_pri,
+            'changereason': sweep_changeres,
+        })
+
+    return simulated_trades, sweep_summaries

@@ -712,3 +712,114 @@ class TestBuildSimContext:
         ctx = build_sim_context(sweep, before, {}, SimFlags(**_flags_kwargs()))
         assert len(ctx.sweep_orderid) == 5
         assert len(ctx.contra_orderid) == len(before)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# run_phase1 — kernel skeleton (commit B). Emits zero matches; loop structure only.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestRunPhase1Skeleton:
+    def test_empty_inputs_produce_empty_outputs(self):
+        from simulator import build_sim_context, run_phase1, SimFlags
+        empty_sweep = pd.DataFrame({
+            'orderid':[], 'effective_timestamp':[], 'last_execution_time':[],
+            'side':[], 'leavesquantity':[], 'price':[], 'minimumquantity':[],
+            'singlefillminimumquantity':[], 'crossingkey':[], 'participantid':[],
+            'midtick':[], 'orderbookid':[], 'lost_priority':[], 'changereason':[],
+        })
+        empty_orders = pd.DataFrame({
+            'orderid':[], 'effective_timestamp':[], 'sequence':[], 'side':[],
+            'quantity':[], 'price':[], 'minimumquantity':[],
+            'singlefillminimumquantity':[], 'crossingkey':[], 'participantid':[],
+            'midtick':[], 'orderbookid':[], 'display_quantity':[],
+            'exchangeordertype':[], 'national_bid':[], 'national_offer':[],
+            'bid':[], 'offer':[],
+        })
+        ctx = build_sim_context(empty_sweep, empty_orders, {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx)
+        assert trades == [] and summaries == []
+
+    def test_zero_qty_sweep_gets_zero_fill_summary(self):
+        from simulator import build_sim_context, run_phase1, SimFlags
+        sweep = _toy_sweep_orders().copy()
+        sweep.loc[0, 'leavesquantity'] = 0       # first sweep has nothing to fill
+        ctx = build_sim_context(sweep, _toy_all_orders(), {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx)
+        assert len(summaries) == 2
+        assert summaries[0]['matched_quantity'] == 0
+        assert summaries[0]['fill_ratio'] == 0
+        assert summaries[0]['num_matches'] == 0
+        assert summaries[0]['quantity'] == 0
+        assert trades == []                        # skeleton — no matches
+
+    def test_one_summary_per_sweep_skeleton_emits_zero_trades(self):
+        from simulator import build_sim_context, run_phase1, SimFlags
+        ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
+                                {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx)
+        assert len(summaries) == 2                 # one per sweep
+        assert trades == []                        # skeleton — gauntlet always SKIPs
+        for s in summaries:
+            assert s['matched_quantity'] == 0
+            assert s['num_matches'] == 0
+
+    def test_summary_carries_through_lost_priority_and_changereason(self):
+        from simulator import build_sim_context, run_phase1, SimFlags
+        ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
+                                {}, SimFlags(**_flags_kwargs()))
+        _, summaries = run_phase1(ctx)
+        # Toy fixture: sweep[0] lost_priority=False, sweep[1] lost_priority=True
+        assert summaries[0]['lost_priority'] is False
+        assert summaries[1]['lost_priority'] is True
+
+    def test_eligibility_window_excludes_self_match(self):
+        """Sweep's own orderid in all_orders must not appear as a candidate."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        sweep = _toy_sweep_orders()
+        # Inject the sweep's own id into all_orders — should be filtered out.
+        ao = _toy_all_orders()
+        ao.loc[len(ao)] = ao.iloc[0].copy()
+        ao.iloc[-1, ao.columns.get_loc('orderid')] = 1001  # sweep[0]'s id
+        ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
+        # Skeleton emits no trades regardless; this just verifies no crash + correct summary count
+        trades, summaries = run_phase1(ctx)
+        assert len(summaries) == 2
+        assert trades == []
+
+    def test_session_state_filter_blocks_pre_open(self):
+        """When session is PRE_OPEN at the contra's timestamp, kernel should still
+        run cleanly (skeleton emits nothing anyway, but we want to ensure the gate is wired)."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        # Session that's PRE_OPEN at all timestamps in the test → no matches even
+        # when commit C lands its match logic.
+        session_df = pd.DataFrame({
+            'timestamp':     [0],
+            'session_state': ['PRE_OPEN'],
+        })
+        ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
+                                {'session': session_df},
+                                SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx)
+        assert trades == []
+        assert len(summaries) == 2
+
+    def test_real_partition_smoke(self):
+        """Run skeleton against the real CBA fixture if present — expect no crash."""
+        from pathlib import Path
+        import duckdb
+        from simulator import build_sim_context, run_phase1, SimFlags
+        partition = Path('data/processed/2024-09-05/85603')
+        if not partition.exists():
+            pytest.skip('CBA fixture not on disk; run process.py first')
+        all_orders = duckdb.sql(f"SELECT * FROM '{partition}/orders_before_matching.parquet'").df()
+        # Synthesize a few sweeps to exercise the loop without running the full pipeline.
+        sweep = all_orders.head(3).copy()
+        sweep['effective_timestamp'] = sweep['timestamp']
+        sweep['last_execution_time'] = sweep['timestamp'] + 10**9
+        sweep['lost_priority'] = False
+        sweep['leavesquantity'] = sweep.get('quantity', 0)
+        ctx = build_sim_context(sweep, all_orders, {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx)
+        assert len(summaries) == 3
+        assert all(s['matched_quantity'] == 0 for s in summaries)   # skeleton
