@@ -117,31 +117,64 @@ def _glob_raw_inputs(folder):
     return out
 
 
-def safe_read_csv(filepath, required=True, compression='infer', **kwargs):
+def _filters_to_sql_where(filters):
+    """Translate a pyarrow-style filters list into a SQL WHERE clause.
+
+    filters: list[(col_name, op, values)] — supported ops: 'in', '=='.
+    """
+    if not filters:
+        return ''
+    parts = []
+    for col_name, op, values in filters:
+        if op == 'in':
+            vals = ', '.join(repr(v) if isinstance(v, str) else str(int(v)) for v in values)
+            parts.append(f"{col_name} IN ({vals})")
+        elif op == '==':
+            v = repr(values) if isinstance(values, str) else int(values)
+            parts.append(f"{col_name} = {v}")
+        else:
+            raise NotImplementedError(f"Filter op {op!r} not supported")
+    return ' WHERE ' + ' AND '.join(parts)
+
+
+def safe_read_csv(filepath, required=True, compression='infer',
+                  filters=None, return_total=False, **kwargs):
     """Read tabular data with format auto-detection (Parquet or CSV).
 
-    Dispatches on file extension: .parquet → pd.read_parquet, else CSV.
+    Dispatches on file extension: .parquet → DuckDB, else CSV.
     Name kept for backward compatibility with legacy call sites.
+
+    Optional kwargs:
+      filters: list[(col, op, values)] predicate pushdown ('in'|'==') — parquet only.
+      return_total: when True, also return total_rows_in_file as second tuple element.
     """
     filepath = Path(filepath)
 
     if not filepath.exists():
         if required:
             raise FileNotFoundError(f"Required file not found: {filepath}")
-        return None
+        return (None, 0) if return_total else None
 
     try:
         if filepath.suffix == '.parquet':
             kwargs.pop('compression', None)
-            return pd.read_parquet(filepath, **kwargs)
+            conn = duckdb.connect()
+            where = _filters_to_sql_where(filters)
+            df = conn.execute(f"SELECT * FROM '{filepath}'{where}").df()
+            if return_total:
+                total = conn.execute(f"SELECT COUNT(*) FROM '{filepath}'").fetchone()[0]
+                return df, total
+            return df
 
         if config.USE_DUCKDB_IO:
             rel = get_conn().execute(f"SELECT * FROM read_csv_auto('{filepath}')")
-            return duck_to_polars(rel).to_pandas()
+            df = duck_to_polars(rel).to_pandas()
+            return (df, len(df)) if return_total else df
 
-        return pd.read_csv(filepath, compression=compression, **kwargs)
+        df = pd.read_csv(filepath, compression=compression, **kwargs)
+        return (df, len(df)) if return_total else df
     except pd.errors.EmptyDataError:
-        return None
+        return (None, 0) if return_total else None
     except Exception as e:
         raise IOError(f"Error reading {filepath}: {e}")
 
@@ -150,7 +183,8 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
     """Write tabular data with format auto-detection (Parquet or CSV).
 
     Dispatches on file extension: .parquet → zstd parquet, else CSV.
-    Accepts both pandas and Polars DataFrames.
+    Accepts both pandas and Polars DataFrames. Pandas-DF parquet writes
+    go through DuckDB (no pyarrow runtime dep).
     """
     filepath = Path(filepath)
 
@@ -162,7 +196,12 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
             if isinstance(df, pl.DataFrame):
                 df.write_parquet(filepath, compression='zstd')
             else:
-                df.to_parquet(filepath, compression='zstd', index=False)
+                conn = duckdb.connect()
+                conn.register('_df_to_write', df)
+                conn.execute(
+                    f"COPY _df_to_write TO '{filepath}' "
+                    f"(FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
             return
 
         if isinstance(df, pl.DataFrame):
@@ -283,8 +322,7 @@ def _read_csv_files_concat(file_list):
 
     dfs = []
     for file in file_list:
-        f = Path(file)
-        df = pd.read_parquet(f) if f.suffix == '.parquet' else pd.read_csv(f)
+        df = safe_read_csv(Path(file))
         dfs.append(df)
 
     if not dfs:
@@ -515,13 +553,12 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size,
     total_rows = 0
     for fp in input_files:
         if fp.suffix == '.parquet':
-            import pyarrow.parquet as _pq
-            total_rows += _pq.ParquetFile(fp).metadata.num_rows
             filters = [(col.orders.order_type, 'in', list(order_types))]
             if orderbookids_filter:
                 filters.append((col.orders.security_code, 'in', list(orderbookids_filter)))
-            chunk = pd.read_parquet(fp, filters=filters)
-            if len(chunk) > 0:
+            chunk, n_total = safe_read_csv(fp, filters=filters, return_total=True)
+            total_rows += n_total
+            if chunk is not None and len(chunk) > 0:
                 frames.append(chunk)
         elif _cfg.USE_DUCKDB_IO:
             import polars as pl
@@ -612,9 +649,8 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
     total_rows = 0
     for fp in input_files:
         if fp.suffix == '.parquet':
-            import pyarrow.parquet as _pq
-            total_rows += _pq.ParquetFile(fp).metadata.num_rows
-            trades = pd.read_parquet(fp)
+            trades, n_total = safe_read_csv(fp, return_total=True)
+            total_rows += n_total
             matched = trades[trades[col.trades.order_id].isin(all_order_ids)].copy()
             if len(matched) > 0:
                 frames.append(matched)
@@ -753,7 +789,7 @@ class ReferenceDataLoader:
         participants_file = self.processed_dir / 'participants.parquet'
         if not participants_file.exists():
             return None
-        participants = pd.read_parquet(participants_file)
+        participants = safe_read_csv(participants_file)
         if 'Id' in participants.columns:
             self.participants = participants.set_index('Id').to_dict('index')
         return participants
@@ -779,7 +815,7 @@ class ReferenceDataLoader:
             self.tick_size_tables[orderbookid] = None
             return None
 
-        reference = pd.read_parquet(reference_file)
+        reference = safe_read_csv(reference_file)
         orderbook_ref = reference[reference.get('OrderBookId', reference.get('orderbookid')) == orderbookid]
 
         if len(orderbook_ref) == 0:
@@ -827,7 +863,7 @@ class ReferenceDataLoader:
         nbbo_file = Path(partition_dir) / 'nbbo.parquet'
         if not nbbo_file.exists():
             return 10
-        nbbo = pd.read_parquet(nbbo_file)
+        nbbo = safe_read_csv(nbbo_file)
         if len(nbbo) == 0:
             return 10
         if 'bid' in nbbo.columns and 'offer' in nbbo.columns:
@@ -844,7 +880,7 @@ class ReferenceDataLoader:
         orders_file = Path(partition_dir) / 'orders_before_matching.parquet'
         if not orders_file.exists():
             return 10
-        orders = pd.read_parquet(orders_file).head(1000)
+        orders = safe_read_csv(orders_file).head(1000)
         if 'price' not in orders.columns:
             return 10
         prices = orders['price'].dropna().unique()
@@ -875,7 +911,7 @@ class ReferenceDataLoader:
             self.price_limits[orderbookid] = None
             return None
 
-        reference = pd.read_parquet(reference_file)
+        reference = safe_read_csv(reference_file)
         orderbook_ref = reference[reference.get('OrderBookId', reference.get('orderbookid')) == orderbookid]
         
         if len(orderbook_ref) == 0:
@@ -1034,17 +1070,17 @@ def load_partition_data(partition_key, processed_dir):
     # Load orders_before_matching
     before_file = partition_dir / "orders_before_matching.parquet"
     if before_file.exists():
-        partition_data['orders_before'] = pd.read_parquet(before_file)
+        partition_data['orders_before'] = safe_read_csv(before_file)
 
     # Load orders_after_matching
     after_file = partition_dir / "orders_after_matching.parquet"
     if after_file.exists():
-        partition_data['orders_after'] = pd.read_parquet(after_file)
+        partition_data['orders_after'] = safe_read_csv(after_file)
 
     # Load last_execution_time
     exec_file = partition_dir / "last_execution_time.parquet"
     if exec_file.exists():
-        partition_data['last_execution'] = pd.read_parquet(exec_file)
+        partition_data['last_execution'] = safe_read_csv(exec_file)
     else:
         partition_data['last_execution'] = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
 
@@ -1053,28 +1089,28 @@ def load_partition_data(partition_key, processed_dir):
     # Load NBBO (partition-specific)
     nbbo_file = partition_dir / "nbbo.parquet"
     if nbbo_file.exists():
-        partition_data['nbbo'] = pd.read_parquet(nbbo_file)
+        partition_data['nbbo'] = safe_read_csv(nbbo_file)
     else:
         partition_data['nbbo'] = pd.DataFrame()
 
     # Load session data (date-level)
     session_file = date_dir / "session.parquet"
     if session_file.exists():
-        partition_data['session'] = pd.read_parquet(session_file)
+        partition_data['session'] = safe_read_csv(session_file)
     else:
         partition_data['session'] = pd.DataFrame()
 
     # Load reference data (date-level)
     reference_file = date_dir / "reference.parquet"
     if reference_file.exists():
-        partition_data['reference'] = pd.read_parquet(reference_file)
+        partition_data['reference'] = safe_read_csv(reference_file)
     else:
         partition_data['reference'] = pd.DataFrame()
 
     # Load participants data (date-level)
     participants_file = date_dir / "participants.parquet"
     if participants_file.exists():
-        partition_data['participants'] = pd.read_parquet(participants_file)
+        partition_data['participants'] = safe_read_csv(participants_file)
     else:
         partition_data['participants'] = pd.DataFrame()
     

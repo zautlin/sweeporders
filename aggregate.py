@@ -122,31 +122,64 @@ def _glob_raw_inputs(folder):
     return out
 
 
-def safe_read_csv(filepath, required=True, compression='infer', **kwargs):
+def _filters_to_sql_where(filters):
+    """Translate a pyarrow-style filters list into a SQL WHERE clause.
+
+    filters: list[(col_name, op, values)] — supported ops: 'in', '=='.
+    """
+    if not filters:
+        return ''
+    parts = []
+    for col_name, op, values in filters:
+        if op == 'in':
+            vals = ', '.join(repr(v) if isinstance(v, str) else str(int(v)) for v in values)
+            parts.append(f"{col_name} IN ({vals})")
+        elif op == '==':
+            v = repr(values) if isinstance(values, str) else int(values)
+            parts.append(f"{col_name} = {v}")
+        else:
+            raise NotImplementedError(f"Filter op {op!r} not supported")
+    return ' WHERE ' + ' AND '.join(parts)
+
+
+def safe_read_csv(filepath, required=True, compression='infer',
+                  filters=None, return_total=False, **kwargs):
     """Read tabular data with format auto-detection (Parquet or CSV).
 
-    Dispatches on file extension: .parquet → pd.read_parquet, else CSV.
+    Dispatches on file extension: .parquet → DuckDB, else CSV.
     Name kept for backward compatibility with legacy call sites.
+
+    Optional kwargs:
+      filters: list[(col, op, values)] predicate pushdown ('in'|'==') — parquet only.
+      return_total: when True, also return total_rows_in_file as second tuple element.
     """
     filepath = Path(filepath)
 
     if not filepath.exists():
         if required:
             raise FileNotFoundError(f"Required file not found: {filepath}")
-        return None
+        return (None, 0) if return_total else None
 
     try:
         if filepath.suffix == '.parquet':
             kwargs.pop('compression', None)
-            return pd.read_parquet(filepath, **kwargs)
+            conn = duckdb.connect()
+            where = _filters_to_sql_where(filters)
+            df = conn.execute(f"SELECT * FROM '{filepath}'{where}").df()
+            if return_total:
+                total = conn.execute(f"SELECT COUNT(*) FROM '{filepath}'").fetchone()[0]
+                return df, total
+            return df
 
         if config.USE_DUCKDB_IO:
             rel = get_conn().execute(f"SELECT * FROM read_csv_auto('{filepath}')")
-            return duck_to_polars(rel).to_pandas()
+            df = duck_to_polars(rel).to_pandas()
+            return (df, len(df)) if return_total else df
 
-        return pd.read_csv(filepath, compression=compression, **kwargs)
+        df = pd.read_csv(filepath, compression=compression, **kwargs)
+        return (df, len(df)) if return_total else df
     except pd.errors.EmptyDataError:
-        return None
+        return (None, 0) if return_total else None
     except Exception as e:
         raise IOError(f"Error reading {filepath}: {e}")
 
@@ -155,7 +188,8 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
     """Write tabular data with format auto-detection (Parquet or CSV).
 
     Dispatches on file extension: .parquet → zstd parquet, else CSV.
-    Accepts both pandas and Polars DataFrames.
+    Accepts both pandas and Polars DataFrames. Pandas-DF parquet writes
+    go through DuckDB (no pyarrow runtime dep).
     """
     filepath = Path(filepath)
 
@@ -167,7 +201,12 @@ def safe_write_csv(df, filepath, compression=None, create_dirs=True, **kwargs):
             if isinstance(df, pl.DataFrame):
                 df.write_parquet(filepath, compression='zstd')
             else:
-                df.to_parquet(filepath, compression='zstd', index=False)
+                conn = duckdb.connect()
+                conn.register('_df_to_write', df)
+                conn.execute(
+                    f"COPY _df_to_write TO '{filepath}' "
+                    f"(FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
             return
 
         if isinstance(df, pl.DataFrame):
@@ -292,7 +331,7 @@ def _read_csv_files_concat(file_list):
     dfs = []
     for file in file_list:
         f = Path(file)
-        df = pd.read_parquet(f) if f.suffix == '.parquet' else pd.read_csv(f)
+        df = safe_read_csv(f)
         dfs.append(df)
 
     if not dfs:
@@ -523,13 +562,12 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size,
     total_rows = 0
     for fp in input_files:
         if fp.suffix == '.parquet':
-            import pyarrow.parquet as _pq
-            total_rows += _pq.ParquetFile(fp).metadata.num_rows
             filters = [(col.orders.order_type, 'in', list(order_types))]
             if orderbookids_filter:
                 filters.append((col.orders.security_code, 'in', list(orderbookids_filter)))
-            chunk = pd.read_parquet(fp, filters=filters)
-            if len(chunk) > 0:
+            chunk, n_total = safe_read_csv(fp, filters=filters, return_total=True)
+            total_rows += n_total
+            if chunk is not None and len(chunk) > 0:
                 frames.append(chunk)
         elif _cfg.USE_DUCKDB_IO:
             import polars as pl
@@ -621,9 +659,8 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
     total_rows = 0
     for fp in input_files:
         if fp.suffix == '.parquet':
-            import pyarrow.parquet as _pq
-            total_rows += _pq.ParquetFile(fp).metadata.num_rows
-            trades = pd.read_parquet(fp)
+            trades, n_total = safe_read_csv(fp, return_total=True)
+            total_rows += n_total
             matched = trades[trades[col.trades.order_id].isin(all_order_ids)].copy()
             if len(matched) > 0:
                 frames.append(matched)
@@ -1537,7 +1574,7 @@ def load_real_metrics(output_dir, partition_keys):
         if not real_metrics_path.exists():
             continue
         
-        real_order_metrics = pd.read_parquet(real_metrics_path)
+        real_order_metrics = safe_read_csv(real_metrics_path)
         
         if len(real_order_metrics) > 0:
             real_metrics_by_partition[partition_key] = {
