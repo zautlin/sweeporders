@@ -29,7 +29,8 @@ TABLE_SUFFIXES = {".parquet", ".csv", ".gz"}
 
 def _read_table(path: Path) -> pd.DataFrame:
     if path.suffix == ".parquet":
-        return pd.read_parquet(path)
+        import duckdb
+        return duckdb.sql(f"SELECT * FROM '{path}'").df()
     if path.suffix == ".gz":
         return pd.read_csv(path, compression="gzip")
     return pd.read_csv(path)
