@@ -253,6 +253,61 @@ CALCULATED_COLUMNS = {
 }
 
 
+# ── Column normalization (raw schema → canonical) ──────────────────────────────
+# Single source of truth for raw-vs-canonical column-name dialects.
+# Add server-side aliases here when porting between environments — no other code
+# changes are required because every freshly-read DataFrame in process.py /
+# aggregate.py runs through `normalize_column_names(df, kind)` before being
+# written to data/processed/.
+
+COLUMN_NORMALIZATION_MAP: Dict[str, Dict[str, str]] = {
+    'orders': {
+        'order_id':             'orderid',
+        'security_code':        'orderbookid',
+        'securitycode':         'orderbookid',
+        'SecurityCode':         'orderbookid',
+        'totalmatchedquantity': 'matched_quantity',
+    },
+    'trades': {
+        'order_id':             'orderid',
+        'security_code':        'orderbookid',
+        'securitycode':         'orderbookid',
+    },
+    'nbbo': {
+        'security_code':        'orderbookid',
+        'securitycode':         'orderbookid',
+        'bidprice':             'bid',
+        'offerprice':           'offer',
+        'bidquantity':          'bid_quantity',
+        'offerquantity':        'offer_quantity',
+    },
+    'session': {
+        'OrderBookId':          'orderbookid',
+        'TradeDate':            'timestamp',
+    },
+    'reference': {
+        'Id':                   'orderbookid',
+        'TradeDate':            'timestamp',
+    },
+    'participants': {
+        'TradeDate':            'timestamp',
+    },
+}
+
+
+def normalize_column_names(df, data_type: str):
+    """Rename a freshly-read DataFrame's columns to canonical names.
+
+    `data_type` ∈ {'orders', 'trades', 'nbbo', 'session', 'reference', 'participants'}.
+    Unknown data_type → DataFrame returned unchanged. Pandas DataFrame in / out.
+    """
+    if data_type not in COLUMN_NORMALIZATION_MAP:
+        return df
+    norm_map = COLUMN_NORMALIZATION_MAP[data_type]
+    rename_dict = {col: norm_map[col] for col in df.columns if col in norm_map}
+    return df.rename(columns=rename_dict) if rename_dict else df
+
+
 # ── COLUMN_MAPPING ─────────────────────────────────────────────────────────────
 
 COLUMN_MAPPING: Dict[str, Dict[str, str]] = {
