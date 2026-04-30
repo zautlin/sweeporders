@@ -13,7 +13,7 @@ import multiprocessing
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 
 try:
     import psutil
@@ -49,10 +49,6 @@ CENTRE_POINT_ORDER_TYPES = [64, 256, 2048, 4096, 4098]
 INT64_SENTINEL = -9223372036854775808
 
 # Order side values
-ORDER_SIDE = {
-    'BUY': 1,
-    'SELL': 2,
-}
 
 
 # ── Tunable defaults ───────────────────────────────────────────────────────────
@@ -64,7 +60,6 @@ MIN_TRADES_THRESHOLD = 10    # Ignore securities with < 10 trades
 ENABLE_PARALLEL_PROCESSING = True   # flipped to True for the lean port (was False)
 ENABLE_STATISTICAL_TESTS   = False
 FORCE_SIMPLE_STATS         = False  # Force simple stats even if scipy available
-WARN_APPROXIMATE_STATS     = True   # Show warnings when using approximate statistics
 
 PROCESSING_MODE  = 'file'      # 'file' | 'memory'  (stream removed)
 NBBO_SOURCE      = 'INTERNAL'  # Only INTERNAL supported; EXTERNAL branch dropped
@@ -79,32 +74,15 @@ USE_DUCKDB_IO         = False  # DuckDB-driven raw CSV ingest (Stage 1)
 USE_POLARS_TRANSFORMS = False  # Polars vectorised in-memory transforms
 
 VOLUME_BUCKET_METHOD     = 'quartile'                    # 'quartile', 'quintile', or 'custom'
-VOLUME_CUSTOM_THRESHOLDS = [100, 500, 1000, 5000]        # Used only if method='custom'
 
 # Security auto-discovery
 AUTO_DISCOVERY_ENABLED = True
 
 # Legacy tickers kept for backward compatibility
-LEGACY_TICKERS = ['drr', 'bhp', 'cba', 'wtc']
 
 # Statistical scenario thresholds
-SCENARIO_TYPES = {
-    'A': 'A_Immediate_Full',
-    'B': 'B_Eventual_Full',
-    'C': 'C_Partial_None',
-}
-SCENARIO_THRESHOLDS = {
-    'immediate_fill_threshold_ratio':   0.99,
-    'immediate_fill_threshold_seconds': 1.0,
-    'eventual_fill_threshold_seconds':  1.0,
-    'eventual_fill_threshold_ratio':    0.99,
-}
 
 # Stage names
-STAGE_1_NAME = "Data Extraction & Preparation"
-STAGE_2_NAME = "Simulation & LOB States"
-STAGE_3_NAME = "Per-Security Analysis + Volume Analysis"
-STAGE_4_NAME = "Cross-Security Aggregation"
 
 # Any Price Block minimum block size (§24.1.3)
 MIN_BLOCK_SIZE = 0
@@ -190,67 +168,12 @@ def get_input_files(ticker=None, date=None):
     return out
 
 
-def validate_input_files(files):
-    """Check if required input files exist, raise error if missing."""
-    required = ['orders', 'trades']
-    missing  = []
-
-    for key in required:
-        if key in files and not Path(files[key]).exists():
-            missing.append(f"{key}: {files[key]}")
-
-    if missing:
-        raise FileNotFoundError(
-            f"Required input files not found:\n  " + "\n  ".join(missing) +
-            f"\n\nExpected pattern: {{ticker}}_{{date}}_{{type}}.csv"
-        )
-
-    return True
-
-
 # Default INPUT_FILES using config defaults
 INPUT_FILES = get_input_files()
 
 # Output file name constants. Intermediates use Parquet (zstd); final reports stay CSV.
-OUTPUT_FILES = {
-    'centrepoint_orders_raw':          'centrepoint_orders_raw.parquet',
-    'centrepoint_trades_raw':          'centrepoint_trades_raw.parquet',
-    'centrepoint_trades_agg':          'centrepoint_trades_agg.parquet',
-    'sweep_orders_with_trades':        'sweep_orders_with_trades.parquet',
-    'scenario_a_immediate_full':       'scenario_a_immediate_full.parquet',
-    'scenario_b_eventual_full':        'scenario_b_eventual_full.parquet',
-    'scenario_c_partial_none':         'scenario_c_partial_none.parquet',
-    'scenario_summary':                'scenario_summary.csv',
-    'scenario_a_simulation_results':   'scenario_a_simulation_results.parquet',
-    'scenario_b_simulation_results':   'scenario_b_simulation_results.parquet',
-    'scenario_c_simulation_results':   'scenario_c_simulation_results.parquet',
-    'scenario_comparison_summary':     'scenario_comparison_summary.parquet',
-    'scenario_detailed_comparison':    'scenario_detailed_comparison.parquet',
-    'order_level_detail':              'order_level_detail.parquet',
-    'execution_cost_comparison':       'execution_cost_comparison.parquet',
-    'by_participant':                  'by_participant.csv.gz',
-}
 
 # Calculated/intermediate column documentation (not accessed via col.* — internal only)
-CALCULATED_COLUMNS = {
-    'price_qty_product':       'Price × Quantity (intermediate for VWAP calculation)',
-    'vwap':                    'Volume-weighted average price of executions',
-    'cumulative_fill':         'Running total of filled quantity',
-    'arrival_midpoint':        'NBBO midpoint at order arrival time',
-    'arrival_spread':          'NBBO spread at order arrival time (offer - bid)',
-    'arrival_bid':             'NBBO bid price at order arrival',
-    'arrival_offer':           'NBBO offer price at order arrival',
-    'trade_midpoint':          'NBBO midpoint at trade execution time',
-    'execution_duration_sec':  'Time from first to last fill (seconds)',
-    'time_to_first_fill_sec':  'Time from order arrival to first fill (seconds)',
-    'is_first_fill':           'Boolean flag: Is this the first fill for the order?',
-    'is_last_fill':            'Boolean flag: Is this the last fill for the order?',
-    'price_vs_order_price':    'Difference between execution price and order limit price',
-    'exec_cost_arrival_bps':   'Execution cost vs arrival midpoint (basis points)',
-    'exec_cost_vw_bps':        'Execution cost vs VWAP (basis points)',
-    'match_value':             'Value used for trade matching logic',
-    'match_status':            'Status of simulated match (matched/unmatched)',
-}
 
 
 # ── Column normalization (raw schema → canonical) ──────────────────────────────
@@ -647,17 +570,6 @@ class ColumnSchema:
 col = ColumnSchema(COLUMN_MAPPING)
 
 # Backward-compat helper functions (mirrors column_schema.py)
-def get_column(data_type: str, column_name: str) -> str:
-    """Get actual column name for a standard column name."""
-    accessor = col.get_accessor(data_type)
-    if accessor is None:
-        raise ValueError(f"Data type '{data_type}' not found")
-    return getattr(accessor, column_name)
-
-
-def validate_columns(data_type: str, required_columns: list) -> bool:
-    """Validate that required columns exist."""
-    return col.validate(data_type, required_columns)
 
 
 # ── System / worker helpers (from system_config.py) ────────────────────────────
@@ -771,11 +683,6 @@ def get_config_with_overrides(
 def auto_worker_count() -> int:
     """Return auto-detected optimal worker count (respects SWEEP_WORKERS env var)."""
     return get_config_with_overrides().num_workers
-
-
-def memory_budget_mb() -> float:
-    """Return available memory in MiB (for sizing buffers/chunk sizes)."""
-    return get_config_with_overrides().available_memory_gb * 1024.0
 
 
 def print_system_info():
