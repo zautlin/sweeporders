@@ -15,6 +15,7 @@ Layout:
 Spec sources: docs/bi.txt and docs/dd.txt (ASX Centre Point behaviour spec).
 """
 
+import heapq
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional
@@ -100,7 +101,7 @@ class SimContext:
     contra_midtick:      np.ndarray   # int8
     contra_orderbookid:  np.ndarray   # int32
     contra_display_qty:  np.ndarray   # int64 — 0 = non-iceberg
-    contra_ordertype:    np.ndarray   # int8  — LIMIT=1, MARKET=2, MTL=3, PASSIVE=4
+    contra_ordertype:    np.ndarray   # int32 — values include 2048 (Sweep) and 4096 (Block Limit), so int8 overflows
     contra_nbbo_bid:     np.ndarray   # int64 — per-order NBBO snapshot (INTERNAL)
     contra_nbbo_offer:   np.ndarray   # int64
     contra_bid:          np.ndarray   # int64 — fallback when NBBO sentinel
@@ -395,7 +396,7 @@ def build_sim_context(
     contra_midtick      = _col_int8 (all_orders, 'midtick', default=MIDTICK_NO)
     contra_orderbookid  = _col_int32(all_orders, 'orderbookid')
     contra_display_qty  = _col_int64(all_orders, 'display_quantity', default=0)
-    contra_ordertype    = _col_int8 (all_orders, 'exchangeordertype')
+    contra_ordertype    = _col_int32(all_orders, 'exchangeordertype')
     contra_nbbo_bid     = _col_int64(all_orders, 'national_bid', default=INT64_SENTINEL)
     contra_nbbo_offer   = _col_int64(all_orders, 'national_offer', default=INT64_SENTINEL)
     contra_bid          = _col_int64(all_orders, 'bid')
@@ -462,14 +463,62 @@ def build_sim_context(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sprint 3 — Kernel Phase 1 (skeleton — no match emission yet)
+# Sprint 3 — Kernel Phase 1 (full gauntlet + match emission)
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # Walks every sweep, builds its eligibility window via np.searchsorted, and
-# applies the cheap filters (orderbookid, side, self-match, session state).
-# The match decision currently always SKIPs — match emission lands in the
-# next commit. Output shape matches the legacy simulator's so the parity
-# harness can plug in unchanged.
+# applies the full match gauntlet (rule helpers + APB / NBBO / midtick paths)
+# in priority order. Mutates inventory in place via flat int64 arrays.
+# Iceberg refresh uses heapq-of-indices so contras can be repositioned at
+# the back of the queue when their display slice exhausts (bi.txt §27).
+#
+# Deal-source codes (dd.txt §1144-1187):
+#   1 = lit continuous, 46 = preference, 47 = Centre Point,
+#   50 = Any Price Block, 51 = preference Any Price Block
+DEALSOURCE_CONTINUOUS       = 1
+DEALSOURCE_PREFERENCE       = 46
+DEALSOURCE_CENTREPOINT      = 47
+DEALSOURCE_BLOCK            = 50
+DEALSOURCE_PREFERENCE_BLOCK = 51
+
+_BASE_MATCHGROUPID = 7904794000999000001
+
+
+def _deal_source_for(match_type: str) -> int:
+    if match_type == 'BLOCK_PREF': return DEALSOURCE_PREFERENCE_BLOCK
+    if match_type == 'BLOCK':      return DEALSOURCE_BLOCK
+    return DEALSOURCE_CENTREPOINT
+
+
+def _execution_delay_ns(rng: np.random.Generator, mean_ms: float = 5.0) -> int:
+    """Log-normal execution delay (mirrors process.py:_add_execution_delay).
+
+    Takes a Generator instance so the kernel is reproducible / parity-testable
+    when the caller seeds it. Legacy uses np.random.lognormal — pass
+    np.random.default_rng() with no seed to match its semantics.
+    """
+    delay_ms = rng.lognormal(mean=np.log(mean_ms), sigma=0.5)
+    return int(delay_ms * 1_000_000)
+
+
+def _internal_nbbo(ctx: SimContext, ci: int) -> tuple[int, int]:
+    """INTERNAL NBBO source: per-order snapshot, sentinel falls back to bid/offer."""
+    nbbo_bid   = int(ctx.contra_nbbo_bid[ci])
+    nbbo_offer = int(ctx.contra_nbbo_offer[ci])
+    if nbbo_bid == INT64_SENTINEL or nbbo_offer == INT64_SENTINEL:
+        nbbo_bid   = int(ctx.contra_bid[ci])
+        nbbo_offer = int(ctx.contra_offer[ci])
+    return nbbo_bid, nbbo_offer
+
+
+def _external_nbbo(ctx: SimContext, ts: int) -> tuple[int, int]:
+    """EXTERNAL NBBO source: most-recent snapshot at or before ts."""
+    if ctx.nbbo_ts is None or len(ctx.nbbo_ts) == 0:
+        return 0, 0
+    idx = int(np.searchsorted(ctx.nbbo_ts, ts, side='right')) - 1
+    if idx < 0:
+        return 0, 0
+    return int(ctx.nbbo_bid[idx]), int(ctx.nbbo_offer[idx])
 
 
 def _session_state_at(ts: int, session_ts: np.ndarray, session_state: np.ndarray) -> int:
@@ -492,36 +541,78 @@ def _sort_lexicographic(eff_ts: np.ndarray, sequence: np.ndarray) -> np.ndarray:
     return np.lexsort([sequence, eff_ts])
 
 
-def run_phase1(ctx: SimContext) -> tuple[list, list]:
+def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
+               tradedate: str = None) -> tuple[list, list]:
     """Phase-1 dark continuous matching kernel.
 
-    SKELETON ONLY (this commit) — walks every sweep + eligibility window but
-    SKIPs every candidate, so no matches emit. Provides the loop structure
-    + np.searchsorted primitives for the next commit, where the match
-    gauntlet (rule helpers) and trade emission land.
+    Walks every sweep, builds the eligibility window, runs the full match
+    gauntlet (MAQ → crossing key → APB-or-NBBO branch → price validation),
+    emits two trade rows per match (sweep side + contra side with shared
+    matchgroupid), and mutates flat int64 inventory arrays in place.
+
+    Args:
+      ctx: prepared SimContext from build_sim_context()
+      rng: numpy Generator for execution-delay log-normal draws.
+           Defaults to np.random.default_rng() (matches legacy unseeded behaviour).
+      tradedate: 'YYYY-MM-DD' string for trade rows. If None, derived from
+           the first sweep's timestamp.
 
     Returns:
-      simulated_trades: list[dict] — trade rows, sweep + contra side per match
-                       (empty here; populated in commit C)
-      sweep_summaries:  list[dict] — one row per sweep with fill statistics
+      simulated_trades: list[dict] — sweep + contra row per match
+      sweep_summaries:  list[dict] — one row per sweep
     """
+    if rng is None:
+        rng = np.random.default_rng()
     flags = ctx.cfg_flags
 
     # ── Per-partition one-time prep ─────────────────────────────────────────
     contra_perm = _sort_lexicographic(ctx.contra_eff_ts, ctx.contra_sequence)
     c_eff_ts        = ctx.contra_eff_ts[contra_perm]
+    c_seq           = ctx.contra_sequence[contra_perm]
     c_orderid       = ctx.contra_orderid[contra_perm]
     c_orderbookid   = ctx.contra_orderbookid[contra_perm]
     c_side          = ctx.contra_side[contra_perm]
+    c_qty           = ctx.contra_qty[contra_perm]
+    c_price         = ctx.contra_price[contra_perm]
+    c_maq           = ctx.contra_maq[contra_perm]
+    c_sfmq          = ctx.contra_sfmq[contra_perm]
+    c_xkey          = ctx.contra_crossingkey[contra_perm]
+    c_part          = ctx.contra_participant[contra_perm]
+    c_midtick       = ctx.contra_midtick[contra_perm]
+    c_display       = ctx.contra_display_qty[contra_perm]
+    c_ordertype     = ctx.contra_ordertype[contra_perm]
+    c_nbbo_bid      = ctx.contra_nbbo_bid[contra_perm]
+    c_nbbo_offer    = ctx.contra_nbbo_offer[contra_perm]
+    c_bid           = ctx.contra_bid[contra_perm]
+    c_offer         = ctx.contra_offer[contra_perm]
 
-    # Inventory (mutable across sweeps): one int64 per contra position.
-    # Commit C will decrement entries as matches execute.
-    order_remaining = ctx.contra_qty[contra_perm].copy()
-    # Iceberg slice consumed (commit C uses this; allocated now for shape).
-    iceberg_consumed = np.zeros(len(c_orderid), dtype=np.int64)  # noqa: F841
+    # Build a permuted-context shim for the NBBO helpers, since they index by
+    # the permuted position. Cheaper than allocating a new SimContext.
+    class _PermutedNbboCtx:
+        contra_nbbo_bid   = c_nbbo_bid
+        contra_nbbo_offer = c_nbbo_offer
+        contra_bid        = c_bid
+        contra_offer      = c_offer
+        nbbo_ts           = ctx.nbbo_ts
+        nbbo_bid          = ctx.nbbo_bid
+        nbbo_offer        = ctx.nbbo_offer
+    pctx = _PermutedNbboCtx()
+
+    # Inventory state — mutable across sweeps. One int64 per contra position.
+    order_remaining  = c_qty.copy()
+    iceberg_consumed = np.zeros(len(c_orderid), dtype=np.int64)
+
+    # tradedate derived from earliest sweep timestamp (matches legacy)
+    if tradedate is None and len(ctx.sweep_eff_ts) > 0:
+        from datetime import datetime, timezone
+        first_ts_ns = int(ctx.sweep_eff_ts.min())
+        tradedate = datetime.fromtimestamp(first_ts_ns / 1e9, tz=timezone.utc).strftime('%Y-%m-%d')
 
     simulated_trades: list = []
     sweep_summaries:  list = []
+
+    row_counter = 1
+    match_counter = 0
 
     n_sweeps = len(ctx.sweep_orderid)
     for s in range(n_sweeps):
@@ -533,8 +624,13 @@ def run_phase1(ctx: SimContext) -> tuple[list, list]:
         last_exec_time  = int(ctx.sweep_last_exec[s])
         sweep_lost_pri  = bool(ctx.sweep_lost_priority[s])
         sweep_changeres = int(ctx.sweep_changereason[s])
+        sweep_price     = int(ctx.sweep_price[s])
+        sweep_maq       = int(ctx.sweep_maq[s])
+        sweep_sfmq      = int(ctx.sweep_sfmq[s])
+        sweep_xkey      = int(ctx.sweep_crossingkey[s])
+        sweep_part      = int(ctx.sweep_participant[s])
+        sweep_midtick   = int(ctx.sweep_midtick[s])
 
-        # ── Zero-quantity sweep — emit empty summary, continue ──────────────
         if sweep_qty_avail <= 0:
             sweep_summaries.append({
                 'orderid': sweep_id, 'timestamp': int(ctx.sweep_eff_ts[s]),
@@ -547,41 +643,195 @@ def run_phase1(ctx: SimContext) -> tuple[list, list]:
             })
             continue
 
-        # ── Build candidate window via binary search on pre-sorted contras ──
+        # Eligibility window via searchsorted (O(log N) per sweep)
         lo = int(np.searchsorted(c_eff_ts, first_exec_time, side='left'))
         hi = int(np.searchsorted(c_eff_ts, last_exec_time,  side='right'))
-        # Cheap mask: orderbookid match, opposite side, not self
         idx_window = np.arange(lo, hi)
         mask = (
             (c_orderbookid[idx_window] == sweep_obid)
             & (c_side[idx_window] != sweep_side)
             & (c_orderid[idx_window] != sweep_id)
         )
-        candidates = idx_window[mask]
+        candidate_idx = idx_window[mask]
+
+        # Iceberg refresh queue: indices repositioned to the back of priority
+        # order with their original (eff_ts, sequence) but a fresh display slice.
+        # Held in heapq for O(log N) reinsertion.
+        refresh_heap: list = []
+        cand_pos = 0   # cursor into candidate_idx
 
         sweep_remaining = sweep_qty_avail
         sweep_matched   = 0
         sweep_n_matches = 0
+        first_fill_price = 0   # MTL anchor (set on first fill)
 
-        # ── Walk candidates in priority order (already sorted by lexsort) ───
-        for ci in candidates:
-            if sweep_remaining <= 0:
+        while sweep_remaining > 0:
+            # Pick next candidate — earliest of (front of candidate_idx, top of refresh_heap)
+            cand_avail = cand_pos < len(candidate_idx)
+            if cand_avail and refresh_heap:
+                ci_main = int(candidate_idx[cand_pos])
+                heap_top = refresh_heap[0]
+                # Compare priorities: (eff_ts, sequence)
+                if (int(c_eff_ts[ci_main]), int(c_seq[ci_main])) <= (heap_top[0], heap_top[1]):
+                    ci = ci_main; cand_pos += 1
+                else:
+                    _, _, _, ci = heapq.heappop(refresh_heap)
+            elif cand_avail:
+                ci = int(candidate_idx[cand_pos]); cand_pos += 1
+            elif refresh_heap:
+                _, _, _, ci = heapq.heappop(refresh_heap)
+            else:
                 break
 
             order_avail = int(order_remaining[ci])
             if order_avail <= 0:
                 continue
 
-            # Session-state gate at contra's effective_timestamp
-            ts = int(c_eff_ts[ci])
-            if not is_valid_session(_session_state_at(ts, ctx.session_ts, ctx.session_state)):
+            # Iceberg cap
+            order_avail = iceberg_available(
+                int(c_display[ci]), int(iceberg_consumed[ci]), order_avail
+            )
+            if order_avail <= 0:
                 continue
 
-            # ─── Match gauntlet stub — always SKIP for now (commit C wires it in) ───
-            # Rule helpers (check_maq, check_crossing, validate_price_limit, etc.)
-            # will be applied here. Until then no matches emit, so the kernel
-            # produces zero-fill summaries for every sweep.
-            continue
+            potential = min(sweep_remaining, order_avail)
+
+            # MAQ gauntlet — may BREAK
+            d = check_maq(
+                sweep_remaining, sweep_matched, sweep_maq, sweep_sfmq,
+                order_avail, int(c_maq[ci]), int(c_sfmq[ci]), potential,
+            )
+            if d == Decision.BREAK:
+                break
+            if d == Decision.SKIP:
+                continue
+
+            # Crossing key
+            if check_crossing(
+                sweep_part, int(c_part[ci]), sweep_xkey, int(c_xkey[ci])
+            ) == Decision.SKIP:
+                continue
+
+            # Match-time session-state recheck
+            ts = int(c_eff_ts[ci])
+            if not is_valid_session(
+                _session_state_at(ts, ctx.session_ts, ctx.session_state)
+            ):
+                continue
+
+            # APB vs non-APB branch
+            ot = int(c_ordertype[ci]); mt = int(c_midtick[ci])
+            if is_apb(ot, mt):
+                contra_limit = int(c_price[ci])
+                # Sweep limit must cross contra limit
+                if sweep_side == 1 and sweep_price < contra_limit: continue
+                if sweep_side == 2 and sweep_price > contra_limit: continue
+                execution_price = float(contra_limit)
+                # MIN_BLOCK_SIZE check (qty * price ≥ threshold)
+                if flags.min_block_size > 0 and \
+                   potential * execution_price < flags.min_block_size:
+                    continue
+                is_pref = (
+                    flags.resting_apply_preferencing
+                    and sweep_part > 0 and int(c_part[ci]) > 0
+                    and sweep_part == int(c_part[ci])
+                )
+                match_type = 'BLOCK_PREF' if is_pref else 'BLOCK'
+                nbbo_bid_ev = nbbo_offer_ev = 0
+            else:
+                # NBBO at match time (per-source)
+                if flags.nbbo_source == 'EXTERNAL':
+                    nbbo_bid_ev, nbbo_offer_ev = _external_nbbo(pctx, ts)
+                else:
+                    nbbo_bid_ev, nbbo_offer_ev = _internal_nbbo(pctx, ci)
+                if nbbo_bid_ev <= 0 or nbbo_offer_ev <= 0:
+                    continue
+
+                midpoint = (nbbo_bid_ev + nbbo_offer_ev) / 2
+
+                # Price-limit envelope (lower/upper from reference data)
+                if ctx.price_lower and midpoint < ctx.price_lower:  continue
+                if ctx.price_upper and midpoint > ctx.price_upper:  continue
+
+                # Order limit-price validation (LIMIT/MARKET/MTL)
+                if not validate_price_limit(
+                    ot, int(c_price[ci]), int(midpoint), sweep_side,
+                    sweep_matched, first_fill_price,
+                ):
+                    continue
+
+                # Mid-tick improvement (effective_midtick = max(sweep, contra))
+                effective_midtick = max(sweep_midtick, mt)
+                execution_price = apply_midtick(
+                    int(midpoint), nbbo_bid_ev, nbbo_offer_ev,
+                    sweep_side, effective_midtick,
+                    ctx.tick_size if ctx.tick_size > 0 else 1,
+                )
+
+                match_type = 'SWEEP_TO_SWEEP' if ot == 2048 else 'SWEEP_TO_REGULAR'
+
+            # Match accepted — emit + mutate
+            match_qty = potential
+            match_ts = ts + _execution_delay_ns(rng)
+            matchgroupid = _BASE_MATCHGROUPID + match_counter
+            match_counter += 1
+
+            contra_part_id = int(c_part[ci])
+            contra_part_type = ctx.participants.get(contra_part_id, 'UNKNOWN')
+            dealsource = _deal_source_for(match_type)
+            order_id = int(c_orderid[ci])
+            order_side = int(c_side[ci])
+
+            simulated_trades.append({
+                'EXCHANGE': 3, 'sequence': row_counter, 'tradedate': tradedate,
+                'tradetime': match_ts, 'securitycode': sweep_obid,
+                'orderid': sweep_id, 'dealsource': dealsource, 'exchangeinfo': '',
+                'matchgroupid': matchgroupid,
+                'nationalbidpricesnapshot': nbbo_bid_ev,
+                'nationalofferpricesnapshot': nbbo_offer_ev,
+                'tradeprice': int(execution_price), 'quantity': int(match_qty),
+                'side': sweep_side, 'participantid': 0,
+                'passiveaggressive': 1, 'row_num': row_counter,
+                'match_type': match_type,
+                'contra_participant_type': contra_part_type,
+            })
+            row_counter += 1
+            simulated_trades.append({
+                'EXCHANGE': 3, 'sequence': row_counter, 'tradedate': tradedate,
+                'tradetime': match_ts, 'securitycode': sweep_obid,
+                'orderid': order_id, 'dealsource': dealsource, 'exchangeinfo': '',
+                'matchgroupid': matchgroupid,
+                'nationalbidpricesnapshot': nbbo_bid_ev,
+                'nationalofferpricesnapshot': nbbo_offer_ev,
+                'tradeprice': int(execution_price), 'quantity': int(match_qty),
+                'side': order_side, 'participantid': 0,
+                'passiveaggressive': 0, 'row_num': row_counter,
+                'match_type': match_type,
+                'contra_participant_type': contra_part_type,
+            })
+            row_counter += 1
+
+            sweep_remaining -= match_qty
+            order_remaining[ci] -= match_qty
+            sweep_matched += match_qty
+            sweep_n_matches += 1
+            if first_fill_price == 0:
+                first_fill_price = int(execution_price)
+
+            # Iceberg refresh — increment slice consumed; on exhaustion reposition
+            display = int(c_display[ci])
+            if display > 0:
+                new_consumed = int(iceberg_consumed[ci]) + match_qty
+                if new_consumed >= display:
+                    iceberg_consumed[ci] = new_consumed - display
+                    if order_remaining[ci] > 0:
+                        # Push back at tail with current eff_ts but a fresh "monotone" priority
+                        # so it sorts after any same-ts contras yet to be visited.
+                        heapq.heappush(refresh_heap, (
+                            int(c_eff_ts[ci]), int(c_seq[ci]) + 10**12, len(refresh_heap), ci,
+                        ))
+                else:
+                    iceberg_consumed[ci] = new_consumed
 
         sweep_summaries.append({
             'orderid': sweep_id, 'timestamp': int(ctx.sweep_eff_ts[s]),

@@ -747,45 +747,43 @@ class TestRunPhase1Skeleton:
         ctx = build_sim_context(sweep, _toy_all_orders(), {}, SimFlags(**_flags_kwargs()))
         trades, summaries = run_phase1(ctx)
         assert len(summaries) == 2
+        # Sweep[0] zero-qty → empty summary
         assert summaries[0]['matched_quantity'] == 0
         assert summaries[0]['fill_ratio'] == 0
         assert summaries[0]['num_matches'] == 0
         assert summaries[0]['quantity'] == 0
-        assert trades == []                        # skeleton — no matches
+        # Sweep[1] still active, may match
+        assert summaries[1]['quantity'] == 300
 
-    def test_one_summary_per_sweep_skeleton_emits_zero_trades(self):
+    def test_one_summary_per_sweep(self):
         from simulator import build_sim_context, run_phase1, SimFlags
         ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
                                 {}, SimFlags(**_flags_kwargs()))
         trades, summaries = run_phase1(ctx)
         assert len(summaries) == 2                 # one per sweep
-        assert trades == []                        # skeleton — gauntlet always SKIPs
-        for s in summaries:
-            assert s['matched_quantity'] == 0
-            assert s['num_matches'] == 0
+        # Trade rows always emit in pairs (sweep + contra side)
+        assert len(trades) % 2 == 0
 
     def test_summary_carries_through_lost_priority_and_changereason(self):
         from simulator import build_sim_context, run_phase1, SimFlags
         ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
                                 {}, SimFlags(**_flags_kwargs()))
         _, summaries = run_phase1(ctx)
-        # Toy fixture: sweep[0] lost_priority=False, sweep[1] lost_priority=True
         assert summaries[0]['lost_priority'] is False
         assert summaries[1]['lost_priority'] is True
 
     def test_eligibility_window_excludes_self_match(self):
-        """Sweep's own orderid in all_orders must not appear as a candidate."""
+        """Sweep's own orderid in all_orders must not appear as a contra match."""
         from simulator import build_sim_context, run_phase1, SimFlags
         sweep = _toy_sweep_orders()
-        # Inject the sweep's own id into all_orders — should be filtered out.
         ao = _toy_all_orders()
         ao.loc[len(ao)] = ao.iloc[0].copy()
-        ao.iloc[-1, ao.columns.get_loc('orderid')] = 1001  # sweep[0]'s id
+        ao.iloc[-1, ao.columns.get_loc('orderid')] = 1001
         ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
-        # Skeleton emits no trades regardless; this just verifies no crash + correct summary count
         trades, summaries = run_phase1(ctx)
-        assert len(summaries) == 2
-        assert trades == []
+        # Self-id 1001 must NEVER appear on a passive (contra) row
+        contra_rows = [t for t in trades if t['passiveaggressive'] == 0]
+        assert 1001 not in [t['orderid'] for t in contra_rows]
 
     def test_session_state_filter_blocks_pre_open(self):
         """When session is PRE_OPEN at the contra's timestamp, kernel should still
@@ -823,3 +821,158 @@ class TestRunPhase1Skeleton:
         trades, summaries = run_phase1(ctx)
         assert len(summaries) == 3
         assert all(s['matched_quantity'] == 0 for s in summaries)   # skeleton
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Match gauntlet integration (commit C)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestKernelMatchEmission:
+    def _seeded(self):
+        # Reproducible execution-delay draws across runs
+        return np.random.default_rng(seed=42)
+
+    def test_pairs_of_trade_rows_emit_per_match(self):
+        """Each match emits exactly 2 trade rows: one sweep-side, one contra-side."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
+                                {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx, rng=self._seeded())
+        # Group by matchgroupid
+        groups = {}
+        for t in trades:
+            groups.setdefault(t['matchgroupid'], []).append(t)
+        for gid, rows in groups.items():
+            assert len(rows) == 2, f"matchgroupid {gid} has {len(rows)} rows"
+            assert {r['passiveaggressive'] for r in rows} == {0, 1}
+
+    def test_sweep_summary_matches_trade_count(self):
+        """sweep_summaries[i].num_matches must equal the number of trade pairs for that sweep."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
+                                {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx, rng=self._seeded())
+        for s in summaries:
+            sweep_id = s['orderid']
+            # Count groups where the sweep-side row's orderid == this sweep's id
+            sweep_rows = [t for t in trades
+                          if t['passiveaggressive'] == 1 and t['orderid'] == sweep_id]
+            assert len(sweep_rows) == s['num_matches']
+
+    def test_iceberg_yields_multiple_matches_against_same_contra(self):
+        """A 150-qty contra with display_quantity=50 should match 3× to a 300-qty sweep."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        sweep = _toy_sweep_orders().iloc[1:2].reset_index(drop=True)  # only sweep[1]: side=2 sell, qty=300
+        ao = _toy_all_orders().iloc[2:3].reset_index(drop=True)        # only order 2003: side=1, qty=150, display=50
+        ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx, rng=self._seeded())
+        # 3 matches × 2 rows = 6 trade rows; matched_quantity = 150
+        assert summaries[0]['num_matches'] == 3
+        assert summaries[0]['matched_quantity'] == 150
+        assert len(trades) == 6
+
+    def test_sweep_to_sweep_match_type_for_2048_contra(self):
+        """When contra exchangeordertype == 2048, match_type tags as SWEEP_TO_SWEEP."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        sweep = _toy_sweep_orders().iloc[1:2].reset_index(drop=True)
+        ao = _toy_all_orders().iloc[2:3].reset_index(drop=True)
+        ao.loc[0, 'exchangeordertype'] = 2048
+        ao.loc[0, 'display_quantity'] = 0   # avoid iceberg multi-match
+        ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
+        trades, _ = run_phase1(ctx, rng=self._seeded())
+        assert all(t['match_type'] == 'SWEEP_TO_SWEEP' for t in trades)
+
+    def test_apb_path_uses_block_dealsource(self):
+        """APB contra (ordertype=4096, midtick=5) → BLOCK / BLOCK_PREF dealsource."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        sweep = _toy_sweep_orders().iloc[1:2].reset_index(drop=True)
+        ao = _toy_all_orders().iloc[2:3].reset_index(drop=True)
+        ao.loc[0, 'exchangeordertype'] = 4096          # Block Limit
+        ao.loc[0, 'midtick'] = 5                       # Any Price Block
+        ao.loc[0, 'display_quantity'] = 0
+        # Sweep is sell at price 200, contra (post-mod) is buy at price 200 → cross
+        ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
+        trades, _ = run_phase1(ctx, rng=self._seeded())
+        assert len(trades) >= 2
+        # dealsource 50 (BLOCK) — preferencing flag is on but participants differ (11 vs 22)
+        assert all(t['dealsource'] == 50 for t in trades)
+        assert all(t['match_type'] == 'BLOCK' for t in trades)
+
+    def test_no_matches_when_session_is_pre_open(self):
+        """Match-time session-state recheck blocks all matches when not OPEN/CONTINUOUS."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        session_df = pd.DataFrame({'timestamp': [0], 'session_state': ['PRE_OPEN']})
+        ctx = build_sim_context(_toy_sweep_orders(), _toy_all_orders(),
+                                {'session': session_df}, SimFlags(**_flags_kwargs()))
+        trades, _ = run_phase1(ctx, rng=self._seeded())
+        assert trades == []
+
+    def test_inventory_decrements_correctly(self):
+        """A sweep that takes 100 from a 200-qty contra leaves 100 for the next sweep."""
+        from simulator import build_sim_context, run_phase1, SimFlags
+        # Two sweeps side=1 (buy), qty=100 each, both targeting the same orderbookid.
+        # Contra eff_ts must fall inside BOTH sweeps' [first_exec, last_exec] windows.
+        sweep = pd.DataFrame({
+            'orderid':                   [9001, 9002],
+            'effective_timestamp':       [1_000_000_000, 1_000_000_000],
+            'last_execution_time':       [2_000_000_000, 2_000_000_000],
+            'side':                      [1, 1],
+            'leavesquantity':            [100, 100],
+            'price':                     [100, 100],
+            'minimumquantity':           [0, 0],
+            'singlefillminimumquantity': [0, 0],
+            'crossingkey':               [0, 0],
+            'participantid':             [10, 11],
+            'midtick':                   [2, 2],
+            'orderbookid':               [85603, 85603],
+            'lost_priority':             [False, False],
+            'changereason':              [6, 6],
+        })
+        # One contra (side=2 sell) with 200 available — visible to both sweep windows.
+        ao = pd.DataFrame({
+            'orderid':                   [9999],
+            'effective_timestamp':       [1_100_000_000],
+            'sequence':                  [1],
+            'side':                      [2],
+            'quantity':                  [200],
+            'price':                     [99],
+            'minimumquantity':           [0],
+            'singlefillminimumquantity': [0],
+            'crossingkey':               [0],
+            'participantid':             [99],
+            'midtick':                   [2],
+            'orderbookid':               [85603],
+            'display_quantity':          [0],
+            'exchangeordertype':         [1],
+            'national_bid':              [99],
+            'national_offer':            [101],
+            'bid':                       [98],
+            'offer':                     [102],
+        })
+        ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx, rng=self._seeded())
+        # Both sweeps should fully fill (100 each, total 200)
+        assert summaries[0]['matched_quantity'] == 100
+        assert summaries[1]['matched_quantity'] == 100
+        # 4 trade rows total (2 matches × 2 sides)
+        assert len(trades) == 4
+
+    def test_real_partition_smoke_with_kernel(self):
+        """Run the full kernel against on-disk CBA fixture; expect no crash."""
+        from pathlib import Path
+        import duckdb
+        from simulator import build_sim_context, run_phase1, SimFlags
+        partition = Path('data/processed/2024-09-05/85603')
+        if not partition.exists():
+            pytest.skip('CBA fixture not on disk')
+        all_orders = duckdb.sql(f"SELECT * FROM '{partition}/orders_before_matching.parquet'").df()
+        sweep = all_orders.head(3).copy()
+        sweep['effective_timestamp'] = sweep['timestamp']
+        sweep['last_execution_time'] = sweep['timestamp'] + 10**9
+        sweep['lost_priority'] = False
+        sweep['leavesquantity'] = sweep.get('quantity', 0)
+        ctx = build_sim_context(sweep, all_orders, {}, SimFlags(**_flags_kwargs()))
+        trades, summaries = run_phase1(ctx, rng=self._seeded())
+        assert len(summaries) == 3
+        # Trades may or may not emit depending on the data — just verify no crash
