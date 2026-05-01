@@ -846,3 +846,112 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
         })
 
     return simulated_trades, sweep_summaries
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprint 5 — legacy-shape adapter for drop-in replacement
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# simulate_sweep_matching_numpy() mirrors the signature/return-shape of
+# process.py:simulate_sweep_matching(), so process.py can pick either backend
+# with a single conditional. Adapter responsibilities:
+#   1. Build a SimContext from the pandas inputs
+#   2. Run the kernel
+#   3. Convert kernel outputs (list[dict], list[dict]) to the dict-of-DataFrames
+#      shape the rest of the pipeline expects.
+
+def simulate_sweep_matching_numpy(
+    sweep_orders,          # pandas DataFrame, sorted by (effective_timestamp, sequence)
+    all_orders,            # pandas DataFrame
+    nbbo_data,             # pandas DataFrame or None
+    nbbo_source: str = 'INTERNAL',
+    tick_size_override: int = 0,
+    tick_size_table=None,
+    price_limits: dict = None,
+    participants_dict: dict = None,
+    session_states_df=None,
+    *,
+    rng: np.random.Generator = None,
+):
+    """Drop-in numpy-kernel replacement for process.py:simulate_sweep_matching.
+
+    Returns the same dict shape:
+      {'order_summary': DataFrame, 'sweep_utilization': DataFrame,
+       'simulated_trades': DataFrame, 'sweep_usage': dict}
+    """
+    import pandas as pd
+
+    # Build SimFlags from caller arguments (config-flag list mirrors the dataclass)
+    flags = SimFlags(
+        nbbo_source=nbbo_source,
+        simulate_resting_phase=False,
+        simulate_lit_resting=False,
+        resting_lit_book_mode='scan',
+        resting_use_midtick=False,
+        resting_lit_use_limit=True,
+        resting_model_cancellation=True,
+        resting_apply_crossing_keys=True,
+        resting_apply_session_filter=True,
+        resting_apply_maq=True,
+        resting_apply_preferencing=True,
+        resting_apply_iceberg=True,
+        use_polars_transforms=False,
+        use_duckdb_io=False,
+        min_block_size=0,
+    )
+
+    partition_data = {'nbbo': nbbo_data, 'session': session_states_df}
+
+    price_lower = int(price_limits.get('lower_limit', 0)) if price_limits else 0
+    price_upper = int(price_limits.get('upper_limit', 0)) if price_limits else 0
+
+    ctx = build_sim_context(
+        sweep_orders, all_orders, partition_data, flags,
+        tick_size=int(tick_size_override) if tick_size_override else 0,
+        tick_size_table=tick_size_table,
+        price_lower=price_lower,
+        price_upper=price_upper,
+        participants=participants_dict,
+    )
+
+    trades, summaries = run_phase1(ctx, rng=rng)
+
+    # ── Adapt to legacy dict-of-DataFrames shape ─────────────────────────────
+    sim_trades_df = pd.DataFrame(trades) if trades else pd.DataFrame(columns=[
+        'EXCHANGE', 'sequence', 'tradedate', 'tradetime', 'securitycode',
+        'orderid', 'dealsource', 'exchangeinfo', 'matchgroupid',
+        'nationalbidpricesnapshot', 'nationalofferpricesnapshot',
+        'tradeprice', 'quantity', 'side', 'participantid',
+        'passiveaggressive', 'row_num', 'match_type', 'contra_participant_type',
+    ])
+    if not sim_trades_df.empty:
+        for c in ('EXCHANGE', 'sequence', 'tradetime', 'securitycode', 'orderid',
+                  'dealsource', 'matchgroupid', 'nationalbidpricesnapshot',
+                  'nationalofferpricesnapshot', 'tradeprice', 'quantity', 'side',
+                  'participantid', 'passiveaggressive', 'row_num'):
+            if c in sim_trades_df.columns:
+                sim_trades_df[c] = sim_trades_df[c].astype('int64')
+
+    order_summary_df = pd.DataFrame(summaries) if summaries else pd.DataFrame(columns=[
+        'orderid', 'timestamp', 'side', 'quantity', 'matched_quantity',
+        'remaining_quantity', 'fill_ratio', 'num_matches', 'orderbookid',
+        'lost_priority', 'changereason',
+    ])
+
+    # sweep_usage: map orderid → {matched_quantity, num_matches}
+    sweep_usage = {
+        int(s['orderid']): {
+            'matched_quantity': int(s['matched_quantity']),
+            'num_matches':      int(s['num_matches']),
+        }
+        for s in summaries
+    }
+
+    return {
+        'order_summary':    order_summary_df,
+        'simulated_trades': sim_trades_df,
+        'sweep_usage':      sweep_usage,
+        # sweep_utilization is built downstream by _generate_sweep_utilization;
+        # we leave a placeholder here to keep the shape consistent.
+        'sweep_utilization': pd.DataFrame(),
+    }

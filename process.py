@@ -1645,15 +1645,27 @@ def simulate_partition(partition_key, partition_data, reference_loader=None):
         session_states_df = partition_data.get('session_states')
         
         print(f"    Using tick size: {tick_size} (from reference data)")
-        
-        results = simulate_sweep_matching(
-            sweep_orders, all_orders, nbbo_data,
-            tick_size_override=tick_size,
-            tick_size_table=tick_size_table,
-            price_limits=price_limits,
-            participants_dict=participants_dict,
-            session_states_df=session_states_df
-        )
+
+        if getattr(cfg, 'USE_NUMPY_SIMULATOR', False):
+            from simulator import simulate_sweep_matching_numpy
+            results = simulate_sweep_matching_numpy(
+                sweep_orders, all_orders, nbbo_data,
+                nbbo_source=cfg.NBBO_SOURCE,
+                tick_size_override=tick_size,
+                tick_size_table=tick_size_table,
+                price_limits=price_limits,
+                participants_dict=participants_dict,
+                session_states_df=session_states_df,
+            )
+        else:
+            results = simulate_sweep_matching(
+                sweep_orders, all_orders, nbbo_data,
+                tick_size_override=tick_size,
+                tick_size_table=tick_size_table,
+                price_limits=price_limits,
+                participants_dict=participants_dict,
+                session_states_df=session_states_df
+            )
         
         num_matches = len(results['simulated_trades']) // 2 if len(results['simulated_trades']) > 0 else 0
         print(f"  {partition_key}: {num_matches:,} matches, {len(sweep_orders):,} sweep orders")
