@@ -114,7 +114,6 @@ def _context_kwargs():
         contra_participant  = np.array([10, 30, 10], dtype=np.int32),
         contra_midtick      = np.zeros(N_c, dtype=np.int8),
         contra_orderbookid  = np.array([100, 100, 100], dtype=np.int32),
-        contra_display_qty  = np.zeros(N_c, dtype=np.int64),
         contra_ordertype    = np.ones(N_c, dtype=np.int8),
         contra_nbbo_bid     = np.array([995, 1000, 1005], dtype=np.int64),
         contra_nbbo_offer   = np.array([1005, 1010, 1015], dtype=np.int64),
@@ -224,40 +223,10 @@ class TestIsValidSession:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Rule: iceberg_available(display_qty, slice_consumed, remaining_qty) -> int
+# Iceberg validation removed on swp_cleaned_phase_2 — full contra quantity is
+# always treated as visible. No iceberg_available helper, no display_quantity
+# field on SimContext.
 # ─────────────────────────────────────────────────────────────────────────────
-# Per bi.txt §27: icebergs show only `display_qty`; when exhausted, the next
-# slice appears at the back of the queue. display_qty == 0 marks a non-iceberg
-# order (show everything). Caller still caps by remaining_qty.
-
-class TestIcebergAvailable:
-    def test_non_iceberg_returns_remaining(self):
-        from simulator import iceberg_available
-        assert iceberg_available(display_qty=0, slice_consumed=0, remaining_qty=500) == 500
-
-    def test_iceberg_fresh_slice(self):
-        from simulator import iceberg_available
-        # 100-unit display slice, none consumed, 500 underlying → 100 visible
-        assert iceberg_available(display_qty=100, slice_consumed=0, remaining_qty=500) == 100
-
-    def test_iceberg_partial_slice(self):
-        from simulator import iceberg_available
-        # 100-unit slice, 30 consumed → 70 left visible
-        assert iceberg_available(display_qty=100, slice_consumed=30, remaining_qty=500) == 70
-
-    def test_iceberg_exhausted_slice_returns_zero(self):
-        from simulator import iceberg_available
-        assert iceberg_available(display_qty=100, slice_consumed=100, remaining_qty=500) == 0
-
-    def test_iceberg_overshot_clamped_to_zero(self):
-        from simulator import iceberg_available
-        # Defensive: consumed > display can happen during refresh bookkeeping
-        assert iceberg_available(display_qty=100, slice_consumed=150, remaining_qty=500) == 0
-
-    def test_slice_capped_by_remaining(self):
-        from simulator import iceberg_available
-        # Display qty 100 but only 30 total left
-        assert iceberg_available(display_qty=100, slice_consumed=0, remaining_qty=30) == 30
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -545,7 +514,6 @@ def _toy_all_orders():
         'participantid':             [20, 21, 22],
         'midtick':                   [2, 2, 2],
         'orderbookid':               [85603, 85603, 85603],
-        'display_quantity':          [0, 0, 50],
         'exchangeordertype':         [1, 1, 1],
         'national_bid':              [99, 99, 200],
         'national_offer':            [101, 101, 201],
@@ -586,7 +554,6 @@ class TestBuildSimContext:
         assert ctx.contra_orderid.dtype == np.int64
         assert ctx.contra_side.dtype == np.int8
         assert ctx.contra_qty.dtype == np.int64
-        assert ctx.contra_display_qty.dtype == np.int64
         assert len(ctx.contra_orderid) == 3
         assert len(ctx.contra_qty) == 3
 
@@ -610,7 +577,6 @@ class TestBuildSimContext:
         )
         np.testing.assert_array_equal(ctx.contra_orderid, [2001, 2002, 2003])
         np.testing.assert_array_equal(ctx.contra_qty,     [100, 200, 150])
-        np.testing.assert_array_equal(ctx.contra_display_qty, [0, 0, 50])
         np.testing.assert_array_equal(ctx.contra_sequence, [1, 2, 3])
 
     def test_missing_columns_get_default_zero(self):
@@ -710,7 +676,7 @@ class TestRunPhase1Skeleton:
             'orderid':[], 'effective_timestamp':[], 'sequence':[], 'side':[],
             'quantity':[], 'price':[], 'minimumquantity':[],
             'singlefillminimumquantity':[], 'crossingkey':[], 'participantid':[],
-            'midtick':[], 'orderbookid':[], 'display_quantity':[],
+            'midtick':[], 'orderbookid':[],
             'exchangeordertype':[], 'national_bid':[], 'national_offer':[],
             'bid':[], 'offer':[],
         })
@@ -838,25 +804,12 @@ class TestKernelMatchEmission:
                           if t['passiveaggressive'] == 1 and t['orderid'] == sweep_id]
             assert len(sweep_rows) == s['num_matches']
 
-    def test_iceberg_yields_multiple_matches_against_same_contra(self):
-        """A 150-qty contra with display_quantity=50 should match 3× to a 300-qty sweep."""
-        from simulator import build_sim_context, run_phase1, SimFlags
-        sweep = _toy_sweep_orders().iloc[1:2].reset_index(drop=True)  # only sweep[1]: side=2 sell, qty=300
-        ao = _toy_all_orders().iloc[2:3].reset_index(drop=True)        # only order 2003: side=1, qty=150, display=50
-        ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
-        trades, summaries = run_phase1(ctx, rng=self._seeded())
-        # 3 matches × 2 rows = 6 trade rows; matched_quantity = 150
-        assert summaries[0]['num_matches'] == 3
-        assert summaries[0]['matched_quantity'] == 150
-        assert len(trades) == 6
-
     def test_sweep_to_sweep_match_type_for_2048_contra(self):
         """When contra exchangeordertype == 2048, match_type tags as SWEEP_TO_SWEEP."""
         from simulator import build_sim_context, run_phase1, SimFlags
         sweep = _toy_sweep_orders().iloc[1:2].reset_index(drop=True)
         ao = _toy_all_orders().iloc[2:3].reset_index(drop=True)
         ao.loc[0, 'exchangeordertype'] = 2048
-        ao.loc[0, 'display_quantity'] = 0   # avoid iceberg multi-match
         ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
         trades, _ = run_phase1(ctx, rng=self._seeded())
         assert all(t['match_type'] == 'SWEEP_TO_SWEEP' for t in trades)
@@ -868,7 +821,6 @@ class TestKernelMatchEmission:
         ao = _toy_all_orders().iloc[2:3].reset_index(drop=True)
         ao.loc[0, 'exchangeordertype'] = 4096          # Block Limit
         ao.loc[0, 'midtick'] = 5                       # Any Price Block
-        ao.loc[0, 'display_quantity'] = 0
         # Sweep is sell at price 200, contra (post-mod) is buy at price 200 → cross
         ctx = build_sim_context(sweep, ao, {}, SimFlags(**_flags_kwargs()))
         trades, _ = run_phase1(ctx, rng=self._seeded())
@@ -921,7 +873,6 @@ class TestKernelMatchEmission:
             'participantid':             [99],
             'midtick':                   [2],
             'orderbookid':               [85603],
-            'display_quantity':          [0],
             'exchangeordertype':         [1],
             'national_bid':              [99],
             'national_offer':            [101],

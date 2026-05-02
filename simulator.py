@@ -9,13 +9,12 @@ Layout:
   - Decision enum
   - SimFlags + SimContext dataclasses (boundary contract for the kernel)
   - 7 rule helpers — pure functions of int primitives:
-      is_apb, is_valid_session, iceberg_available, check_crossing,
+      is_apb, is_valid_session, check_crossing,
       validate_price_limit, apply_midtick, check_maq
 
 Spec sources: docs/bi.txt and docs/dd.txt (ASX Centre Point behaviour spec).
 """
 
-import heapq
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional
@@ -89,7 +88,6 @@ class SimContext:
     contra_participant:  np.ndarray   # int32
     contra_midtick:      np.ndarray   # int8
     contra_orderbookid:  np.ndarray   # int32
-    contra_display_qty:  np.ndarray   # int64 — 0 = non-iceberg
     contra_ordertype:    np.ndarray   # int32 — values include 2048 (Sweep) and 4096 (Block Limit), so int8 overflows
     contra_nbbo_bid:     np.ndarray   # int64 — per-order NBBO snapshot (INTERNAL)
     contra_nbbo_offer:   np.ndarray   # int64
@@ -156,18 +154,6 @@ def is_apb(contra_ordertype: int, contra_midtick: int) -> bool:
 def is_valid_session(state_enum: int) -> bool:
     """Matching allowed only in OPEN / CONTINUOUS (bi.txt §8)."""
     return state_enum == SESSION_OPEN or state_enum == SESSION_CONTINUOUS
-
-
-def iceberg_available(display_qty: int, slice_consumed: int, remaining_qty: int) -> int:
-    """Units the contra currently shows, capped by underlying remaining qty.
-
-    `display_qty == 0` means non-iceberg — full remaining is visible.
-    Returns max(0, ...) so overshoot during refresh bookkeeping is safe.
-    """
-    if display_qty <= 0:
-        return max(0, remaining_qty)
-    visible = max(0, display_qty - slice_consumed)
-    return min(visible, remaining_qty)
 
 
 def check_crossing(sweep_participant: int, contra_participant: int,
@@ -384,7 +370,6 @@ def build_sim_context(
     contra_participant  = _col_int32(all_orders, 'participantid')
     contra_midtick      = _col_int8 (all_orders, 'midtick', default=MIDTICK_NO)
     contra_orderbookid  = _col_int32(all_orders, 'orderbookid')
-    contra_display_qty  = _col_int64(all_orders, 'display_quantity', default=0)
     contra_ordertype    = _col_int32(all_orders, 'exchangeordertype')
     contra_nbbo_bid     = _col_int64(all_orders, 'national_bid', default=INT64_SENTINEL)
     contra_nbbo_offer   = _col_int64(all_orders, 'national_offer', default=INT64_SENTINEL)
@@ -431,7 +416,6 @@ def build_sim_context(
         contra_participant=contra_participant,
         contra_midtick=contra_midtick,
         contra_orderbookid=contra_orderbookid,
-        contra_display_qty=contra_display_qty,
         contra_ordertype=contra_ordertype,
         contra_nbbo_bid=contra_nbbo_bid,
         contra_nbbo_offer=contra_nbbo_offer,
@@ -568,7 +552,6 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
     c_xkey          = ctx.contra_crossingkey[contra_perm]
     c_part          = ctx.contra_participant[contra_perm]
     c_midtick       = ctx.contra_midtick[contra_perm]
-    c_display       = ctx.contra_display_qty[contra_perm]
     c_ordertype     = ctx.contra_ordertype[contra_perm]
     c_nbbo_bid      = ctx.contra_nbbo_bid[contra_perm]
     c_nbbo_offer    = ctx.contra_nbbo_offer[contra_perm]
@@ -588,8 +571,7 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
     pctx = _PermutedNbboCtx()
 
     # Inventory state — mutable across sweeps. One int64 per contra position.
-    order_remaining  = c_qty.copy()
-    iceberg_consumed = np.zeros(len(c_orderid), dtype=np.int64)
+    order_remaining = c_qty.copy()
 
     # tradedate derived from earliest sweep timestamp (matches legacy)
     if tradedate is None and len(ctx.sweep_eff_ts) > 0:
@@ -643,43 +625,19 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
         )
         candidate_idx = idx_window[mask]
 
-        # Iceberg refresh queue: indices repositioned to the back of priority
-        # order with their original (eff_ts, sequence) but a fresh display slice.
-        # Held in heapq for O(log N) reinsertion.
-        refresh_heap: list = []
-        cand_pos = 0   # cursor into candidate_idx
-
         sweep_remaining = sweep_qty_avail
         sweep_matched   = 0
         sweep_n_matches = 0
         first_fill_price = 0   # MTL anchor (set on first fill)
 
-        while sweep_remaining > 0:
-            # Pick next candidate — earliest of (front of candidate_idx, top of refresh_heap)
-            cand_avail = cand_pos < len(candidate_idx)
-            if cand_avail and refresh_heap:
-                ci_main = int(candidate_idx[cand_pos])
-                heap_top = refresh_heap[0]
-                # Compare priorities: (eff_ts, sequence)
-                if (int(c_eff_ts[ci_main]), int(c_seq[ci_main])) <= (heap_top[0], heap_top[1]):
-                    ci = ci_main; cand_pos += 1
-                else:
-                    _, _, _, ci = heapq.heappop(refresh_heap)
-            elif cand_avail:
-                ci = int(candidate_idx[cand_pos]); cand_pos += 1
-            elif refresh_heap:
-                _, _, _, ci = heapq.heappop(refresh_heap)
-            else:
+        # Walk candidates in (eff_ts, sequence) priority order. No iceberg
+        # refresh — full contra quantity is always treated as visible.
+        for cand_pos in range(len(candidate_idx)):
+            if sweep_remaining <= 0:
                 break
+            ci = int(candidate_idx[cand_pos])
 
             order_avail = int(order_remaining[ci])
-            if order_avail <= 0:
-                continue
-
-            # Iceberg cap
-            order_avail = iceberg_available(
-                int(c_display[ci]), int(iceberg_consumed[ci]), order_avail
-            )
             if order_avail <= 0:
                 continue
 
@@ -806,21 +764,6 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
             sweep_n_matches += 1
             if first_fill_price == 0:
                 first_fill_price = int(execution_price)
-
-            # Iceberg refresh — increment slice consumed; on exhaustion reposition
-            display = int(c_display[ci])
-            if display > 0:
-                new_consumed = int(iceberg_consumed[ci]) + match_qty
-                if new_consumed >= display:
-                    iceberg_consumed[ci] = new_consumed - display
-                    if order_remaining[ci] > 0:
-                        # Push back at tail with current eff_ts but a fresh "monotone" priority
-                        # so it sorts after any same-ts contras yet to be visited.
-                        heapq.heappush(refresh_heap, (
-                            int(c_eff_ts[ci]), int(c_seq[ci]) + 10**12, len(refresh_heap), ci,
-                        ))
-                else:
-                    iceberg_consumed[ci] = new_consumed
 
         sweep_summaries.append({
             'orderid': sweep_id, 'timestamp': int(ctx.sweep_eff_ts[s]),

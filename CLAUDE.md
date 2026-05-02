@@ -117,7 +117,7 @@ Sweeps that did not fully fill on the lit market — and sweeps that actually ma
 
 **Effective timestamp vs timestamp.** `effective_timestamp = timechanged` when the order has lost priority (`orderbookposition > 0` OR `changereason ∈ {7, 8, 39}`); otherwise `effective_timestamp = timestamp`. Plain `changereason == 5` (user update) does **not** cost priority.
 
-**Shared contra inventory.** `order_remaining` and `iceberg_slice_consumed` persist across every sweep in the partition. Sweeps are processed in `(effective_timestamp, sequence)` order and compete for inventory.
+**Shared contra inventory.** `order_remaining` persists across every sweep in the partition. Sweeps are processed in `(effective_timestamp, sequence)` order and compete for inventory. Iceberg display-slice modelling was removed on `swp_cleaned_phase_2` — full contra quantity is treated as visible.
 
 **MAQ early-break vs skip.** `minimumquantity` / `singlefillminimumquantity` failures either `continue` (skip this contra) or `break` (stop the sweep's scan). When `sweep_remaining_qty < sweep_maq` AND the sweep has already partially filled, the simulator `break`s. Spec-mandated asymmetry.
 

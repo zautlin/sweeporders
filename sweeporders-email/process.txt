@@ -1158,7 +1158,6 @@ Handles all sweep order matching simulation logic:
 - Participant type analysis (IMPROVEMENT 6)
 """
 
-import heapq
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -1414,33 +1413,6 @@ def _is_valid_trading_session(timestamp_ns, session_states_df):
     return session_state in MATCHING_SESSION_STATES
 
 
-def _get_iceberg_available_qty(order, slice_consumed=0):
-    """
-    IMPROVEMENT 4: Iceberg Order Support
-
-    Get available quantity from the current display slice of an iceberg order.
-
-    Per bi.txt §27: undisclosed-quantity orders show only `display_quantity` in
-    the book.  Each time the displayed slice is fully consumed the order is
-    repositioned to the back of the queue and a fresh slice of `display_quantity`
-    (or remaining total, whichever is smaller) becomes visible.
-
-    Args:
-        order:          Order DataFrame row.
-        slice_consumed: How many units of the current display slice have already
-                        been matched (tracked externally per order_id).
-
-    Returns:
-        int: Units available from the current display slice.
-             Returns the full remaining quantity for non-iceberg orders.
-    """
-    display_qty = order.get('display_quantity', None)
-    if display_qty is None or pd.isna(display_qty):
-        # Not an iceberg — no slice cap.
-        return int(order.get('quantity', order.get('leaves_quantity', 0)))
-    return max(0, int(display_qty) - int(slice_consumed))
-
-
 def _get_participant_type(participant_id, participants_dict):
     """
     IMPROVEMENT 6: Participant Type Analysis
@@ -1489,7 +1461,6 @@ def _prepare_sweep_orders(partition_data):
         'changereason': CHANGEREASON_NEW_ORDER,
         'orderbookposition': 0,
         'timechanged': None,  # Will be filled with timestamp
-        'display_quantity': None,  # Iceberg display quantity
         'preferenceonly': 0,
     }
     
@@ -1571,7 +1542,6 @@ def _prepare_all_orders_for_matching(partition_data):
         'orderbookposition': 0,
         'timechanged': None,
         'ordertype': ORDERTYPE_LIMIT,
-        'display_quantity': None,  # Iceberg display quantity
     }
     
     missing = set(required_columns) - set(all_orders.columns)
@@ -1738,8 +1708,6 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data, nbbo_source=Non
                    for orderid in sweep_orders[col.common.orderid].values}
     order_remaining = {int(orderid): qty for orderid, qty in
                       zip(all_orders[col.common.orderid].values, all_orders[col.common.quantity].values)}
-    # Per-order count of units consumed from the current display slice (iceberg tracking).
-    iceberg_slice_consumed: dict = {}
     all_orders_indexed = all_orders.set_index('orderid')
     
     row_counter = 1
@@ -1826,38 +1794,22 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data, nbbo_source=Non
         
         eligible_orders = eligible_orders.sort_values(['effective_timestamp', 'sequence'])
 
-        # Build a min-heap so iceberg contras can be repositioned to the back of
-        # the queue when their display slice is exhausted (bi.txt §27).
-        # Elements: (effective_timestamp, sequence, counter, order_dict)
-        _p1_heap: list = []
-        _p1_counter = 0
-        for _, _o_row in eligible_orders.iterrows():
-            heapq.heappush(_p1_heap, (
-                int(_o_row['effective_timestamp']),
-                int(_o_row['sequence']),
-                _p1_counter,
-                _o_row.to_dict(),
-            ))
-            _p1_counter += 1
-
+        # Walk eligible contras in (effective_timestamp, sequence) priority
+        # order. No iceberg refresh — full contra quantity is treated as visible.
         sweep_remaining_qty = sweep_qty_available
         sweep_matched_qty = 0
         sweep_num_matches = 0
 
-        while _p1_heap and sweep_remaining_qty > 0:
-            _, _, _, order = heapq.heappop(_p1_heap)
+        for _, _o_row in eligible_orders.iterrows():
+            if sweep_remaining_qty <= 0:
+                break
+            order = _o_row.to_dict()
 
             order_id = int(order[col.common.orderid])
             order_available = order_remaining.get(order_id, 0)
             if order_available <= 0:
                 continue
-            
-            # IMPROVEMENT 4: Iceberg Order Support — cap to current display slice
-            order_available = min(
-                order_available,
-                _get_iceberg_available_qty(order, iceberg_slice_consumed.get(order_id, 0)),
-            )
-            
+
             # MAQ Validation
             sweep_maq = int(sweep.get('minimumquantity', 0)) if 'minimumquantity' in sweep else 0
             sweep_single_fill = int(sweep.get('singlefillminimumquantity', 0)) if 'singlefillminimumquantity' in sweep else 0
@@ -2026,26 +1978,7 @@ def simulate_sweep_matching(sweep_orders, all_orders, nbbo_data, nbbo_source=Non
             order_remaining[order_id] -= match_qty
             sweep_matched_qty += match_qty
             sweep_num_matches += 1
-            # Update iceberg slice consumed; on exhaustion, reposition to back of queue.
-            _iceberg_dq = order.get('display_quantity', None)
-            if _iceberg_dq is not None and not pd.isna(_iceberg_dq):
-                _iceberg_dq = int(_iceberg_dq)
-                _new_consumed = iceberg_slice_consumed.get(order_id, 0) + match_qty
-                if _new_consumed >= _iceberg_dq:
-                    # Slice exhausted — reset consumed counter and reposition the order to
-                    # the back of the time-priority queue at its current timestamp.
-                    iceberg_slice_consumed[order_id] = _new_consumed - _iceberg_dq
-                    if order_remaining.get(order_id, 0) > 0:
-                        heapq.heappush(_p1_heap, (
-                            int(order['effective_timestamp']),
-                            _p1_counter,
-                            _p1_counter,
-                            order,
-                        ))
-                        _p1_counter += 1
-                else:
-                    iceberg_slice_consumed[order_id] = _new_consumed
-        
+
         if sweep_id not in sweep_usage:
             sweep_usage[sweep_id] = {'matched_quantity': 0, 'num_matches': 0}
         sweep_usage[sweep_id]['matched_quantity'] = sweep_matched_qty
