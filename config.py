@@ -87,60 +87,7 @@ AUTO_DISCOVERY_ENABLED = True
 # Stage names
 
 # Any Price Block minimum block size (§24.1.3)
-MIN_BLOCK_SIZE = 0
-
-
-# ── Phase 2 resting flags (verbatim from src/config/config.py) ─────────────────
-# Master switches — both False means no Phase 2 at all (zero behavioural change)
-SIMULATE_RESTING_PHASE = False   # Enable Phase 2 resting simulation
-SIMULATE_LIT_RESTING   = False   # Also rest in lit (S3); False = dark CP only (S2)
-
-# -- Lit order book mode --
-# 'full'  (Option A): Reconstruct the lit order book from raw orders [0, 2];
-#          price-time priority — incoming aggressive orders hit best-priced
-#          resting order first. Correct per ASX TradeMatch rules.
-# 'scan'  (Option B): Flat time-order scan of contra lit orders; ignores
-#          price priority. Overestimates fills (upper bound). Fast.
-RESTING_LIT_BOOK_MODE = 'full'   # 'full' or 'scan'
-
-# -- Execution price --
-# True  → dark resting price = limit ± 0.5*tick (spec: §25.2 pt 6)
-# False → dark resting price = limit (no half-tick adjustment)
-RESTING_USE_MIDTICK = True
-
-# True  → lit resting price = limit (spec: midtick ignored in TradeMatch §25.2 pt 7)
-# False → lit resting price = limit ± 0.5*tick (experimental — not per spec)
-RESTING_LIT_USE_LIMIT = True
-
-# -- Cancellation --
-# True  → orders expire at end of OPEN session (per timevaliditydecoded field)
-# False → orders rest for the entire dataset window (no cancellation)
-RESTING_MODEL_CANCELLATION = True
-
-# -- Crossing key validation --
-# True  → same participant + mismatched crossing key = skip (per spec)
-# False → ignore crossing key checks
-RESTING_APPLY_CROSSING_KEYS = True
-
-# -- Session state filtering --
-# True  → only match during OPEN/CONTINUOUS sessions
-# False → ignore session state (match any time)
-RESTING_APPLY_SESSION_FILTER = True
-
-# -- MAQ validation --
-# True  → honour minimumquantity / singlefill rules (MAQ only applies in CP per §25.3)
-# False → ignore MAQ (fill any quantity)
-RESTING_APPLY_MAQ = True
-
-# -- Preferencing (§24.10) --
-# True  → same-participant incoming orders matched against resting sweeps first
-# False → strict FIFO regardless of participant
-RESTING_APPLY_PREFERENCING = True
-
-# -- Iceberg --
-# True  → respect shown quantity limits on contra orders
-# False → treat all orders as fully visible
-RESTING_APPLY_ICEBERG = True
+MIN_BLOCK_SIZE = 0   # APB minimum traded value (qty * price); 0 = disabled
 
 
 # ── Input file helpers ─────────────────────────────────────────────────────────
@@ -883,18 +830,7 @@ def print_config():
     print(f"\nOrder Types:")
     print(f"  Centre Point: {CENTRE_POINT_ORDER_TYPES}")
     print(f"  Sweep:        {SWEEP_ORDER_TYPE}")
-    print(f"\nResting Phase Simulation:")
-    print(f"  Enabled:              {SIMULATE_RESTING_PHASE}")
-    print(f"  Lit resting:          {SIMULATE_LIT_RESTING}")
-    print(f"  Lit book mode:        {RESTING_LIT_BOOK_MODE}")
-    print(f"  Use midtick price:    {RESTING_USE_MIDTICK}")
-    print(f"  Lit use limit price:  {RESTING_LIT_USE_LIMIT}")
-    print(f"  Model cancellation:   {RESTING_MODEL_CANCELLATION}")
-    print(f"  Crossing keys:        {RESTING_APPLY_CROSSING_KEYS}")
-    print(f"  Session filter:       {RESTING_APPLY_SESSION_FILTER}")
-    print(f"  MAQ validation:       {RESTING_APPLY_MAQ}")
-    print(f"  Preferencing:         {RESTING_APPLY_PREFERENCING}")
-    print(f"  Iceberg:              {RESTING_APPLY_ICEBERG}")
+    print(f"  Min block size (APB): {MIN_BLOCK_SIZE}")
     print("=" * 80)
 
 

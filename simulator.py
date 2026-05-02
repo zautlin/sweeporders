@@ -47,20 +47,9 @@ class SimFlags:
     Captured at partition-entry time so the kernel never re-reads cfg mid-run.
     """
     nbbo_source: str                       # 'INTERNAL' | 'EXTERNAL'
-    simulate_resting_phase: bool
-    simulate_lit_resting: bool
-    resting_lit_book_mode: str             # 'full' | 'scan'
-    resting_use_midtick: bool
-    resting_lit_use_limit: bool
-    resting_model_cancellation: bool
-    resting_apply_crossing_keys: bool
-    resting_apply_session_filter: bool
-    resting_apply_maq: bool
-    resting_apply_preferencing: bool
-    resting_apply_iceberg: bool
     use_polars_transforms: bool
     use_duckdb_io: bool
-    min_block_size: int
+    min_block_size: int                    # APB minimum traded value (0 = disabled)
 
 
 @dataclass(frozen=True, slots=True)
@@ -731,9 +720,9 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
                 if flags.min_block_size > 0 and \
                    potential * execution_price < flags.min_block_size:
                     continue
+                # APB same-participant preferencing (spec rule, always on)
                 is_pref = (
-                    flags.resting_apply_preferencing
-                    and sweep_part > 0 and int(c_part[ci]) > 0
+                    sweep_part > 0 and int(c_part[ci]) > 0
                     and sweep_part == int(c_part[ci])
                 )
                 match_type = 'BLOCK_PREF' if is_pref else 'BLOCK'
@@ -881,20 +870,8 @@ def simulate_sweep_matching_numpy(
     """
     import pandas as pd
 
-    # Build SimFlags from caller arguments (config-flag list mirrors the dataclass)
     flags = SimFlags(
         nbbo_source=nbbo_source,
-        simulate_resting_phase=False,
-        simulate_lit_resting=False,
-        resting_lit_book_mode='scan',
-        resting_use_midtick=False,
-        resting_lit_use_limit=True,
-        resting_model_cancellation=True,
-        resting_apply_crossing_keys=True,
-        resting_apply_session_filter=True,
-        resting_apply_maq=True,
-        resting_apply_preferencing=True,
-        resting_apply_iceberg=True,
         use_polars_transforms=False,
         use_duckdb_io=False,
         min_block_size=0,

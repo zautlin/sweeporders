@@ -33,8 +33,9 @@ def test_config_imports_and_exposes_expected_names():
     assert config.PROCESSED_DIR.name == "processed"
     assert config.OUTPUTS_DIR.name == "outputs"
     assert config.REPORTS_DIR.name == "reports"
-    # Phase 2 resting (flag exists, doesn't matter what default is)
-    assert hasattr(config, "SIMULATE_RESTING_PHASE")
+    # Phase 2 resting REMOVED on swp_cleaned_phase_2 — assert it stays gone
+    assert not hasattr(config, "SIMULATE_RESTING_PHASE")
+    assert not hasattr(config, "SIMULATE_LIT_RESTING")
     # Parallel default flipped to True for the lean port
     assert config.ENABLE_PARALLEL_PROCESSING is True
     # Stream mode removed (PROCESSING_MODE may still exist as 'file' or 'memory')

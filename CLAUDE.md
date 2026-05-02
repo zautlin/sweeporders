@@ -121,7 +121,7 @@ Sweeps that did not fully fill on the lit market — and sweeps that actually ma
 
 **MAQ early-break vs skip.** `minimumquantity` / `singlefillminimumquantity` failures either `continue` (skip this contra) or `break` (stop the sweep's scan). When `sweep_remaining_qty < sweep_maq` AND the sweep has already partially filled, the simulator `break`s. Spec-mandated asymmetry.
 
-**Phase 2 (resting leg).** Gated by `cfg.SIMULATE_RESTING_PHASE`. Sub-flags: `SIMULATE_LIT_RESTING`, `RESTING_LIT_BOOK_MODE` (`'full'` / `'scan'`), `RESTING_USE_MIDTICK`, `RESTING_LIT_USE_LIMIT`, `RESTING_MODEL_CANCELLATION`, `RESTING_APPLY_*`. Dark leg uses contra-centric loop per bi.txt §24.10. Phase 2 lit leg does **not** reposition on iceberg refresh — intentional.
+**Phase 2 (resting leg) — REMOVED.** The simulator is now active-window-only: each sweep matches against contras alive in `[first_execution_time, last_execution_time]` and that's it. The unfilled remainder is *not* modelled as resting on either dark or lit. Removed on branch `swp_cleaned_phase_2` after the inventory-tracking inconsistency between phases was identified.
 
 **Simulator invariants:**
 - `SWEEP_ORDER_TYPE = 2048`; `ELIGIBLE_MATCHING_ORDER_TYPES = {64, 256, 2048, 4096, 4098}`.
@@ -140,11 +140,10 @@ NBBO_SOURCE = 'INTERNAL'              # only INTERNAL supported (EXTERNAL branch
 MIN_ORDERS_THRESHOLD = 100
 MIN_TRADES_THRESHOLD = 10
 ENABLE_PARALLEL_PROCESSING = True     # flipped True for the lean port
-ENABLE_STATISTICAL_TESTS = False
 USE_DUCKDB_IO = False                 # preserved at False to match parity baseline
 USE_POLARS_TRANSFORMS = False         # preserved at False to match parity baseline
+USE_NUMPY_SIMULATOR = ...             # env-var override; True → simulator.py kernel
 PROCESSING_MODE = 'file'              # 'file' | 'memory'  (stream removed)
-SIMULATE_RESTING_PHASE = …            # master switch for Phase 2 (resting leg)
 VOLUME_BUCKET_METHOD = 'quartile'     # 'quartile' | 'quintile' | 'custom'
 ```
 

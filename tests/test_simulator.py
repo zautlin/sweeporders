@@ -35,17 +35,6 @@ def _flags_kwargs():
     """Canonical kwargs matching every field the current simulator reads from cfg."""
     return dict(
         nbbo_source='INTERNAL',
-        simulate_resting_phase=False,
-        simulate_lit_resting=False,
-        resting_lit_book_mode='scan',
-        resting_use_midtick=False,
-        resting_lit_use_limit=True,
-        resting_model_cancellation=True,
-        resting_apply_crossing_keys=True,
-        resting_apply_session_filter=True,
-        resting_apply_maq=True,
-        resting_apply_preferencing=True,
-        resting_apply_iceberg=True,
         use_polars_transforms=False,
         use_duckdb_io=False,
         min_block_size=0,
@@ -83,7 +72,7 @@ class TestSimFlags:
         assert g.nbbo_source == 'EXTERNAL'
         # All other fields preserved
         assert g.min_block_size == f.min_block_size
-        assert g.simulate_resting_phase == f.simulate_resting_phase
+        assert g.use_polars_transforms == f.use_polars_transforms
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -517,17 +506,6 @@ import pytest
 def _flags_kwargs():
     return dict(
         nbbo_source='INTERNAL',
-        simulate_resting_phase=False,
-        simulate_lit_resting=False,
-        resting_lit_book_mode='scan',
-        resting_use_midtick=False,
-        resting_lit_use_limit=True,
-        resting_model_cancellation=True,
-        resting_apply_crossing_keys=True,
-        resting_apply_session_filter=True,
-        resting_apply_maq=True,
-        resting_apply_preferencing=True,
-        resting_apply_iceberg=True,
         use_polars_transforms=False,
         use_duckdb_io=False,
         min_block_size=0,
