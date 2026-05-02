@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""SweepOrders end-to-end pipeline runner — cross-platform (Windows + macOS + Linux).
+
+Orchestrates all three stages in sequence:
+    process.py    (Stage 1+2 — ingest + simulate)
+    aggregate.py  (Stage 3+4 — metrics + real-vs-sim comparison)
+    report.py     (Stage 5+6 — roll-ups)
+
+No shell scripts required. Uses subprocess.run with sys.executable, so it
+inherits the current virtual environment on every OS.
+
+Usage:
+    python run.py                                  # full pipeline, all data found in data/raw/
+    python run.py --dates 20240505                 # filter to one trade-date
+    python run.py --tickers cba,bhp --workers 4    # filter + parallelism
+    python run.py --skip-aggregate --skip-report   # only ingest + simulate
+    python run.py --skip-process                   # rerun aggregate + report on existing data/processed/
+
+Environment:
+    USE_NUMPY_SIMULATOR=1   switch Stage 2 to the numpy kernel (default: pandas)
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+PYTHON = sys.executable
+
+
+def run_stage(banner: str, script: str, extra_args: list[str]) -> int:
+    print()
+    print("=" * 80)
+    print(f"  {banner}")
+    print("=" * 80)
+    cmd = [PYTHON, str(REPO_ROOT / script), *extra_args]
+    print("  $", " ".join(cmd))
+    t0 = time.perf_counter()
+    rc = subprocess.run(cmd, cwd=REPO_ROOT).returncode
+    dt = time.perf_counter() - t0
+    print(f"  done — exit {rc} in {dt:.1f}s")
+    return rc
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="run.py",
+        description="SweepOrders end-to-end pipeline runner (process → aggregate → report)",
+    )
+    p.add_argument("--dates", default=None,
+                   help="Comma-separated YYYYMMDD trade-date filter (e.g. 20240505,20240905).")
+    p.add_argument("--tickers", default=None,
+                   help="Comma-separated ticker filter (filename substring, e.g. cba,bhp).")
+    p.add_argument("--orderbookids", default=None,
+                   help="Comma-separated orderbookid filter (parquet predicate-pushdown).")
+    p.add_argument("--workers", type=int, default=None,
+                   help="Worker pool size for Stages 2 and 3 (default: auto).")
+    p.add_argument("--skip-process",   action="store_true", help="Skip Stage 1+2 (process.py).")
+    p.add_argument("--skip-aggregate", action="store_true", help="Skip Stage 3+4 (aggregate.py).")
+    p.add_argument("--skip-report",    action="store_true", help="Skip Stage 5+6 (report.py).")
+    args = p.parse_args()
+
+    common: list[str] = []
+    if args.dates:        common += ["--dates",        args.dates]
+    if args.tickers:      common += ["--tickers",      args.tickers]
+    if args.orderbookids: common += ["--orderbookids", args.orderbookids]
+    workers: list[str] = ["--workers", str(args.workers)] if args.workers else []
+
+    if not args.skip_process:
+        rc = run_stage("STAGE 1+2 — process.py (ingest + simulate)",
+                       "process.py", common + workers)
+        if rc != 0:
+            print("[run] process.py failed; aborting.", file=sys.stderr)
+            return rc
+
+    if not args.skip_aggregate:
+        rc = run_stage("STAGE 3+4 — aggregate.py (metrics + comparison)",
+                       "aggregate.py", common + workers)
+        if rc != 0:
+            print("[run] aggregate.py failed; aborting.", file=sys.stderr)
+            return rc
+
+    if not args.skip_report:
+        report_args = ["--dates", args.dates] if args.dates else []
+        rc = run_stage("STAGE 5+6 — report.py (roll-ups)",
+                       "report.py", report_args)
+        if rc != 0:
+            print("[run] report.py failed; aborting.", file=sys.stderr)
+            return rc
+
+    print()
+    print("=" * 80)
+    print("  Pipeline complete. Outputs:")
+    print("    data/processed/{date}/{orderbookid}/   (Stage 1+2)")
+    print("    data/outputs/{date}/{orderbookid}/     (Stage 3+4)")
+    print("    data/reports/                          (Stage 5+6)")
+    print("=" * 80)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

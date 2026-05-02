@@ -37,7 +37,7 @@ sweeporders/
 
 ```bash
 source activate.sh                   # activates swp_env/
-pip install -r requirements.txt      # polars, duckdb, pandas, numpy, scipy, psutil, pyarrow
+pip install -r requirements.txt      # polars, duckdb, pandas, numpy, psutil
 ```
 
 ## Running the Pipeline
