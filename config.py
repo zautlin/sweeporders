@@ -72,8 +72,10 @@ NBBO_SOURCE      = 'INTERNAL'  # Only INTERNAL supported; EXTERNAL branch droppe
 # then re-baseline tests/parity_baseline/.
 USE_DUCKDB_IO         = False  # DuckDB-driven raw CSV ingest (Stage 1)
 USE_POLARS_TRANSFORMS = False  # Polars vectorised in-memory transforms
-USE_NUMPY_SIMULATOR   = False  # Phase-1 simulator: True → simulator.simulate_sweep_matching_numpy
-                               # False (default) → legacy pandas simulator (parity baseline)
+USE_NUMPY_SIMULATOR   = os.getenv('USE_NUMPY_SIMULATOR', '0').lower() in ('1', 'true', 'yes', 'on')
+                               # Phase-1 simulator: True → simulator.simulate_sweep_matching_numpy
+                               # False (default) → legacy pandas simulator (parity baseline).
+                               # Env override picked up by both parent and spawned workers.
 
 VOLUME_BUCKET_METHOD     = 'quartile'                    # 'quartile', 'quintile', or 'custom'
 
