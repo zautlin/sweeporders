@@ -70,7 +70,7 @@ sweeporders/
 ├── process.py               Stages 1+2
 ├── aggregate.py             Stages 3+4
 ├── report.py                Stages 5+6
-├── simulator.py             numpy simulator kernel (used when USE_NUMPY_SIMULATOR=1)
+├── simulator.py             numpy simulator kernel (sole Stage 2 implementation)
 ├── tests/                   pytest suite (parity baseline + smoke tests)
 ├── docs/                    spec sources
 │   ├── bi.txt               ASX Centre Point behaviour spec
@@ -306,22 +306,6 @@ python report.py    --dates 20240505                          # restrict
 The same flags work on every stage that supports them. `report.py` only
 takes `--dates`; the other two share the full filter set
 (`--dates`, `--tickers`, `--orderbookids`, `--workers`).
-
-### Switching the simulator backend
-
-The Stage 2 simulator has two backends. Set the environment variable
-**before** the run; both parent and worker processes pick it up.
-
-* **macOS / Linux:**
-  `USE_NUMPY_SIMULATOR=1 python run.py`
-* **Windows cmd:**
-  `set USE_NUMPY_SIMULATOR=1 && python run.py`
-* **Windows PowerShell:**
-  `$env:USE_NUMPY_SIMULATOR = "1"; python run.py`
-
-`0` (the default) uses the pandas reference simulator. `1` uses the numpy
-kernel, which is faster on large partitions and produces byte-identical
-output on the local data set.
 
 ---
 

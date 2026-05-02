@@ -142,7 +142,6 @@ MIN_TRADES_THRESHOLD = 10
 ENABLE_PARALLEL_PROCESSING = True     # flipped True for the lean port
 USE_DUCKDB_IO = False                 # preserved at False to match parity baseline
 USE_POLARS_TRANSFORMS = False         # preserved at False to match parity baseline
-USE_NUMPY_SIMULATOR = ...             # env-var override; True → simulator.py kernel
 PROCESSING_MODE = 'file'              # 'file' | 'memory'  (stream removed)
 VOLUME_BUCKET_METHOD = 'quartile'     # 'quartile' | 'quintile' | 'custom'
 ```
