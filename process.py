@@ -1518,9 +1518,17 @@ def _print_processing_summary(partition_results, partition_keys):
 # execute_pipeline_stages, _process_single_security, SecurityDiscovery, etc.)
 # was deleted on 2026-04-28 — superseded by the bulk-mode `cli_multi()` below.
 def setup_directories():
-    """Create output directories if they don't exist."""
+    """Create raw / processed / outputs / reports directories if they don't exist.
+
+    Raw subdirs are auto-created so a fresh checkout doesn't error before the
+    user has had a chance to drop input files into place. Run organize_raw.py
+    if your CSVs are sitting flat in data/ rather than the proper subdirs.
+    """
+    for sub in ('orders', 'trades', 'nbbo', 'session', 'reference', 'participants'):
+        Path(config.RAW_DIR / sub).mkdir(parents=True, exist_ok=True)
     Path(config.PROCESSED_DIR).mkdir(parents=True, exist_ok=True)
     Path(config.OUTPUTS_DIR).mkdir(parents=True, exist_ok=True)
+    Path(config.REPORTS_DIR).mkdir(parents=True, exist_ok=True)
 
 
 import sys as _sys
