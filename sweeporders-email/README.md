@@ -219,24 +219,36 @@ require `tests/parity_baseline/` to be present; if it is, they auto-run.)
 
 ## 4. Drop your raw data into `data/raw/`
 
-Create the six subdirectories if they don't already exist:
+Two ways:
 
-**macOS / Linux**
+**Option A — already organised.** Copy your daily files directly into the
+matching subfolder under `data/raw/{orders,trades,nbbo,session,reference,participants}/`.
+Subdirectories that don't exist are auto-created the first time you run
+the pipeline. CSV is read as-is via DuckDB's parallel parser; parquet
+files are preferred when both formats exist for the same base name.
 
-```bash
-mkdir -p data/raw/orders data/raw/trades data/raw/nbbo \
-         data/raw/session data/raw/reference data/raw/participants
+**Option B — let `organize_raw.py` distribute them for you.** If your
+raw files are sitting flat in `data/` rather than already split into
+subfolders, run:
+
+```
+python organize_raw.py
 ```
 
-**Windows (cmd or PowerShell)**
+The script classifies each file by its filename suffix and moves it
+into the right subfolder (creating subfolders as needed):
 
-```bat
-mkdir data\raw\orders data\raw\trades data\raw\nbbo data\raw\session data\raw\reference data\raw\participants
-```
+  `*_orders` → `orders/`,  `*_trades` → `trades/`,
+  `*_nbbo` → `nbbo/`,  `*_session` → `session/`,
+  `*_orderbook`/`*_reference` → `reference/`,
+  `*_par`/`*_participants` → `participants/`
 
-Copy your daily files into the matching folder using the conventions in
-section 1. CSV files are read as-is; parquet files are preferred when both
-formats are present for the same logical file.
+Both `.csv` and `.parquet` are recognised. Use `--copy` to keep the
+originals in place; `--dry-run` to preview without moving anything.
+
+If you skip this step and `run.py` later detects loose raw files in
+`data/`, it'll invoke `organize_raw.py` automatically (with a one-line
+notice) before processing. Server-friendly — no prompts.
 
 ---
 

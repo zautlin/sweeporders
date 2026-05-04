@@ -109,9 +109,21 @@ These drive `process.py`'s simulator section (originally `src/pipeline/sweep_sim
 **Sweep selection funnel (Stage 1 pre-filter).** Only sweeps that pass *all three* filters reach the simulator:
 1. `exchangeordertype == 2048` (sweep).
 2. Real-world completion: final `changereason == 3` (TRADED) AND final `leavesQuantity == 0` AND a `changereason == 6` (NEW_ORDER) event exists.
-3. All of the order's real trades have `dealsource == 1` (lit/continuous).
+3. `rest_on_lit_quantity > 0` — the sweep had a non-zero portion that
+   rested on the lit book after its initial matching pass. Sweeps that
+   were fully filled at submission have nothing to counterfactually
+   re-route and are dropped.
 
-Sweeps that did not fully fill on the lit market — and sweeps that actually matched via Centre Point in reality — are **not simulated**.
+Sweeps that did not fully fill on the lit market — and sweeps that fully filled at submission with zero resting — are **not simulated**. The previous `dealsource==1`-only filter was removed on `_parq` (mixed-venue sweeps now reach the simulator too).
+
+**Counterfactual question the simulator actually answers** (since `_parq`):
+*"For the chunk of each qualifying sweep that real-life parked on the lit
+book as a passive limit order, would dark resting have filled it instead?"*
+
+Specifically: `sweep_qty = rest_on_lit_quantity` = `leavesquantity` at the
+end of the order's initial matching pass (last event sharing the
+NEW_ORDER timestamp). Computed in `_compute_rest_on_lit_qty` and stored
+in `last_execution_time.parquet`.
 
 **Per-sweep simulation window.** Each sweep is scanned over `[first_execution_time, last_execution_time]`. Session filter `MATCHING_SESSION_STATES = {'OPEN', 'CONTINUOUS'}` rejects all other states (`PRE_OPEN`, `AUCTION`, `POST_CLOSE`, `CLOSED`, `PRE_CSPA`, `CSPA`, `ADJUST`, `ADJUST_ON`, `PURGE_ORDERS`, `SYSTEM_MAINTENANCE`).
 
