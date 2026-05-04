@@ -62,7 +62,7 @@ class SimContext:
     sweep_orderid:       np.ndarray   # int64
     sweep_eff_ts:        np.ndarray   # int64 — effective timestamp
     sweep_side:          np.ndarray   # int8  — 1 buy, 2 sell
-    sweep_qty:           np.ndarray   # int64 — starting leaves quantity
+    sweep_qty:           np.ndarray   # int64 — rest-on-lit quantity (resting portion only)
     sweep_first_exec:    np.ndarray   # int64 — per-sweep window lower bound
     sweep_last_exec:     np.ndarray   # int64 — per-sweep window upper bound
     sweep_price:         np.ndarray   # int64 — limit price
@@ -344,8 +344,16 @@ def build_sim_context(
     sweep_orderid       = _col_int64(sweep_orders, 'orderid')
     sweep_eff_ts        = _col_int64(sweep_orders, 'effective_timestamp')
     sweep_side          = _col_int8 (sweep_orders, 'side')
-    sweep_qty           = _col_int64(sweep_orders, 'leavesquantity')
-    sweep_first_exec    = _col_int64(sweep_orders, 'effective_timestamp')
+    # `rest_on_lit_quantity` = leavesquantity at the end of the order's
+    # initial matching pass. This is the chunk that real-life parked on the
+    # lit book as a passive limit order, waiting to be hit by future contras.
+    # The simulator's question for this quantity: "would dark resting have
+    # filled it instead?". Set by extract_last_execution_times in process.py.
+    sweep_qty           = _col_int64(sweep_orders, 'rest_on_lit_quantity')
+    # Use first_execution_time (NEW_ORDER timestamp from last_execution.parquet),
+    # not effective_timestamp — for fully-filled sweeps the latter ≈ the last
+    # trade time, which collapses the eligibility window to zero width.
+    sweep_first_exec    = _col_int64(sweep_orders, 'first_execution_time')
     sweep_last_exec     = _col_int64(sweep_orders, 'last_execution_time')
     sweep_price         = _col_int64(sweep_orders, 'price')
     sweep_maq           = _col_int64(sweep_orders, 'minimumquantity')

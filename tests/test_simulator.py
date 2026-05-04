@@ -485,9 +485,11 @@ def _toy_sweep_orders():
     return pd.DataFrame({
         'orderid':                   [1001, 1002],
         'effective_timestamp':       [1_000_000_000, 2_000_000_000],
+        'first_execution_time':      [1_000_000_000, 2_000_000_000],
         'last_execution_time':       [1_500_000_000, 2_500_000_000],
         'side':                      [1, 2],
         'leavesquantity':            [500, 300],
+        'rest_on_lit_quantity':      [500, 300],
         'price':                     [100, 200],
         'minimumquantity':           [0, 50],
         'singlefillminimumquantity': [0, 0],
@@ -647,12 +649,16 @@ class TestBuildSimContext:
         sweep = before.head(5).copy()
         if 'effective_timestamp' not in sweep.columns:
             sweep['effective_timestamp'] = sweep['timestamp']
+        if 'first_execution_time' not in sweep.columns:
+            sweep['first_execution_time'] = sweep['timestamp']
         if 'last_execution_time' not in sweep.columns:
             sweep['last_execution_time'] = sweep['timestamp']
         if 'lost_priority' not in sweep.columns:
             sweep['lost_priority'] = False
         if 'leavesquantity' not in sweep.columns:
             sweep['leavesquantity'] = sweep.get('quantity', 0)
+        if 'rest_on_lit_quantity' not in sweep.columns:
+            sweep['rest_on_lit_quantity'] = sweep.get('quantity', sweep['leavesquantity'])
         ctx = build_sim_context(sweep, before, {}, SimFlags(**_flags_kwargs()))
         assert len(ctx.sweep_orderid) == 5
         assert len(ctx.contra_orderid) == len(before)
@@ -667,8 +673,10 @@ class TestRunPhase1Skeleton:
     def test_empty_inputs_produce_empty_outputs(self):
         from simulator import build_sim_context, run_phase1, SimFlags
         empty_sweep = pd.DataFrame({
-            'orderid':[], 'effective_timestamp':[], 'last_execution_time':[],
-            'side':[], 'leavesquantity':[], 'price':[], 'minimumquantity':[],
+            'orderid':[], 'effective_timestamp':[], 'first_execution_time':[],
+            'last_execution_time':[],
+            'side':[], 'leavesquantity':[], 'rest_on_lit_quantity':[],
+            'price':[], 'minimumquantity':[],
             'singlefillminimumquantity':[], 'crossingkey':[], 'participantid':[],
             'midtick':[], 'orderbookid':[], 'lost_priority':[], 'changereason':[],
         })
@@ -687,7 +695,7 @@ class TestRunPhase1Skeleton:
     def test_zero_qty_sweep_gets_zero_fill_summary(self):
         from simulator import build_sim_context, run_phase1, SimFlags
         sweep = _toy_sweep_orders().copy()
-        sweep.loc[0, 'leavesquantity'] = 0       # first sweep has nothing to fill
+        sweep.loc[0, 'rest_on_lit_quantity'] = 0    # no resting portion → kernel skips
         ctx = build_sim_context(sweep, _toy_all_orders(), {}, SimFlags(**_flags_kwargs()))
         trades, summaries = run_phase1(ctx)
         assert len(summaries) == 2
@@ -758,9 +766,11 @@ class TestRunPhase1Skeleton:
         # Synthesize a few sweeps to exercise the loop without running the full pipeline.
         sweep = all_orders.head(3).copy()
         sweep['effective_timestamp'] = sweep['timestamp']
+        sweep['first_execution_time'] = sweep['timestamp']
         sweep['last_execution_time'] = sweep['timestamp'] + 10**9
         sweep['lost_priority'] = False
         sweep['leavesquantity'] = sweep.get('quantity', 0)
+        sweep['rest_on_lit_quantity'] = sweep.get('quantity', 0)
         ctx = build_sim_context(sweep, all_orders, {}, SimFlags(**_flags_kwargs()))
         trades, summaries = run_phase1(ctx)
         assert len(summaries) == 3
@@ -846,9 +856,11 @@ class TestKernelMatchEmission:
         sweep = pd.DataFrame({
             'orderid':                   [9001, 9002],
             'effective_timestamp':       [1_000_000_000, 1_000_000_000],
+            'first_execution_time':      [1_000_000_000, 1_000_000_000],
             'last_execution_time':       [2_000_000_000, 2_000_000_000],
             'side':                      [1, 1],
             'leavesquantity':            [100, 100],
+            'rest_on_lit_quantity':      [100, 100],
             'price':                     [100, 100],
             'minimumquantity':           [0, 0],
             'singlefillminimumquantity': [0, 0],
@@ -898,9 +910,11 @@ class TestKernelMatchEmission:
         all_orders = duckdb.sql(f"SELECT * FROM '{partition}/orders_before_matching.parquet'").df()
         sweep = all_orders.head(3).copy()
         sweep['effective_timestamp'] = sweep['timestamp']
+        sweep['first_execution_time'] = sweep['timestamp']
         sweep['last_execution_time'] = sweep['timestamp'] + 10**9
         sweep['lost_priority'] = False
         sweep['leavesquantity'] = sweep.get('quantity', 0)
+        sweep['rest_on_lit_quantity'] = sweep.get('quantity', 0)
         ctx = build_sim_context(sweep, all_orders, {}, SimFlags(**_flags_kwargs()))
         trades, summaries = run_phase1(ctx, rng=self._seeded())
         assert len(summaries) == 3

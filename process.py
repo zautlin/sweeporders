@@ -483,35 +483,64 @@ def _filter_sweep_orders_by_execution(orders_df):
 
 
 def _filter_orders_with_valid_trades(order_ids, trades_df):
-    """Filter orders that have trades with dealsource=1."""
+    """Keep orders that have at least one real trade.
+
+    Previously filtered out orders that had any non-lit (dealsource != 1)
+    trades. That filter has been removed — we now keep BOTH lit-only and
+    mixed (dark + lit) fully-filled sweeps. The simulator's question for
+    mixed sweeps is "what if the order had stayed entirely in dark?"
+    against the original contra book.
+    """
     qualifying_trades = trades_df[trades_df[col.common.orderid].isin(order_ids)].copy()
-    
+
     orders_with_valid_trades = {}
-    
     for order_id in order_ids:
         order_trades = qualifying_trades[qualifying_trades[col.common.orderid] == order_id]
-        
         if len(order_trades) == 0:
-            continue
-        
-        dealsources = order_trades[col.trades.dealsource].unique()
-        if not (len(dealsources) == 1 and dealsources[0] == 1):
-            continue
-        
+            continue                              # no real fills → nothing to compare against
         orders_with_valid_trades[order_id] = order_trades
-    
     return orders_with_valid_trades
 
 
+def _compute_rest_on_lit_qty(order_df):
+    """Quantity of a sweep order that ended up resting on the lit book.
+
+    A sweep order's lifecycle on ASX: arrive → match in dark → match aggressively
+    in lit at the same instant → rest on lit with whatever's left → get hit by
+    later contras. The "rest-on-lit quantity" is the leavesquantity at the end
+    of that initial matching pass — i.e. at the last event sharing the
+    NEW_ORDER (changereason=6) timestamp.
+
+    This is the quantity we want the simulator to counterfactually re-route to
+    dark resting: "would dark resting have filled the part that real-life
+    parked on the lit book?"
+
+    Returns 0 if the order has no NEW_ORDER event (shouldn't happen for
+    qualifying sweeps — the gate already requires changereason=6) or if the
+    initial pass cleaned the order out (no resting portion → drop from sim).
+    """
+    new_order_events = order_df[order_df[col.common.changereason] == 6]
+    if len(new_order_events) == 0:
+        return 0
+    init_ts = int(new_order_events[col.common.timestamp].iloc[0])
+    same_ts = order_df[order_df[col.common.timestamp] == init_ts]
+    if len(same_ts) == 0:
+        return 0
+    same_ts_sorted = same_ts.sort_values(col.common.sequence)
+    return int(same_ts_sorted[col.common.leavesquantity].iloc[-1])
+
+
 def _extract_execution_time_dict(order_id, order_df, trades_df):
-    """Extract first execution time from orders and last execution time from trades."""
+    """Extract first/last execution times and rest-on-lit qty for one order."""
     first_time = order_df[col.common.timestamp].min()
     last_time = trades_df[col.common.tradetime].max()
-    
+    rest_on_lit = _compute_rest_on_lit_qty(order_df)
+
     return {
         'orderid': order_id,
         'first_execution_time': first_time,
-        'last_execution_time': last_time
+        'last_execution_time': last_time,
+        'rest_on_lit_quantity': rest_on_lit,
     }
 
 
@@ -982,38 +1011,52 @@ def get_orders_state(orders_by_partition, processed_dir):
 
 
 def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir):
-    """Extract first and last execution times for SWEEP ORDERS ONLY."""
+    """Extract first/last execution times + rest-on-lit qty for SWEEP ORDERS.
+
+    Only sweeps with rest_on_lit_quantity > 0 reach the simulator —
+    a sweep that was fully filled at submission has no resting portion to
+    counterfactually re-route to dark.
+    """
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
-    
+
+    empty_cols = ['orderid', 'first_execution_time', 'last_execution_time',
+                  'rest_on_lit_quantity']
     execution_times_by_partition = {}
-    
+
     for partition_key, orders_df in orders_by_partition.items():
         if len(orders_df) == 0:
             continue
-        
+
         qualifying_order_ids = _filter_sweep_orders_by_execution(orders_df)
-        
+
         if not qualifying_order_ids or partition_key not in trades_by_partition:
-            execution_times_df = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+            execution_times_df = pd.DataFrame(columns=empty_cols)
             execution_times_by_partition[partition_key] = execution_times_df
             _save_execution_times(partition_key, execution_times_df, processed_dir)
             print(f"  {partition_key}: 0 qualifying sweep orders")
             continue
-        
+
         trades_df = trades_by_partition[partition_key]
         orders_with_valid_trades = _filter_orders_with_valid_trades(qualifying_order_ids, trades_df)
-        
+
         execution_times = []
+        n_skipped_no_rest = 0
         for order_id, order_trades in orders_with_valid_trades.items():
             order_data = orders_df[orders_df[col.common.orderid] == order_id]
             exec_time = _extract_execution_time_dict(order_id, order_data, order_trades)
+            if exec_time['rest_on_lit_quantity'] <= 0:
+                n_skipped_no_rest += 1
+                continue                                       # nothing rested → nothing to re-route
             execution_times.append(exec_time)
-        
-        execution_times_df = pd.DataFrame(execution_times) if execution_times else pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+
+        execution_times_df = pd.DataFrame(execution_times) if execution_times else pd.DataFrame(columns=empty_cols)
         execution_times_by_partition[partition_key] = execution_times_df
         _save_execution_times(partition_key, execution_times_df, processed_dir)
-        print(f"  {partition_key}: {len(execution_times_df):,} qualifying sweep orders")
-    
+        msg = f"  {partition_key}: {len(execution_times_df):,} qualifying sweep orders"
+        if n_skipped_no_rest:
+            msg += f" ({n_skipped_no_rest:,} skipped — no resting portion)"
+        print(msg)
+
     return execution_times_by_partition
 
 
@@ -1042,7 +1085,10 @@ def load_partition_data(partition_key, processed_dir):
     if exec_file.exists():
         partition_data['last_execution'] = safe_read_csv(exec_file)
     else:
-        partition_data['last_execution'] = pd.DataFrame(columns=['orderid', 'first_execution_time', 'last_execution_time'])
+        partition_data['last_execution'] = pd.DataFrame(columns=[
+            'orderid', 'first_execution_time', 'last_execution_time',
+            'rest_on_lit_quantity',
+        ])
 
     # ===== REFERENCE DATA =====
 
@@ -1189,6 +1235,7 @@ def _prepare_sweep_orders(partition_data):
     required_columns = [
         col.common.orderid, col.common.timestamp, col.common.sequence,
         col.common.side, col.orders.leaves_quantity, 'matched_quantity',
+        'rest_on_lit_quantity',
         col.common.price, 'first_execution_time', 'last_execution_time',
         col.common.orderbookid, 'minimumquantity', 'singlefillminimumquantity',
         'crossingkey', col.orders.participant_id, 'midtick',

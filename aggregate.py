@@ -1561,13 +1561,19 @@ def compare_real_vs_simulated_trades(real_metrics_by_partition, simulation_resul
             print(f"  {partition_key}: No simulated trades")
             continue
         
-        # Load orders to get arrival NBBO for simulated metrics
+        # Load orders to get arrival NBBO for simulated metrics. Use orders_after
+        # because sweeps appear there in their final state with their original
+        # `quantity`; orders_before contains contras (resting orders), not sweeps.
         date, security_code = partition_key.split('/')
         partition_dir = Path(output_dir).parent / "processed" / date / security_code
-        orders_before = fu.load_orders_before(partition_dir)
-        
+        orders_after_file = partition_dir / "orders_after_matching.parquet"
+        if orders_after_file.exists():
+            orders_for_sim = fu.safe_read_csv(orders_after_file, required=False)
+        else:
+            orders_for_sim = fu.load_orders_before(partition_dir)
+
         # Aggregate simulated trades per order (for sweep orders)
-        sim_aggregated = _aggregate_simulated_trades_per_order(sim_trades, sim_order_summary, orders_before)
+        sim_aggregated = _aggregate_simulated_trades_per_order(sim_trades, sim_order_summary, orders_for_sim)
         
         # Compare real vs simulated at order level
         comparison = _compare_order_level_trades(real_order_metrics, sim_aggregated)
@@ -1936,12 +1942,22 @@ def _process_partition_calculate_metrics(partition_key, processed_dir, outputs_d
         simulated_trades = fu.load_simulation_trades(partition_dir)
         output_partition_dir = fu.get_partition_dir(outputs_dir, partition_key)
         order_summary = fu.load_simulation_order_summary(output_partition_dir)
-        
+
         if simulated_trades is not None and order_summary is not None:
+            # Use orders_after as the order context for simulated metrics — sweeps
+            # appear there (in their final state) but typically NOT in orders_before
+            # (they aggressed rather than rested). orders_after's `quantity` column
+            # is the original order quantity, which is what the metrics calc needs.
+            orders_after_file = partition_dir / "orders_after_matching.parquet"
+            if orders_after_file.exists():
+                from process import safe_read_csv as _safe_read
+                orders_after = _safe_read(orders_after_file, required=False)
+            else:
+                orders_after = None
             sim_aggregated = ec._aggregate_simulated_trades_per_order(
                 simulated_trades,
                 order_summary,
-                orders_before
+                orders_after if orders_after is not None else orders_before,
             )
         else:
             sim_aggregated = None
