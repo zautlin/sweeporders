@@ -515,7 +515,9 @@ def _sort_lexicographic(eff_ts: np.ndarray, sequence: np.ndarray) -> np.ndarray:
 
 
 def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
-               tradedate: str = None) -> tuple[list, list]:
+               tradedate: str = None,
+               partition_key: str = None,
+               progress_every: int = 500) -> tuple[list, list]:
     """Phase-1 dark continuous matching kernel.
 
     Walks every sweep, builds the eligibility window, runs the full match
@@ -529,6 +531,9 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
            Defaults to np.random.default_rng() (matches legacy unseeded behaviour).
       tradedate: 'YYYY-MM-DD' string for trade rows. If None, derived from
            the first sweep's timestamp.
+      partition_key: '{date}/{orderbookid}' string — used as a prefix on the
+           progress lines emitted every `progress_every` sweeps. None → silent.
+      progress_every: emit a progress line every N sweeps. 0 → silent.
 
     Returns:
       simulated_trades: list[dict] — sweep + contra row per match
@@ -586,7 +591,24 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
     match_counter = 0
 
     n_sweeps = len(ctx.sweep_orderid)
+    n_contras = len(c_orderid)
+    last_contra_id = 0          # most recent contra orderid the kernel touched
+    total_matches = 0           # cumulative across all sweeps in this partition
+
+    if partition_key and progress_every:
+        print(f"  [{partition_key}] starting: {n_sweeps:,} sweeps × "
+              f"{n_contras:,} contras", flush=True)
+
     for s in range(n_sweeps):
+        # Periodic progress — fire BEFORE the qty-zero short-circuit so the
+        # user always sees the kernel making progress, regardless of whether
+        # any given sweep had quantity to consume.
+        if partition_key and progress_every and s and s % progress_every == 0:
+            pct = s * 100 // n_sweeps
+            print(f"  [{partition_key}] {s:,}/{n_sweeps:,} sweeps "
+                  f"({pct}%) | last contra={last_contra_id}, "
+                  f"matches so far={total_matches}", flush=True)
+
         sweep_id        = int(ctx.sweep_orderid[s])
         sweep_side      = int(ctx.sweep_side[s])
         sweep_qty_avail = int(ctx.sweep_qty[s])
@@ -762,6 +784,8 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
             order_remaining[ci] -= match_qty
             sweep_matched += match_qty
             sweep_n_matches += 1
+            last_contra_id = order_id
+            total_matches += 1
             if first_fill_price == 0:
                 first_fill_price = int(execution_price)
 
@@ -776,6 +800,10 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
             'lost_priority': sweep_lost_pri,
             'changereason': sweep_changeres,
         })
+
+    if partition_key and progress_every:
+        print(f"  [{partition_key}] done: {n_sweeps:,} sweeps, "
+              f"{total_matches:,} total matches", flush=True)
 
     return simulated_trades, sweep_summaries
 
@@ -804,6 +832,8 @@ def simulate_sweep_matching_numpy(
     session_states_df=None,
     *,
     rng: np.random.Generator = None,
+    partition_key: str = None,
+    progress_every: int = 500,
 ):
     """Drop-in numpy-kernel replacement for process.py:simulate_sweep_matching.
 
@@ -834,7 +864,9 @@ def simulate_sweep_matching_numpy(
         participants=participants_dict,
     )
 
-    trades, summaries = run_phase1(ctx, rng=rng)
+    trades, summaries = run_phase1(
+        ctx, rng=rng, partition_key=partition_key, progress_every=progress_every,
+    )
 
     # ── Adapt to legacy dict-of-DataFrames shape ─────────────────────────────
     sim_trades_df = pd.DataFrame(trades) if trades else pd.DataFrame(columns=[

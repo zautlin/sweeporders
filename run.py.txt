@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -26,6 +27,55 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 PYTHON = sys.executable
+
+CANONICAL_SUBDIRS = ('orders', 'trades', 'nbbo', 'session', 'reference', 'participants')
+LOOSE_FILE_RE = re.compile(
+    r'_(orders|trades|nbbo|session|orderbook|reference|par|participants)\.(csv|parquet)$',
+    re.IGNORECASE,
+)
+
+
+def _canonical_dirs_have_files(repo_root: Path) -> bool:
+    raw_root = repo_root / "data" / "raw"
+    if not raw_root.is_dir():
+        return False
+    for sub in CANONICAL_SUBDIRS:
+        d = raw_root / sub
+        if d.is_dir() and (any(d.glob('*.csv')) or any(d.glob('*.parquet'))):
+            return True
+    return False
+
+
+def _loose_files_in_data(repo_root: Path) -> list[Path]:
+    """Files sitting flat under data/ (not in a canonical subdir) that match the
+    raw-file naming pattern."""
+    data_root = repo_root / "data"
+    if not data_root.is_dir():
+        return []
+    out: list[Path] = []
+    for p in data_root.iterdir():
+        if p.is_file() and LOOSE_FILE_RE.search(p.name):
+            out.append(p)
+    return out
+
+
+def maybe_organize_raw(repo_root: Path) -> None:
+    """If data/raw/{subdir}/ are empty but data/ has loose raw files matching the
+    naming pattern, run organize_raw.py first. Otherwise no-op.
+    """
+    if _canonical_dirs_have_files(repo_root):
+        return                                   # already organised
+    loose = _loose_files_in_data(repo_root)
+    if not loose:
+        return                                   # nothing to organise
+    print(f"[run] data/raw/{{subdirs}} are empty but data/ has {len(loose)} "
+          f"loose raw file(s) — running organize_raw.py first")
+    rc = subprocess.run([PYTHON, str(repo_root / "organize_raw.py")],
+                        cwd=repo_root).returncode
+    if rc != 0:
+        print(f"[run] organize_raw.py failed (exit {rc}); proceeding anyway. "
+              f"process.py will likely error out — fix manually and rerun.",
+              file=sys.stderr)
 
 
 def run_stage(banner: str, script: str, extra_args: list[str]) -> int:
@@ -67,6 +117,7 @@ def main() -> int:
     workers: list[str] = ["--workers", str(args.workers)] if args.workers else []
 
     if not args.skip_process:
+        maybe_organize_raw(REPO_ROOT)
         rc = run_stage("STAGE 1+2 — process.py (ingest + simulate)",
                        "process.py", common + workers)
         if rc != 0:

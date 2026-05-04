@@ -576,12 +576,14 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size,
 
     # Partition by date/security
     partitions = {}
-    for (date, security_code_val), group_df in orders.groupby(['date', col.common.orderbookid]):
+    grouped = list(orders.groupby(['date', col.common.orderbookid]))
+    n_partitions = len(grouped)
+    for i, ((date, security_code_val), group_df) in enumerate(grouped, 1):
         partition_key = f"{date}/{security_code_val}"
-        
+
         # Normalize column names to standard before saving
         group_df_normalized = normalize_column_names(group_df, 'orders')
-        
+
         # Store normalized version for downstream use
         partitions[partition_key] = group_df_normalized
 
@@ -591,9 +593,11 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size,
             partition_file = partition_dir / "cp_orders_filtered.parquet"
             safe_write_csv(group_df_normalized, partition_file, create_dirs=False)
             size_mb = partition_file.stat().st_size / (1024 * 1024)
-            print(f"  {partition_key}: {len(group_df):,} orders ({size_mb:.2f} MB)")
+            print(f"  [{i}/{n_partitions}] {partition_key}: {len(group_df):,} orders "
+                  f"({size_mb:.2f} MB)", flush=True)
         else:
-            print(f"  {partition_key}: {len(group_df):,} orders (in-memory)")
+            print(f"  [{i}/{n_partitions}] {partition_key}: {len(group_df):,} orders "
+                  f"(in-memory)", flush=True)
     
     return partitions
 
@@ -1375,6 +1379,8 @@ def simulate_partition(partition_key, partition_data, reference_loader=None):
             price_limits=price_limits,
             participants_dict=participants_dict,
             session_states_df=session_states_df,
+            partition_key=partition_key,
+            progress_every=500,
         )
         
         num_matches = len(results['simulated_trades']) // 2 if len(results['simulated_trades']) > 0 else 0
