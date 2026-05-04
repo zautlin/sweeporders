@@ -98,23 +98,15 @@ def get_partition_dir(base_dir, partition_key):
 
 
 def _glob_raw_inputs(folder):
-    """List raw input files under folder, preferring .parquet over .csv per stem.
+    """List .parquet files under folder. Parquet-only path on the _parq branch.
 
-    Run convert_raw.py once to materialise parquet copies; this helper then routes
-    everything to the parquet versions automatically.
+    CSV inputs are NOT picked up. Run convert_raw.py first if your raw data
+    is still in CSV form.
     """
     folder = Path(folder)
     if not folder.is_dir():
         return []
-    seen = set()
-    out = []
-    for f in sorted(folder.glob('*.parquet')):
-        out.append(f)
-        seen.add(f.stem)
-    for f in sorted(folder.glob('*.csv')):
-        if f.stem not in seen:
-            out.append(f)
-    return out
+    return sorted(folder.glob('*.parquet'))
 
 
 def _filters_to_sql_where(filters):
@@ -139,13 +131,12 @@ def _filters_to_sql_where(filters):
 
 def safe_read_csv(filepath, required=True, compression='infer',
                   filters=None, return_total=False, **kwargs):
-    """Read tabular data with format auto-detection (Parquet or CSV).
+    """Read a Parquet file via DuckDB. Parquet-only on the _parq branch.
 
-    Dispatches on file extension: .parquet → DuckDB, else CSV.
     Name kept for backward compatibility with legacy call sites.
 
     Optional kwargs:
-      filters: list[(col, op, values)] predicate pushdown ('in'|'==') — parquet only.
+      filters: list[(col, op, values)] predicate pushdown ('in'|'==').
       return_total: when True, also return total_rows_in_file as second tuple element.
     """
     filepath = Path(filepath)
@@ -155,26 +146,21 @@ def safe_read_csv(filepath, required=True, compression='infer',
             raise FileNotFoundError(f"Required file not found: {filepath}")
         return (None, 0) if return_total else None
 
+    if filepath.suffix != '.parquet':
+        raise IOError(
+            f"_parq branch reads Parquet only; got {filepath.suffix} at {filepath}. "
+            f"Run convert_raw.py first to materialise parquet copies."
+        )
+
     try:
-        if filepath.suffix == '.parquet':
-            kwargs.pop('compression', None)
-            conn = duckdb.connect()
-            where = _filters_to_sql_where(filters)
-            df = conn.execute(f"SELECT * FROM '{filepath}'{where}").df()
-            if return_total:
-                total = conn.execute(f"SELECT COUNT(*) FROM '{filepath}'").fetchone()[0]
-                return df, total
-            return df
-
-        if config.USE_DUCKDB_IO:
-            rel = get_conn().execute(f"SELECT * FROM read_csv_auto('{filepath}')")
-            df = duck_to_polars(rel).to_pandas()
-            return (df, len(df)) if return_total else df
-
-        df = pd.read_csv(filepath, compression=compression, **kwargs)
-        return (df, len(df)) if return_total else df
-    except pd.errors.EmptyDataError:
-        return (None, 0) if return_total else None
+        kwargs.pop('compression', None)
+        conn = duckdb.connect()
+        where = _filters_to_sql_where(filters)
+        df = conn.execute(f"SELECT * FROM '{filepath}'{where}").df()
+        if return_total:
+            total = conn.execute(f"SELECT COUNT(*) FROM '{filepath}'").fetchone()[0]
+            return df, total
+        return df
     except Exception as e:
         raise IOError(f"Error reading {filepath}: {e}")
 
@@ -554,46 +540,21 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size,
     frames = []
     total_rows = 0
     for fp in input_files:
-        if fp.suffix == '.parquet':
-            filters = [(col.orders.order_type, 'in', list(order_types))]
-            if orderbookids_filter:
-                filters.append((col.orders.security_code, 'in', list(orderbookids_filter)))
-            chunk, n_total = safe_read_csv(fp, filters=filters, return_total=True)
-            total_rows += n_total
-            if chunk is not None and len(chunk) > 0:
-                # Normalize raw → canonical on-disk schema before downstream filters
-                # / groupby. Same path as the CSV branch; idempotent if the parquet
-                # was already canonical.
-                chunk = normalize_column_names(chunk, 'orders')
-                frames.append(chunk)
-        elif _cfg.USE_DUCKDB_IO:
-            import polars as pl
-            conn = get_conn()
-            types_sql = ','.join(str(t) for t in order_types)
-            where = f"{col.orders.order_type} IN ({types_sql})"
-            if orderbookids_filter:
-                obid_sql = ','.join(str(x) for x in orderbookids_filter)
-                where += f" AND {col.orders.security_code} IN ({obid_sql})"
-            orders_pl = duck_to_polars(conn.execute(f"""
-                SELECT * FROM read_csv_auto('{fp}')
-                WHERE {where}
-            """))
-            total_rows += conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{fp}')").fetchone()[0]
-            chunk = orders_pl.to_pandas()
-            if len(chunk) > 0:
-                chunk = normalize_column_names(chunk, 'orders')
-                frames.append(chunk)
-        else:
-            for sub in pd.read_csv(fp, chunksize=chunk_size, low_memory=False):
-                # Normalize raw column names (server PascalCase or local lowercase
-                # variants) to the canonical on-disk schema before any filter.
-                sub = normalize_column_names(sub, 'orders')
-                total_rows += len(sub)
-                f = sub[sub[col.orders.order_type].isin(order_types)]
-                if orderbookids_filter:
-                    f = f[f[col.common.orderbookid].isin(orderbookids_filter)]
-                if len(f) > 0:
-                    frames.append(f.copy())
+        if fp.suffix != '.parquet':
+            raise IOError(
+                f"_parq branch only accepts Parquet inputs; got {fp.suffix} at {fp}. "
+                f"Run convert_raw.py first."
+            )
+        # Predicate-pushdown filter at the Parquet level
+        filters = [(col.orders.order_type, 'in', list(order_types))]
+        if orderbookids_filter:
+            filters.append((col.orders.security_code, 'in', list(orderbookids_filter)))
+        chunk, n_total = safe_read_csv(fp, filters=filters, return_total=True)
+        total_rows += n_total
+        if chunk is not None and len(chunk) > 0:
+            # Normalize raw → canonical on-disk schema before downstream filters / groupby
+            chunk = normalize_column_names(chunk, 'orders')
+            frames.append(chunk)
 
     if not frames:
         print("  No Centre Point orders found!")
@@ -658,37 +619,18 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
     frames = []
     total_rows = 0
     for fp in input_files:
-        if fp.suffix == '.parquet':
-            trades, n_total = safe_read_csv(fp, return_total=True)
-            total_rows += n_total
-            if trades is not None and len(trades) > 0:
-                trades = normalize_column_names(trades, 'trades')
-                matched = trades[trades[col.trades.order_id].isin(all_order_ids)].copy()
-                if len(matched) > 0:
-                    frames.append(matched)
-        elif _cfg.USE_DUCKDB_IO:
-            import polars as pl
-            conn = get_conn()
-            conn.execute("CREATE OR REPLACE TEMP TABLE _target_ids (orderid BIGINT)")
-            conn.executemany("INSERT INTO _target_ids VALUES (?)", [(int(i),) for i in all_order_ids])
-            trades_pl = duck_to_polars(conn.execute(f"""
-                SELECT t.* FROM read_csv_auto('{fp}') t
-                JOIN _target_ids i ON t.{col.trades.order_id} = i.orderid
-            """))
-            total_rows += conn.execute(f"SELECT COUNT(*) FROM read_csv_auto('{fp}')").fetchone()[0]
-            chunk = trades_pl.to_pandas()
-            if len(chunk) > 0:
-                chunk = normalize_column_names(chunk, 'trades')
-                frames.append(chunk)
-        else:
-            for sub in pd.read_csv(fp, chunksize=chunk_size, low_memory=False):
-                # Normalize raw column names (server PascalCase or local lowercase
-                # variants) to the canonical on-disk schema before any filter.
-                sub = normalize_column_names(sub, 'trades')
-                total_rows += len(sub)
-                matched_chunk = sub[sub[col.trades.order_id].isin(all_order_ids)].copy()
-                if len(matched_chunk) > 0:
-                    frames.append(matched_chunk)
+        if fp.suffix != '.parquet':
+            raise IOError(
+                f"_parq branch only accepts Parquet inputs; got {fp.suffix} at {fp}. "
+                f"Run convert_raw.py first."
+            )
+        trades, n_total = safe_read_csv(fp, return_total=True)
+        total_rows += n_total
+        if trades is not None and len(trades) > 0:
+            trades = normalize_column_names(trades, 'trades')
+            matched = trades[trades[col.trades.order_id].isin(all_order_ids)].copy()
+            if len(matched) > 0:
+                frames.append(matched)
 
     if not frames:
         print("  No matching trades found!")

@@ -43,7 +43,8 @@ def test_config_imports_and_exposes_expected_names():
     assert config.NBBO_SOURCE == "INTERNAL"
     # Backend flags retained (structural-only port; backend migration is follow-up).
     # Defaults match the parity-baseline configuration (pandas codepaths).
-    assert config.USE_DUCKDB_IO is False
+    # USE_DUCKDB_IO was dropped on _parq (parquet-only ingest).
+    assert not hasattr(config, 'USE_DUCKDB_IO')
     assert config.USE_POLARS_TRANSFORMS is False
 
 

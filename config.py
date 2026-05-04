@@ -1,7 +1,7 @@
 """sweeporders config — single source of truth for paths, schema, and tunables.
 
 Merged from src/config/{config, column_schema, system_config}.py during the lean port.
-USE_DUCKDB_IO and USE_POLARS_TRANSFORMS flags dropped (always-True semantics assumed).
+USE_POLARS_TRANSFORMS flag retained; USE_DUCKDB_IO dropped (parquet-only on _parq).
 NBBO_SOURCE 'EXTERNAL' branch dropped (INTERNAL only).
 PROCESSING_MODE 'stream' option removed.
 ENABLE_PARALLEL_PROCESSING flipped to True for the lean port.
@@ -62,14 +62,11 @@ ENABLE_PARALLEL_PROCESSING = True   # flipped to True for the lean port (was Fal
 PROCESSING_MODE  = 'file'      # 'file' | 'memory'  (stream removed)
 NBBO_SOURCE      = 'INTERNAL'  # Only INTERNAL supported; EXTERNAL branch dropped
 
-# Backend selection — kept off by default. The DuckDB ingest path is wired and
-# functional but produces a small per-row drift vs the pandas path (off by one
-# sweep on CBA/20240505) — likely the polars `from_epoch + tz convert` lands an
-# order on a different partition than pandas `to_datetime + tz convert` near a
-# date boundary. Flipping to True is a follow-up: investigate the off-by-one,
-# then re-baseline tests/parity_baseline/.
-USE_DUCKDB_IO         = False  # DuckDB-driven raw CSV ingest (Stage 1)
-USE_POLARS_TRANSFORMS = False  # Polars vectorised in-memory transforms
+# In-memory transforms — Polars-vectorised replacements for the pandas
+# transforms in _prepare_sweep_orders / _prepare_all_orders_for_matching /
+# Stage 3 metrics calc. Off by default (parity baseline assumes pandas path).
+USE_POLARS_TRANSFORMS = False
+
 VOLUME_BUCKET_METHOD     = 'quartile'                    # 'quartile', 'quintile', or 'custom'
 
 # Security auto-discovery

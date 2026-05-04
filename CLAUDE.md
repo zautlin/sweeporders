@@ -94,7 +94,7 @@ python -m pytest tests/test_config_smoke.py -v
 
 **Schema-Independent Columns:** All column-name mappings are centralised in `config.COLUMN_MAPPING`. The `ColumnAccessor` exposes them as `config.col.common.orderid`, `config.col.common.timestamp`, etc. Use these instead of raw string column names — schema variations only need to change `COLUMN_MAPPING`.
 
-**Multi-Backend (legacy paths preserved):** `config.USE_DUCKDB_IO` and `config.USE_POLARS_TRANSFORMS` are both `False` by default — the lean port preserves the pandas codepath that produced the parity baseline. Backend migration to polars/duckdb is a follow-up sprint (decision logged in commit `1639336`).
+**Parquet-only ingest (`_parq` branch):** raw `.csv` files are NOT picked up. Stage 1 reads only `.parquet` (via DuckDB) — run `convert_raw.py` first if your raw data is still in CSV form. `USE_DUCKDB_IO` flag was dropped (its semantics no longer apply). `USE_POLARS_TRANSFORMS` retained as an in-memory transform speed knob, default `False` to match the parity baseline.
 
 **Module Self-Aliases inside Consolidated Files:** `process.py` and `aggregate.py` set `dp = pp = ec = fu = du = ss = sys.modules[__name__]` near their CLI sections so legacy intra-module references like `dp.load_partition_data` and `pp.process_partitions_parallel` continue to resolve to the same-file functions after consolidation.
 
@@ -140,7 +140,6 @@ NBBO_SOURCE = 'INTERNAL'              # only INTERNAL supported (EXTERNAL branch
 MIN_ORDERS_THRESHOLD = 100
 MIN_TRADES_THRESHOLD = 10
 ENABLE_PARALLEL_PROCESSING = True     # flipped True for the lean port
-USE_DUCKDB_IO = False                 # preserved at False to match parity baseline
 USE_POLARS_TRANSFORMS = False         # preserved at False to match parity baseline
 PROCESSING_MODE = 'file'              # 'file' | 'memory'  (stream removed)
 VOLUME_BUCKET_METHOD = 'quartile'     # 'quartile' | 'quintile' | 'custom'
