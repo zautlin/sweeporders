@@ -94,7 +94,7 @@ python -m pytest tests/test_config_smoke.py -v
 
 **Schema-Independent Columns:** All column-name mappings are centralised in `config.COLUMN_MAPPING`. The `ColumnAccessor` exposes them as `config.col.common.orderid`, `config.col.common.timestamp`, etc. Use these instead of raw string column names — schema variations only need to change `COLUMN_MAPPING`.
 
-**Parquet-only ingest (`_parq` branch):** raw `.csv` files are NOT picked up. Stage 1 reads only `.parquet` (via DuckDB) — run `convert_raw.py` first if your raw data is still in CSV form. `USE_DUCKDB_IO` flag was dropped (its semantics no longer apply). `USE_POLARS_TRANSFORMS` retained as an in-memory transform speed knob, default `False` to match the parity baseline.
+**DuckDB-driven ingest (`_parq` branch):** Stage 1 reads CSV and Parquet from `data/raw/` via DuckDB's parallel parser — this gets the same speed for raw CSV input as parquet would, no conversion needed. Outputs (`data/processed/{date}/{orderbookid}/*.parquet`) are written as ZSTD-compressed parquet so Stage 2 simulator reads are fast (typed columns, predicate pushdown, much smaller on disk). Pandas chunked CSV reading was removed. `USE_DUCKDB_IO` flag is gone — DuckDB is now the only path. `USE_POLARS_TRANSFORMS` retained for in-memory transforms.
 
 **Module Self-Aliases inside Consolidated Files:** `process.py` and `aggregate.py` set `dp = pp = ec = fu = du = ss = sys.modules[__name__]` near their CLI sections so legacy intra-module references like `dp.load_partition_data` and `pp.process_partitions_parallel` continue to resolve to the same-file functions after consolidation.
 

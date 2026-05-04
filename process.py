@@ -98,15 +98,22 @@ def get_partition_dir(base_dir, partition_key):
 
 
 def _glob_raw_inputs(folder):
-    """List .parquet files under folder. Parquet-only path on the _parq branch.
-
-    CSV inputs are NOT picked up. Run convert_raw.py first if your raw data
-    is still in CSV form.
+    """List raw inputs under folder. Both .parquet and .csv are read via DuckDB
+    (parallel CSV parser, much faster than pandas chunked-read). When both
+    formats exist for the same stem, .parquet is preferred.
     """
     folder = Path(folder)
     if not folder.is_dir():
         return []
-    return sorted(folder.glob('*.parquet'))
+    seen = set()
+    out = []
+    for f in sorted(folder.glob('*.parquet')):
+        out.append(f)
+        seen.add(f.stem)
+    for f in sorted(folder.glob('*.csv')):
+        if f.stem not in seen:
+            out.append(f)
+    return out
 
 
 def _filters_to_sql_where(filters):
@@ -131,9 +138,9 @@ def _filters_to_sql_where(filters):
 
 def safe_read_csv(filepath, required=True, compression='infer',
                   filters=None, return_total=False, **kwargs):
-    """Read a Parquet file via DuckDB. Parquet-only on the _parq branch.
-
-    Name kept for backward compatibility with legacy call sites.
+    """Read CSV or Parquet via DuckDB. Both formats use DuckDB's parallel parser
+    so CSV ingest is fast even on multi-GB files. Name kept for backward
+    compatibility with legacy call sites.
 
     Optional kwargs:
       filters: list[(col, op, values)] predicate pushdown ('in'|'==').
@@ -146,19 +153,20 @@ def safe_read_csv(filepath, required=True, compression='infer',
             raise FileNotFoundError(f"Required file not found: {filepath}")
         return (None, 0) if return_total else None
 
-    if filepath.suffix != '.parquet':
-        raise IOError(
-            f"_parq branch reads Parquet only; got {filepath.suffix} at {filepath}. "
-            f"Run convert_raw.py first to materialise parquet copies."
-        )
+    if filepath.suffix == '.parquet':
+        source = f"'{filepath}'"
+    elif filepath.suffix == '.csv':
+        source = f"read_csv_auto('{filepath}')"
+    else:
+        raise IOError(f"Unsupported file extension: {filepath.suffix} ({filepath})")
 
     try:
         kwargs.pop('compression', None)
         conn = duckdb.connect()
         where = _filters_to_sql_where(filters)
-        df = conn.execute(f"SELECT * FROM '{filepath}'{where}").df()
+        df = conn.execute(f"SELECT * FROM {source}{where}").df()
         if return_total:
-            total = conn.execute(f"SELECT COUNT(*) FROM '{filepath}'").fetchone()[0]
+            total = conn.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0]
             return df, total
         return df
     except Exception as e:
@@ -540,12 +548,7 @@ def extract_orders(input_file, processed_dir, order_types, chunk_size,
     frames = []
     total_rows = 0
     for fp in input_files:
-        if fp.suffix != '.parquet':
-            raise IOError(
-                f"_parq branch only accepts Parquet inputs; got {fp.suffix} at {fp}. "
-                f"Run convert_raw.py first."
-            )
-        # Predicate-pushdown filter at the Parquet level
+        # Predicate filter — pushdown for parquet, scan-time WHERE for CSV.
         filters = [(col.orders.order_type, 'in', list(order_types))]
         if orderbookids_filter:
             filters.append((col.orders.security_code, 'in', list(orderbookids_filter)))
@@ -619,11 +622,6 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
     frames = []
     total_rows = 0
     for fp in input_files:
-        if fp.suffix != '.parquet':
-            raise IOError(
-                f"_parq branch only accepts Parquet inputs; got {fp.suffix} at {fp}. "
-                f"Run convert_raw.py first."
-            )
         trades, n_total = safe_read_csv(fp, return_total=True)
         total_rows += n_total
         if trades is not None and len(trades) > 0:
