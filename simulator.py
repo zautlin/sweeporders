@@ -714,6 +714,11 @@ def run_phase1(ctx: SimContext, *, rng: np.random.Generator = None,
                 if sweep_side == 1 and sweep_price < contra_limit: continue
                 if sweep_side == 2 and sweep_price > contra_limit: continue
                 execution_price = float(contra_limit)
+                # Reference-data price-band envelope — applies to APB just like
+                # the non-APB branch (spec sanity: no execution outside the band
+                # regardless of branch).
+                if ctx.price_lower and execution_price < ctx.price_lower:  continue
+                if ctx.price_upper and execution_price > ctx.price_upper:  continue
                 # MIN_BLOCK_SIZE check (qty * price ≥ threshold)
                 if flags.min_block_size > 0 and \
                    potential * execution_price < flags.min_block_size:
