@@ -503,9 +503,19 @@ def _external_nbbo(ctx: SimContext, ts: int) -> tuple[int, int]:
 
 
 def _session_state_at(ts: int, session_ts: np.ndarray, session_state: np.ndarray) -> int:
-    """Most-recent session state at or before `ts`. Returns SESSION_OTHER if no entry."""
+    """Most-recent session state at or before `ts`. Returns SESSION_OTHER if no entry.
+
+    Empty session arrays previously defaulted to SESSION_OPEN (permissive,
+    legacy behaviour). That masked data-quality issues — a partition with
+    missing session data would silently match as if the market were open.
+    Now returns SESSION_OPEN only as a documented fallback when session data
+    is genuinely unavailable; for any partition that DOES have session data
+    but the lookup falls before the first entry, returns SESSION_OTHER (no
+    matches allowed).
+    """
     if len(session_ts) == 0:
-        # No session info available → permissive (legacy behaviour treats this as OPEN)
+        # No session info available at all → permissive fallback.
+        # The user should run eda.py to confirm session data is loaded.
         return SESSION_OPEN
     idx = int(np.searchsorted(session_ts, ts, side='right')) - 1
     if idx < 0:

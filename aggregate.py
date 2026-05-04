@@ -168,7 +168,7 @@ def safe_read_csv(filepath, required=True, compression='infer',
 
     try:
         kwargs.pop('compression', None)
-        conn = duckdb.connect()
+        conn = get_conn()                       # reuse per-thread connection
         where = _filters_to_sql_where(filters)
         df = conn.execute(f"SELECT * FROM {source}{where}").df()
         if return_total:

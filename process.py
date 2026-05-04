@@ -162,7 +162,7 @@ def safe_read_csv(filepath, required=True, compression='infer',
 
     try:
         kwargs.pop('compression', None)
-        conn = duckdb.connect()
+        conn = get_conn()                       # reuse per-thread connection
         where = _filters_to_sql_where(filters)
         df = conn.execute(f"SELECT * FROM {source}{where}").df()
         if return_total:
@@ -973,11 +973,13 @@ def get_orders_state(orders_by_partition, processed_dir):
         # Sort by timestamp, then sequence (ascending)
         orders_sorted = orders_df.sort_values([col.common.timestamp, col.common.sequence])
 
-        # BEFORE state: the NEW ORDER submission event (changereason=1).
-        # Using min-timestamp is wrong because the data file includes session-cleanup
-        # cancellations (changereason=6) that appear earlier than the actual submission.
-        # Orders that have no changereason=1 event (pure cleanup artefacts) are excluded.
-        CHANGEREASON_NEW = 1
+        # BEFORE state: the NEW_ORDER submission event (changereason=6).
+        # The previous value (CHANGEREASON_NEW = 1) was wrong — that's
+        # CANCELED_BY_TRADER per dd.txt and the project's CHANGEREASON_*
+        # constants. Filtering to =1 captured the wrong population (cancel
+        # events instead of fresh submissions). Orders with no NEW_ORDER
+        # event in the dataset are excluded.
+        CHANGEREASON_NEW = 6
         if 'changereason' in orders_sorted.columns:
             new_order_rows = orders_sorted[orders_sorted['changereason'] == CHANGEREASON_NEW]
             orders_before = new_order_rows.drop_duplicates(
