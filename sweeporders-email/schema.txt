@@ -3,6 +3,7 @@ SESSION CHANGE
 ,column_name,column_type,null,key,default,extra
 0,Partition,BIGINT,YES,,,
 1,Sequence,BIGINT,YES,,,
+
 2,TradeDate,BIGINT,YES,,,
 3,Id,BIGINT,YES,,,
 4,Level,BIGINT,YES,,,

@@ -344,12 +344,12 @@ def build_sim_context(
     sweep_orderid       = _col_int64(sweep_orders, 'orderid')
     sweep_eff_ts        = _col_int64(sweep_orders, 'effective_timestamp')
     sweep_side          = _col_int8 (sweep_orders, 'side')
-    # `rest_on_lit_quantity` = leavesquantity at the end of the order's
-    # initial matching pass. This is the chunk that real-life parked on the
-    # lit book as a passive limit order, waiting to be hit by future contras.
-    # The simulator's question for this quantity: "would dark resting have
-    # filled it instead?". Set by extract_last_execution_times in process.py.
-    sweep_qty           = _col_int64(sweep_orders, 'rest_on_lit_quantity')
+    # `leavesquantity` here comes from the orders_after row, which is the
+    # post-matching-engine snapshot (last row at the order's NEW_ORDER
+    # timestamp). This IS the chunk that survived dark/initial matching and
+    # was routed to lit — the dark counterfactual asks: "would dark resting
+    # have absorbed it instead?". Set by get_orders_state in process.py.
+    sweep_qty           = _col_int64(sweep_orders, 'leavesquantity')
     # Use first_execution_time (NEW_ORDER timestamp from last_execution.parquet),
     # not effective_timestamp — for fully-filled sweeps the latter ≈ the last
     # trade time, which collapses the eligibility window to zero width.

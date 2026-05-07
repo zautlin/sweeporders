@@ -530,17 +530,39 @@ def _compute_rest_on_lit_qty(order_df):
     return int(same_ts_sorted[col.common.leavesquantity].iloc[-1])
 
 
+def _compute_dark_at_submission_qty(order_df, trades_df):
+    """Quantity of a sweep that real-life filled in dark at submission.
+
+    Sums real trades with dealsource=47 (Centre Point) whose tradetime equals
+    the order's NEW_ORDER timestamp. This is the chunk that already matched
+    in dark on arrival — it is NOT a counterfactual candidate. The dark
+    counterfactual asks about the LIT-executed remainder.
+    """
+    new_order_events = order_df[order_df[col.common.changereason] == 6]
+    if len(new_order_events) == 0:
+        return 0
+    new_ts = int(new_order_events[col.common.timestamp].iloc[0])
+    mask = (trades_df[col.trades.dealsource] == 47) & \
+           (trades_df[col.common.tradetime] == new_ts)
+    return int(trades_df.loc[mask, col.common.quantity].sum())
+
+
 def _extract_execution_time_dict(order_id, order_df, trades_df):
-    """Extract first/last execution times and rest-on-lit qty for one order."""
+    """Extract the eligibility window for one survivor.
+
+    Window construction:
+      first_execution_time = the order's NEW_ORDER timestamp (arrival)
+      last_execution_time  = the timestamp of the last real trade for the order
+
+    The window-bound qty (= what survived the matching engine = lit-bound)
+    lives on `orders_after.leavesquantity`, NOT here. This file is just timing.
+    """
     first_time = order_df[col.common.timestamp].min()
     last_time = trades_df[col.common.tradetime].max()
-    rest_on_lit = _compute_rest_on_lit_qty(order_df)
-
     return {
         'orderid': order_id,
         'first_execution_time': first_time,
         'last_execution_time': last_time,
-        'rest_on_lit_quantity': rest_on_lit,
     }
 
 
@@ -552,6 +574,93 @@ def _save_execution_times(partition_key, execution_times_df, processed_dir):
     partition_dir = Path(processed_dir) / date / security_code
     partition_dir.mkdir(parents=True, exist_ok=True)
     safe_write_csv(execution_times_df, partition_dir / "last_execution_time.parquet", create_dirs=False)
+
+
+CONTRA_SWEEP_TYPES = {2048, 4098}   # CP order types that aggress lit (Sweep, CP Block Sweep)
+
+
+def _build_contra_rest_on_lit(orders_df):
+    """Compute rest_on_lit_quantity for every CONTRA whose ordertype is a
+    sweep variant (2048, 4098) — these orders aggressed lit in real life,
+    so their dark-available inventory is only the resting portion.
+
+    Non-sweep CP types (4096, 64, 256) just rest in dark, so their full
+    submit_qty is dark inventory; we don't compute rest_on_lit for them.
+
+    Returns DataFrame[orderid, rest_on_lit_quantity] keyed on contra orderid.
+    """
+    eligible = orders_df[
+        orders_df[col.common.exchangeordertype].isin(CONTRA_SWEEP_TYPES)
+    ]
+    if len(eligible) == 0:
+        return pd.DataFrame(columns=['orderid', 'rest_on_lit_quantity'])
+
+    rows = []
+    for orderid, group in eligible.groupby(col.common.orderid, sort=False):
+        rows.append({
+            'orderid': int(orderid),
+            'rest_on_lit_quantity': int(_compute_rest_on_lit_qty(group)),
+        })
+    return pd.DataFrame(rows)
+
+
+def _build_contra_non_survivor_dark(trades_df, survivor_orderids):
+    """Compute per-contra real-life dark consumption by NON-survivors.
+
+    A "non-survivor" is any aggressor that didn't qualify as a study survivor.
+    Their real-life dark fills already consumed contra inventory that the sim
+    would otherwise treat as still available — phantom liquidity.
+
+    Method: self-join trades on matchgroupid to pair each passive DS=47 leg
+    with its aggressor leg. Filter to aggressors NOT in survivor_orderids.
+    Sum quantity per passive orderid.
+
+    Returns DataFrame[orderid, non_survivor_dark_quantity] keyed on contra orderid.
+    """
+    empty = pd.DataFrame(columns=['orderid', 'non_survivor_dark_quantity'])
+    if trades_df is None or len(trades_df) == 0:
+        return empty
+
+    survivor_set = set(int(x) for x in survivor_orderids)
+
+    ds_col   = col.trades.dealsource
+    pa_col   = 'passiveaggressive'
+    mgi_col  = 'matchgroupid'
+    qty_col  = col.common.quantity
+    oid_col  = col.common.orderid
+
+    needed = {ds_col, pa_col, mgi_col, qty_col, oid_col}
+    if not needed.issubset(trades_df.columns):
+        return empty
+
+    # Passive side of DS=47 trades (contra getting consumed in dark)
+    passive = trades_df[
+        (trades_df[ds_col] == 47) & (trades_df[pa_col] == 0)
+    ][[mgi_col, oid_col, qty_col]].rename(columns={oid_col: 'contra_orderid'})
+
+    # Aggressor side (one row per match, regardless of dealsource — but we
+    # only join the passive=47 rows so the aggressor here is necessarily the
+    # dark-aggressor).
+    aggressor = trades_df[trades_df[pa_col] == 1][[mgi_col, oid_col]].rename(
+        columns={oid_col: 'aggressor_orderid'}
+    )
+
+    paired = passive.merge(aggressor, on=mgi_col, how='inner')
+    paired['_aggressor_is_survivor'] = paired['aggressor_orderid'].astype('int64').isin(survivor_set)
+    non_surv = paired[~paired['_aggressor_is_survivor']]
+    if len(non_surv) == 0:
+        return empty
+
+    out = (
+        non_surv.groupby('contra_orderid', sort=False)[qty_col]
+                .sum()
+                .rename('non_survivor_dark_quantity')
+                .reset_index()
+                .rename(columns={'contra_orderid': 'orderid'})
+    )
+    out['orderid'] = out['orderid'].astype('int64')
+    out['non_survivor_dark_quantity'] = out['non_survivor_dark_quantity'].astype('int64')
+    return out
 
 
 def extract_orders(input_file, processed_dir, order_types, chunk_size,
@@ -954,8 +1063,16 @@ class ReferenceDataLoader:
         return reference_data
 
 
-def get_orders_state(orders_by_partition, processed_dir):
-    """Extract before/after/final order states per partition."""
+def get_orders_state(orders_by_partition, processed_dir, trades_by_partition=None):
+    """Extract before/after order states per partition.
+
+    `before` = original NEW_ORDER snapshot (leaves = quantity).
+    `after`  = synthesized post-dark, pre-lit snapshot. Same columns as `before`,
+               but `leavesquantity` is overridden to (quantity − dark_at_submit),
+               where dark_at_submit = sum of DS=47 trades at the order's
+               NEW_ORDER timestamp. That `leavesquantity` IS the chunk about
+               to head for lit — what the dark counterfactual asks about.
+    """
     print(f"\n[5/11] Extracting order states...")
     
     order_states_by_partition = {}
@@ -991,14 +1108,39 @@ def get_orders_state(orders_by_partition, processed_dir):
                 subset=[col.common.orderid], keep='first'
             ).reset_index(drop=True)
 
-        # AFTER state: the last event per order (captures final cancellation/fill)
-        orders_after = orders_sorted.drop_duplicates(
-            subset=[col.common.orderid], keep='last'
-        ).reset_index(drop=True)
+        # AFTER state: synthesize "post-dark, pre-lit" from `orders_before`:
+        # same row, but `leavesquantity` overridden to (quantity − dark_at_submit).
+        # dark_at_submit = sum(DS=47 trades at this order's NEW_ORDER timestamp).
+        orders_after = orders_before.copy()
+        trades_df = (trades_by_partition or {}).get(partition_key)
+        if trades_df is not None and len(trades_df) > 0 and 'changereason' in orders_sorted.columns:
+            ds_col   = col.trades.dealsource
+            tt_col   = col.common.tradetime
+            qty_col  = col.common.quantity
+            tsk_col  = col.common.timestamp
+            oid_col  = col.common.orderid
+            new_ts_per_oid = orders_before[[oid_col, tsk_col]].rename(columns={tsk_col: '_new_ts'})
+            ds47 = trades_df[trades_df[ds_col] == 47][[oid_col, tt_col, qty_col]]
+            ds47 = ds47.merge(new_ts_per_oid, on=oid_col, how='inner')
+            ds47_at_new = ds47[ds47[tt_col] == ds47['_new_ts']]
+            dark_per_oid = ds47_at_new.groupby(oid_col)[qty_col].sum().rename('_dark_qty').reset_index()
+            orders_after = orders_after.merge(dark_per_oid, on=oid_col, how='left')
+            orders_after['_dark_qty'] = orders_after['_dark_qty'].fillna(0).astype('int64')
+            orders_after[col.common.leavesquantity] = (
+                (orders_after[qty_col] - orders_after['_dark_qty']).clip(lower=0).astype('int64')
+            )
+            orders_after = orders_after.drop(columns=['_dark_qty'])
+        # else: no trades → no dark fills → leavesquantity stays = quantity (already from orders_before)
         
+        # Contra-side rest_on_lit cap: for sweep-type contras (2048, 4098),
+        # compute the resting portion they made available after their own
+        # initial NEW_ORDER pass. Non-sweep contras keep their full submit qty.
+        contra_rest_df = _build_contra_rest_on_lit(orders_sorted)
+
         order_states_by_partition[partition_key] = {
             'before': orders_before,
-            'after': orders_after
+            'after': orders_after,
+            'contra_rest_on_lit': contra_rest_df,
         }
 
         if _should_save():
@@ -1006,23 +1148,24 @@ def get_orders_state(orders_by_partition, processed_dir):
             partition_dir.mkdir(parents=True, exist_ok=True)
             safe_write_csv(orders_before, partition_dir / "orders_before_matching.parquet", create_dirs=False)
             safe_write_csv(orders_after, partition_dir / "orders_after_matching.parquet", create_dirs=False)
+            safe_write_csv(contra_rest_df, partition_dir / "contra_rest_on_lit.parquet", create_dirs=False)
 
-        print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after")
+        print(f"  {partition_key}: {len(orders_before):,} before, {len(orders_after):,} after, "
+              f"{len(contra_rest_df):,} sweep-type contras with rest_on_lit")
     
     return order_states_by_partition
 
 
 def extract_last_execution_times(orders_by_partition, trades_by_partition, processed_dir):
-    """Extract first/last execution times + rest-on-lit qty for SWEEP ORDERS.
+    """Extract the matching window per qualifying sweep — orderid + (first, last)
+    execution time only. The lit-bound quantity lives on orders_after.
 
-    Only sweeps with rest_on_lit_quantity > 0 reach the simulator —
-    a sweep that was fully filled at submission has no resting portion to
-    counterfactually re-route to dark.
+    Survivor gate: fully-filled (terminal changereason==3, leaves==0) AND has a
+    NEW_ORDER event AND has at least one real trade.
     """
     print(f"\n[6/11] Extracting execution times for qualifying sweep orders (type {SWEEP_ORDER_TYPE}) with three-level filtering...")
 
-    empty_cols = ['orderid', 'first_execution_time', 'last_execution_time',
-                  'rest_on_lit_quantity']
+    empty_cols = ['orderid', 'first_execution_time', 'last_execution_time']
     execution_times_by_partition = {}
 
     for partition_key, orders_df in orders_by_partition.items():
@@ -1042,24 +1185,48 @@ def extract_last_execution_times(orders_by_partition, trades_by_partition, proce
         orders_with_valid_trades = _filter_orders_with_valid_trades(qualifying_order_ids, trades_df)
 
         execution_times = []
-        n_skipped_no_rest = 0
         for order_id, order_trades in orders_with_valid_trades.items():
             order_data = orders_df[orders_df[col.common.orderid] == order_id]
-            exec_time = _extract_execution_time_dict(order_id, order_data, order_trades)
-            if exec_time['rest_on_lit_quantity'] <= 0:
-                n_skipped_no_rest += 1
-                continue                                       # nothing rested → nothing to re-route
-            execution_times.append(exec_time)
+            execution_times.append(_extract_execution_time_dict(order_id, order_data, order_trades))
 
         execution_times_df = pd.DataFrame(execution_times) if execution_times else pd.DataFrame(columns=empty_cols)
         execution_times_by_partition[partition_key] = execution_times_df
         _save_execution_times(partition_key, execution_times_df, processed_dir)
-        msg = f"  {partition_key}: {len(execution_times_df):,} qualifying sweep orders"
-        if n_skipped_no_rest:
-            msg += f" ({n_skipped_no_rest:,} skipped — no resting portion)"
-        print(msg)
+        print(f"  {partition_key}: {len(execution_times_df):,} qualifying sweep orders")
 
     return execution_times_by_partition
+
+
+def build_contra_non_survivor_dark_files(execution_times_by_partition, trades_by_partition, processed_dir):
+    """Per partition: compute non-survivor real-life dark consumption against
+    each contra. Persist to contra_non_survivor_dark.parquet.
+
+    Phantom-liquidity adjustment: dark fills against a contra by aggressors
+    that aren't in our study (didn't qualify as survivors) consumed inventory
+    in real life that the sim would otherwise treat as still available. We
+    deduct that consumption per contra at sim startup.
+    """
+    print(f"\n[6.5/11] Computing per-contra non-survivor dark consumption...")
+    out_by_partition = {}
+    for partition_key, exec_df in execution_times_by_partition.items():
+        survivor_orderids = (
+            exec_df['orderid'].astype('int64').tolist()
+            if exec_df is not None and len(exec_df) > 0 else []
+        )
+        trades_df = (trades_by_partition or {}).get(partition_key)
+        adj_df = _build_contra_non_survivor_dark(trades_df, survivor_orderids)
+        out_by_partition[partition_key] = adj_df
+
+        if _should_save():
+            date, security_code = partition_key.split('/')
+            partition_dir = Path(processed_dir) / date / security_code
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            safe_write_csv(adj_df, partition_dir / "contra_non_survivor_dark.parquet", create_dirs=False)
+
+        total_phantom = int(adj_df['non_survivor_dark_quantity'].sum()) if len(adj_df) > 0 else 0
+        print(f"  {partition_key}: {len(adj_df):,} contras with non-survivor dark consumption, "
+              f"{total_phantom:,} phantom shares")
+    return out_by_partition
 
 
 def load_partition_data(partition_key, processed_dir):
@@ -1089,8 +1256,21 @@ def load_partition_data(partition_key, processed_dir):
     else:
         partition_data['last_execution'] = pd.DataFrame(columns=[
             'orderid', 'first_execution_time', 'last_execution_time',
-            'rest_on_lit_quantity',
         ])
+
+    # Load contra_rest_on_lit cap (sweep-type contras only)
+    contra_rest_file = partition_dir / "contra_rest_on_lit.parquet"
+    if contra_rest_file.exists():
+        partition_data['contra_rest_on_lit'] = safe_read_csv(contra_rest_file)
+    else:
+        partition_data['contra_rest_on_lit'] = pd.DataFrame(columns=['orderid', 'rest_on_lit_quantity'])
+
+    # Load non-survivor dark consumption adjustment (phantom-liquidity fix)
+    contra_nsd_file = partition_dir / "contra_non_survivor_dark.parquet"
+    if contra_nsd_file.exists():
+        partition_data['contra_non_survivor_dark'] = safe_read_csv(contra_nsd_file)
+    else:
+        partition_data['contra_non_survivor_dark'] = pd.DataFrame(columns=['orderid', 'non_survivor_dark_quantity'])
 
     # ===== REFERENCE DATA =====
 
@@ -1227,17 +1407,29 @@ def load_and_prepare_orders(partition_data):
 
 
 def _prepare_sweep_orders(partition_data):
-    """Prepare sweep orders (type 2048) from ONLY qualifying orders in last_execution."""
+    """Prepare sweep orders (type 2048) from ONLY qualifying orders in last_execution.
+
+    Survivors with `leavesquantity == 0` after the merge with `orders_after`
+    are dropped: they filled entirely in dark at submission and have no
+    lit-bound chunk to feed to the dark counterfactual.
+    """
     orders_after = partition_data['orders_after']
     last_execution = partition_data['last_execution']
     sweep_orders = last_execution.copy()
     sweep_orders_after = orders_after[orders_after[ORDER_TYPE_COLUMN] == SWEEP_ORDER_TYPE].copy()
     sweep_orders = sweep_orders.merge(sweep_orders_after, on='orderid', how='inner')
+
+    # Drop survivors with no lit-bound chunk (filled 100% in dark at submission).
+    n_pre = len(sweep_orders)
+    sweep_orders = sweep_orders[sweep_orders[col.common.leavesquantity] > 0].reset_index(drop=True)
+    n_dropped = n_pre - len(sweep_orders)
+    if n_dropped:
+        print(f"  dropped {n_dropped:,} zero-leaves survivors (filled entirely in dark at submission)")
     
     required_columns = [
         col.common.orderid, col.common.timestamp, col.common.sequence,
-        col.common.side, col.orders.leaves_quantity, 'matched_quantity',
-        'rest_on_lit_quantity',
+        col.common.side, col.orders.leaves_quantity,   # ← simulator's sweep_qty source
+        'matched_quantity',
         col.common.price, 'first_execution_time', 'last_execution_time',
         col.common.orderbookid, 'minimumquantity', 'singlefillminimumquantity',
         'crossingkey', col.orders.participant_id, 'midtick',
@@ -1317,6 +1509,7 @@ def _prepare_all_orders_for_matching(partition_data):
     required_columns = [
         col.common.orderid, col.common.timestamp, col.common.sequence,
         col.common.side, col.common.quantity, col.common.orderbookid,
+        col.common.exchangeordertype,                # needed for APB branch + contra cap
         col.orders.bid, col.orders.offer,
         col.orders.national_bid, col.orders.national_offer,
         'minimumquantity', 'singlefillminimumquantity', 'crossingkey',
@@ -1354,6 +1547,56 @@ def _prepare_all_orders_for_matching(partition_data):
     all_orders['timevalidity'] = all_orders['timevalidity'].fillna(1536).astype('int64')
     all_orders['ordertype'] = all_orders['ordertype'].fillna(ORDERTYPE_LIMIT).astype('int64')
     all_orders['price'] = all_orders['price'].fillna(0).astype('int64')
+
+    # Sweep-type contras (2048, 4098) aggressed lit in real life, so their
+    # dark-available inventory is capped at their own rest_on_lit_quantity.
+    # Non-sweep contras (4096, 64, 256) just rest in dark — keep submit qty.
+    contra_rest_df = partition_data.get('contra_rest_on_lit')
+    if contra_rest_df is not None and len(contra_rest_df) > 0:
+        rest_lookup = dict(zip(
+            contra_rest_df['orderid'].astype('int64').to_numpy(),
+            contra_rest_df['rest_on_lit_quantity'].astype('int64').to_numpy(),
+        ))
+        is_sweep_type = all_orders[ORDER_TYPE_COLUMN].isin(CONTRA_SWEEP_TYPES)
+        capped = all_orders.loc[is_sweep_type, col.common.orderid].map(rest_lookup)
+        # Default to 0 if any sweep-type contra is missing from the cap table
+        # (shouldn't happen — _build_contra_rest_on_lit covers all of them).
+        all_orders.loc[is_sweep_type, col.common.quantity] = (
+            capped.fillna(0).astype('int64').values
+        )
+        n_before = len(all_orders)
+        # Drop sweep-type contras with zero passive inventory.
+        all_orders = all_orders[
+            ~(is_sweep_type & (all_orders[col.common.quantity] <= 0))
+        ].reset_index(drop=True)
+        n_dropped = n_before - len(all_orders)
+        if n_dropped:
+            print(f"  contra cap: dropped {n_dropped:,} sweep-type contras with rest_on_lit==0")
+
+    # Phantom-liquidity fix: subtract real-life dark consumption by NON-survivors
+    # from each contra's available inventory. This is the qty already eaten in
+    # real life by sweeps that didn't qualify for the study — sim shouldn't
+    # be able to "claim" it again.
+    contra_nsd_df = partition_data.get('contra_non_survivor_dark')
+    if contra_nsd_df is not None and len(contra_nsd_df) > 0:
+        nsd_lookup = dict(zip(
+            contra_nsd_df['orderid'].astype('int64').to_numpy(),
+            contra_nsd_df['non_survivor_dark_quantity'].astype('int64').to_numpy(),
+        ))
+        adj = all_orders[col.common.orderid].map(nsd_lookup).fillna(0).astype('int64')
+        n_before_nsd = len(all_orders)
+        qty_before = int(all_orders[col.common.quantity].sum())
+        all_orders[col.common.quantity] = (
+            (all_orders[col.common.quantity] - adj).clip(lower=0).astype('int64')
+        )
+        all_orders = all_orders[all_orders[col.common.quantity] > 0].reset_index(drop=True)
+        qty_after = int(all_orders[col.common.quantity].sum())
+        n_dropped_nsd = n_before_nsd - len(all_orders)
+        deducted = qty_before - qty_after
+        if n_dropped_nsd or deducted:
+            print(f"  non-survivor dark adj: deducted {deducted:,} phantom shares, "
+                  f"dropped {n_dropped_nsd:,} contras to zero inventory")
+
     if cfg.USE_POLARS_TRANSFORMS:
         import polars as pl
         ao_pl = pl.from_pandas(all_orders)
@@ -1389,7 +1632,16 @@ def simulate_partition(partition_key, partition_data, reference_loader=None):
         if len(all_orders) == 0:
             print(f"  {partition_key}: No matching orders, skipping")
             return None
-        
+
+        # Sim input diagnostic — verify post-matching leaves + cap are wired.
+        sweep_qty_total = int(sweep_orders[col.orders.leaves_quantity].sum())
+        contra_qty_total = int(all_orders[col.common.quantity].sum())
+        ot_dist = dict(all_orders[ORDER_TYPE_COLUMN].value_counts().items())
+        print(f"  Sim inputs: {len(sweep_orders):,} sweeps × {len(all_orders):,} contras")
+        print(f"    sweep qty (sum post-matching leaves):  {sweep_qty_total:,}")
+        print(f"    contra qty (sum, post-cap):            {contra_qty_total:,}")
+        print(f"    contra by exchangeordertype:           {ot_dist}")
+
         nbbo_data = partition_data.get('nbbo')
         if cfg.NBBO_SOURCE == 'EXTERNAL':
             if nbbo_data is None or len(nbbo_data) == 0:
@@ -1674,8 +1926,13 @@ def cli_multi():
     )
 
     process_reference_data(config.RAW_FOLDERS, config.PROCESSED_DIR, orders_by_partition)
-    get_orders_state(orders_by_partition, config.PROCESSED_DIR)
-    extract_last_execution_times(orders_by_partition, trades_by_partition, config.PROCESSED_DIR)
+    get_orders_state(orders_by_partition, config.PROCESSED_DIR, trades_by_partition)
+    execution_times_by_partition = extract_last_execution_times(
+        orders_by_partition, trades_by_partition, config.PROCESSED_DIR,
+    )
+    build_contra_non_survivor_dark_files(
+        execution_times_by_partition, trades_by_partition, config.PROCESSED_DIR,
+    )
 
     partition_keys = list(orders_by_partition.keys())
     workers = args.workers or config.MAX_PARALLEL_WORKERS

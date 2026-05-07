@@ -2017,109 +2017,101 @@ du = _sys_a.modules[__name__]
 ss = _sys_a.modules[__name__]
 tm = _sys_a.modules[__name__]
 
+
+def _discover_partitions(processed_dir, dates_filter=None, orderbookids_filter=None):
+    """List existing partitions on disk under data/processed/{date}/{orderbookid}/.
+
+    A partition is identified by the presence of `orders_before_matching.parquet`
+    (the canonical Stage 1 output that downstream stages need). Date/orderbookid
+    filters are applied as the directory tree is walked.
+
+    Returns sorted list of partition keys "YYYY-MM-DD/orderbookid".
+    """
+    pdir = Path(processed_dir)
+    if not pdir.is_dir():
+        return []
+
+    partition_keys = []
+    for date_dir in sorted(d for d in pdir.iterdir() if d.is_dir()):
+        date_str = date_dir.name
+        if dates_filter is not None and date_str not in dates_filter:
+            continue
+        for ob_dir in sorted(d for d in date_dir.iterdir() if d.is_dir()):
+            ob_str = ob_dir.name
+            try:
+                ob_int = int(ob_str)
+            except ValueError:
+                continue
+            if orderbookids_filter is not None and ob_int not in orderbookids_filter:
+                continue
+            if (ob_dir / "orders_before_matching.parquet").exists():
+                partition_keys.append(f"{date_str}/{ob_str}")
+    return partition_keys
+
+
 def cli_multi_agg():
     """Bulk-ingest aggregate CLI: stages 3+4 over partitions in data/processed/.
 
-    Re-runs Stage 1 (extract from raw) to rebuild the in-memory `data` dict that
-    Stage 4 needs, then runs Stage 3 (metrics) + Stage 4 (comparison).
-    Stage 2 simulation is skipped here — process.py is responsible for that.
-    --dates / --tickers / --orderbookids are all optional post-read filters.
+    Reads the parquet outputs that process.py produced. Does NOT re-extract
+    from raw — that would overwrite process.py's outputs with stale duplicates.
+    --dates / --orderbookids are optional filters applied to discovered partitions.
     """
     parser = _argparse_a.ArgumentParser(
         prog="aggregate.py",
-        description="Stage 3+4: metrics + real-vs-sim comparison."
+        description="Stage 3+4: metrics + real-vs-sim comparison. Reads parquets produced by process.py; no raw re-extraction."
     )
     parser.add_argument("--dates", default=None,
-                        help="Optional comma-separated YYYYMMDD trade-date filter (post-read).")
-    parser.add_argument("--tickers", default=None,
-                        help="Optional comma-separated ticker filter (matches filename substring).")
+                        help="Optional comma-separated YYYYMMDD trade-date filter.")
     parser.add_argument("--orderbookids", default=None,
-                        help="Optional comma-separated orderbookid filter (parquet predicate-pushdown).")
+                        help="Optional comma-separated orderbookid filter.")
+    parser.add_argument("--tickers", default=None,
+                        help="Accepted for back-compat; ignored (partitions are discovered by orderbookid in data/processed/).")
     parser.add_argument("--workers", type=int, default=None,
                         help="Worker pool size (default: auto).")
     args = parser.parse_args()
 
     dates_filter = None
     if args.dates:
-        dates_filter = []
+        dates_filter = set()
         for d in (x.strip() for x in args.dates.split(",") if x.strip()):
-            dates_filter.append(f"{d[0:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d)
+            dates_filter.add(f"{d[0:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d)
 
     orderbookids_filter = None
     if args.orderbookids:
         orderbookids_filter = {int(x) for x in args.orderbookids.split(",") if x.strip()}
 
-    tickers_hint = None
     if args.tickers:
-        tickers_hint = [t.strip().lower() for t in args.tickers.split(",") if t.strip()]
-
-    orders_files = _glob_raw_inputs(config.RAW_FOLDERS['orders'])
-    trades_files = _glob_raw_inputs(config.RAW_FOLDERS['trades'])
-
-    if tickers_hint:
-        def _match(p): return any(t in p.name.lower() for t in tickers_hint)
-        orders_files = [f for f in orders_files if _match(f)]
-        trades_files = [f for f in trades_files if _match(f)]
-
-    if not orders_files:
-        print(f"[aggregate] No orders files found in {config.RAW_FOLDERS['orders']}.", file=_sys_a.stderr)
-        _sys_a.exit(2)
-
-    print(f"[aggregate] Discovered {len(orders_files)} orders + {len(trades_files)} trades file(s).")
-    if dates_filter:        print(f"[aggregate] dates filter (post-read): {dates_filter}")
-    if orderbookids_filter: print(f"[aggregate] orderbookids filter (push-down): {sorted(orderbookids_filter)}")
-    if tickers_hint:        print(f"[aggregate] tickers hint (filename substring): {tickers_hint}")
+        print(f"[aggregate] --tickers ignored; specify --orderbookids to filter (process.py's outputs are partitioned by orderbookid, not ticker).")
 
     setup_directories()
 
-    print("\n" + "=" * 80)
-    print("STAGE 1: DATA EXTRACTION & PREPARATION (rebuild in-memory data for Stage 4)")
-    print("=" * 80)
-
-    orders_by_partition = extract_orders(
-        orders_files, config.PROCESSED_DIR,
-        config.CENTRE_POINT_ORDER_TYPES, config.CHUNK_SIZE,
-        orderbookids_filter=orderbookids_filter,
+    partition_keys = _discover_partitions(
+        config.PROCESSED_DIR,
         dates_filter=dates_filter,
+        orderbookids_filter=orderbookids_filter,
     )
-    if not orders_by_partition:
-        print("[aggregate] No Centre Point orders found. Exiting.")
+
+    if not partition_keys:
+        print(f"[aggregate] No partitions found in {config.PROCESSED_DIR}/. Run process.py first.")
         return
 
-    trades_by_partition = extract_trades(
-        trades_files, orders_by_partition, config.PROCESSED_DIR, config.CHUNK_SIZE,
-    )
-    reference_results = process_reference_data(config.RAW_FOLDERS, config.PROCESSED_DIR, orders_by_partition)
-    nbbo_by_partition = reference_results.get('nbbo', {})
-    order_states_by_partition = get_orders_state(orders_by_partition, config.PROCESSED_DIR)
-    last_execution_by_partition = extract_last_execution_times(
-        orders_by_partition, trades_by_partition, config.PROCESSED_DIR
-    )
-
-    data = {
-        'orders': orders_by_partition,
-        'trades': trades_by_partition,
-        'order_states': order_states_by_partition,
-        'last_execution': last_execution_by_partition,
-        'nbbo': nbbo_by_partition,
-        'reference': reference_results,
-        'partition_keys': list(orders_by_partition.keys()),
-    }
+    print(f"[aggregate] Discovered {len(partition_keys)} partition(s) in {config.PROCESSED_DIR}/.")
+    if dates_filter:        print(f"[aggregate] dates filter:        {sorted(dates_filter)}")
+    if orderbookids_filter: print(f"[aggregate] orderbookids filter: {sorted(orderbookids_filter)}")
 
     workers = args.workers or config.MAX_PARALLEL_WORKERS
 
     print("\n" + "=" * 80)
-    print(f"STAGE 3: CALCULATE METRICS — {len(data['partition_keys'])} partition(s), {workers} worker(s)")
+    print(f"STAGE 3: CALCULATE METRICS — {len(partition_keys)} partition(s), {workers} worker(s)")
     print("=" * 80)
     process_partitions_parallel_stage_3(
-        data['partition_keys'], config.PROCESSED_DIR, config.OUTPUTS_DIR, workers
+        partition_keys, config.PROCESSED_DIR, config.OUTPUTS_DIR, workers
     )
 
     print("\n" + "=" * 80)
     print("STAGE 4: METRICS COMPARISON (Step 10)")
     print("=" * 80)
     print("\n[10/11] Loading and comparing metrics...")
-    partition_keys = data['partition_keys']
     real_metrics = load_real_metrics(config.OUTPUTS_DIR, partition_keys)
     simulation_results = {}
     for pk in partition_keys:
@@ -2133,9 +2125,9 @@ def cli_multi_agg():
         trade_comparison = compare_real_vs_simulated_trades(real_metrics, simulation_results, config.OUTPUTS_DIR)
         generate_trade_comparison_reports(trade_comparison, config.OUTPUTS_DIR, include_accuracy_summary=False)
     else:
-        print("  ✗ Cannot compare: missing metrics files. Run stages 2-3 first.")
+        print("  ✗ Cannot compare: missing metrics files. Run process.py first.")
 
-    print(f"\n✓ Stage 3+4 complete for {len(data['partition_keys'])} partition(s)")
+    print(f"\n✓ Stage 3+4 complete for {len(partition_keys)} partition(s)")
 
 
 if __name__ == '__main__':
