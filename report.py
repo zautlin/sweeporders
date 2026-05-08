@@ -28,6 +28,24 @@ import polars as pl
 import config
 
 
+# ─── headline metrics for distribution stats ──────────────────────────────
+# These four metrics get full distribution (mean/median/p25/p75) in the
+# comparison rollups. All other metrics get mean-only. Picked because they
+# directly drive the routing-strategy question: did dark fill, did it cost
+# less, did it price-improve, did it fill faster.
+HEADLINE_METRICS = frozenset({
+    "fill_rate_pct",
+    "exec_cost_arrival_bps",
+    "price_improvement_bps",
+    "time_to_first_fill_sec",
+})
+
+# Canonical match_status values emitted by aggregate.py's comparison logic.
+# Anything else falls through to n_other_match in the rollup so unknown
+# statuses surface rather than vanish.
+KNOWN_MATCH_STATUSES = ("EXACT_MATCH", "CLOSE_MATCH", "PARTIAL_MATCH", "POOR_MATCH")
+
+
 # ─── metric columns ────────────────────────────────────────────────────────
 # Numeric columns in real_trade_metrics.csv that we want to aggregate.
 METRIC_COLUMNS = [
@@ -162,6 +180,144 @@ def _rollup(df, group_cols):
     if "qty_filled" in df.columns:
         agg_exprs.append(pl.col("qty_filled").sum().alias("total_qty_filled"))
     return df.group_by(group_cols).agg(agg_exprs).sort(group_cols)
+
+
+def _real_metric_columns(df):
+    """Real-side metric columns in a comparison frame: any column whose
+    `sim_<name>` mirror also exists. Robust to schema drift between
+    aggregate.py and the report.py METRIC_COLUMNS list."""
+    sim_mirrors = {c[4:] for c in df.columns if c.startswith("sim_")}
+    return [
+        c for c in df.columns
+        if c in sim_mirrors and df.schema[c].is_numeric()
+    ]
+
+
+def _comparison_rollup(df, group_cols):
+    """Aggregate trade_level_comparison rows by `group_cols` into one row per
+    group with real and sim metrics side-by-side.
+
+    For each real metric M (any column with a `sim_M` mirror):
+      real_avg_M
+      sim_avg_M_overlap          — mean over rows with sim_total_matches > 0
+      sim_avg_M_all_survivors    — mean with NULL sim_M coalesced to 0
+                                   (captures the 'dark would have failed'
+                                    signal for non-engagement rows)
+    For HEADLINE_METRICS additionally: median, p25, p75 (all three flavours).
+
+    Plus per-group counts:
+      n_total, n_with_sim, pct_with_sim_activity
+      n_exact_match, n_close_match, n_partial_match, n_poor_match
+      n_other_match — catch-all for unknown match_status values
+    """
+    real_metrics = _real_metric_columns(df)
+    has_sim_total = "sim_total_matches" in df.columns
+    has_match_status = "match_status" in df.columns
+
+    has_sim_engaged_expr = (
+        (pl.col("sim_total_matches").fill_null(0) > 0)
+        if has_sim_total
+        else pl.lit(False)
+    )
+
+    agg_exprs = [pl.len().alias("n_total")]
+    if has_sim_total:
+        agg_exprs.append(has_sim_engaged_expr.sum().alias("n_with_sim"))
+
+    if has_match_status:
+        for status in KNOWN_MATCH_STATUSES:
+            agg_exprs.append(
+                (pl.col("match_status") == status).sum()
+                .alias(f"n_{status.lower()}")
+            )
+        agg_exprs.append(
+            (~pl.col("match_status").is_in(list(KNOWN_MATCH_STATUSES))).sum()
+            .alias("n_other_match")
+        )
+
+    for m in real_metrics:
+        sim_m = f"sim_{m}"
+        agg_exprs.append(pl.col(m).mean().alias(f"real_avg_{m}"))
+        if has_sim_total:
+            sim_overlap = (
+                pl.when(has_sim_engaged_expr)
+                .then(pl.col(sim_m))
+                .otherwise(None)
+            )
+            agg_exprs.append(sim_overlap.mean().alias(f"sim_avg_{m}_overlap"))
+            agg_exprs.append(
+                pl.col(sim_m).fill_null(0).mean().alias(f"sim_avg_{m}_all_survivors")
+            )
+        if m in HEADLINE_METRICS:
+            agg_exprs.append(pl.col(m).median().alias(f"real_median_{m}"))
+            agg_exprs.append(pl.col(m).quantile(0.25).alias(f"real_p25_{m}"))
+            agg_exprs.append(pl.col(m).quantile(0.75).alias(f"real_p75_{m}"))
+            if has_sim_total:
+                sim_overlap = (
+                    pl.when(has_sim_engaged_expr)
+                    .then(pl.col(sim_m))
+                    .otherwise(None)
+                )
+                agg_exprs.append(sim_overlap.median().alias(f"sim_median_{m}_overlap"))
+                agg_exprs.append(sim_overlap.quantile(0.25).alias(f"sim_p25_{m}_overlap"))
+                agg_exprs.append(sim_overlap.quantile(0.75).alias(f"sim_p75_{m}_overlap"))
+                sim_all = pl.col(sim_m).fill_null(0)
+                agg_exprs.append(sim_all.median().alias(f"sim_median_{m}_all_survivors"))
+                agg_exprs.append(sim_all.quantile(0.25).alias(f"sim_p25_{m}_all_survivors"))
+                agg_exprs.append(sim_all.quantile(0.75).alias(f"sim_p75_{m}_all_survivors"))
+
+    rollup = df.group_by(group_cols).agg(agg_exprs).sort(group_cols)
+
+    if has_sim_total:
+        rollup = rollup.with_columns(
+            (100.0 * pl.col("n_with_sim") / pl.col("n_total")).alias("pct_with_sim_activity")
+        )
+
+    return rollup
+
+
+def _discover_comparison_partitions(dates_filter):
+    """Yield (date_dir, orderbookid_dir, comparison_path) for every
+    trade_level_comparison.parquet under data/outputs/."""
+    root = Path(config.OUTPUTS_DIR)
+    if not root.exists():
+        return
+    for date_dir in sorted(root.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        if dates_filter is not None and date_dir.name not in dates_filter:
+            compact = date_dir.name.replace("-", "")
+            if compact not in dates_filter:
+                continue
+        for obid_dir in sorted(date_dir.iterdir()):
+            if not obid_dir.is_dir():
+                continue
+            comp = obid_dir / "trade_level_comparison.parquet"
+            if comp.exists():
+                yield date_dir.name, obid_dir.name, comp
+
+
+def _read_comparison_partitions(dates_filter):
+    """Load all trade_level_comparison.parquet files into one polars frame
+    with date / orderbookid_partition / ticker columns added."""
+    ticker_map = _build_ticker_map()
+    frames = []
+    for date_dir, obid_dir, comp_path in _discover_comparison_partitions(dates_filter):
+        df = pl.read_parquet(comp_path)
+        try:
+            obid_int = int(obid_dir)
+        except ValueError:
+            obid_int = None
+        ticker = ticker_map.get(obid_int, "unknown") if obid_int is not None else "unknown"
+        df = df.with_columns(
+            pl.lit(date_dir).alias("date"),
+            pl.lit(obid_dir).alias("orderbookid_partition"),
+            pl.lit(ticker).alias("ticker"),
+        )
+        frames.append(df)
+    if not frames:
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def _write_per_security(df, reports_dir):
