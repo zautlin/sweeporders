@@ -285,7 +285,7 @@ Handles all data extraction, partitioning, and preprocessing operations:
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from config import SWEEP_ORDER_TYPE
+from config import SWEEP_ORDER_TYPE, DARK_AT_SUBMISSION_DEALSOURCES
 import config as _cfg
 from config import col
 # (consolidated) from utils.normalization import normalize_column_names
@@ -602,6 +602,50 @@ def _build_contra_rest_on_lit(orders_df):
             'rest_on_lit_quantity': int(_compute_rest_on_lit_qty(group)),
         })
     return pd.DataFrame(rows)
+
+
+def _synthesize_orders_after(orders_before, trades_df):
+    """Synthesize `orders_after`: same rows as `orders_before` but with
+    `leavesquantity` overridden to (quantity − dark_at_submission_qty).
+
+    `dark_at_submission_qty` for an order is the sum of trade quantities
+    whose dealsource is in DARK_AT_SUBMISSION_DEALSOURCES AND whose
+    tradetime equals the order's NEW_ORDER timestamp. These represent the
+    portion that already filled in dark on arrival — the simulator's
+    counterfactual question is about the LIT-bound remainder only.
+
+    If `trades_df` is empty/None, returns a copy of `orders_before` with
+    leavesquantity == quantity (no dark fills to deduct).
+    """
+    orders_after = orders_before.copy()
+    if trades_df is None or len(trades_df) == 0:
+        return orders_after
+
+    ds_col  = col.trades.dealsource
+    tt_col  = col.common.tradetime
+    qty_col = col.common.quantity
+    ts_col  = col.common.timestamp
+    oid_col = col.common.orderid
+
+    new_ts_per_oid = orders_before[[oid_col, ts_col]].rename(columns={ts_col: '_new_ts'})
+    dark = trades_df[
+        trades_df[ds_col].isin(DARK_AT_SUBMISSION_DEALSOURCES)
+    ][[oid_col, tt_col, qty_col]]
+    dark = dark.merge(new_ts_per_oid, on=oid_col, how='inner')
+    dark_at_new = dark[dark[tt_col] == dark['_new_ts']]
+    dark_per_oid = (
+        dark_at_new.groupby(oid_col)[qty_col]
+        .sum()
+        .rename('_dark_qty')
+        .reset_index()
+    )
+    orders_after = orders_after.merge(dark_per_oid, on=oid_col, how='left')
+    orders_after['_dark_qty'] = orders_after['_dark_qty'].fillna(0).astype('int64')
+    orders_after[col.common.leavesquantity] = (
+        (orders_after[qty_col] - orders_after['_dark_qty']).clip(lower=0).astype('int64')
+    )
+    orders_after = orders_after.drop(columns=['_dark_qty'])
+    return orders_after
 
 
 def _build_contra_non_survivor_dark(trades_df, survivor_orderids):
@@ -1108,29 +1152,10 @@ def get_orders_state(orders_by_partition, processed_dir, trades_by_partition=Non
                 subset=[col.common.orderid], keep='first'
             ).reset_index(drop=True)
 
-        # AFTER state: synthesize "post-dark, pre-lit" from `orders_before`:
-        # same row, but `leavesquantity` overridden to (quantity − dark_at_submit).
-        # dark_at_submit = sum(DS=47 trades at this order's NEW_ORDER timestamp).
-        orders_after = orders_before.copy()
+        # AFTER state: synthesize "post-dark, pre-lit" — see
+        # `_synthesize_orders_after` for semantics.
         trades_df = (trades_by_partition or {}).get(partition_key)
-        if trades_df is not None and len(trades_df) > 0 and 'changereason' in orders_sorted.columns:
-            ds_col   = col.trades.dealsource
-            tt_col   = col.common.tradetime
-            qty_col  = col.common.quantity
-            tsk_col  = col.common.timestamp
-            oid_col  = col.common.orderid
-            new_ts_per_oid = orders_before[[oid_col, tsk_col]].rename(columns={tsk_col: '_new_ts'})
-            ds47 = trades_df[trades_df[ds_col] == 47][[oid_col, tt_col, qty_col]]
-            ds47 = ds47.merge(new_ts_per_oid, on=oid_col, how='inner')
-            ds47_at_new = ds47[ds47[tt_col] == ds47['_new_ts']]
-            dark_per_oid = ds47_at_new.groupby(oid_col)[qty_col].sum().rename('_dark_qty').reset_index()
-            orders_after = orders_after.merge(dark_per_oid, on=oid_col, how='left')
-            orders_after['_dark_qty'] = orders_after['_dark_qty'].fillna(0).astype('int64')
-            orders_after[col.common.leavesquantity] = (
-                (orders_after[qty_col] - orders_after['_dark_qty']).clip(lower=0).astype('int64')
-            )
-            orders_after = orders_after.drop(columns=['_dark_qty'])
-        # else: no trades → no dark fills → leavesquantity stays = quantity (already from orders_before)
+        orders_after = _synthesize_orders_after(orders_before, trades_df)
         
         # Contra-side rest_on_lit cap: for sweep-type contras (2048, 4098),
         # compute the resting portion they made available after their own
