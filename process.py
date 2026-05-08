@@ -1113,9 +1113,10 @@ def get_orders_state(orders_by_partition, processed_dir, trades_by_partition=Non
     `before` = original NEW_ORDER snapshot (leaves = quantity).
     `after`  = synthesized post-dark, pre-lit snapshot. Same columns as `before`,
                but `leavesquantity` is overridden to (quantity − dark_at_submit),
-               where dark_at_submit = sum of DS=47 trades at the order's
-               NEW_ORDER timestamp. That `leavesquantity` IS the chunk about
-               to head for lit — what the dark counterfactual asks about.
+               where dark_at_submit = sum of DARK_AT_SUBMISSION_DEALSOURCES
+               trades at the order's NEW_ORDER timestamp. That `leavesquantity`
+               IS the chunk about to head for lit — what the dark counterfactual
+               asks about.
     """
     print(f"\n[5/11] Extracting order states...")
     

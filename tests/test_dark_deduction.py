@@ -59,8 +59,7 @@ def test_dark_at_submission_deducts_apb_and_preference():
         _make_trade(orderid, 50,  ts + 1, 1),  # lit later — not at submission, not CP
     ])
 
-    # Call the function under test (does not exist yet — Task 3 will extract
-    # it from the inline block at process.py:1111-1133).
+    # Call the function under test.
     result = process._synthesize_orders_after(orders_before, trades)
 
     leaves = int(result.loc[result['orderid'] == orderid, 'leavesquantity'].iloc[0])
