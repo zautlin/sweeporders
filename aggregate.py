@@ -1945,20 +1945,33 @@ def _process_partition_calculate_metrics(partition_key, processed_dir, outputs_d
                 'reason': 'Missing orders or trades data'
             }
         
-        # Get sweep order IDs
-        sweep_orderids = du.get_sweep_orderids(orders_before)
-        
-        if len(sweep_orderids) == 0:
+        # Get sweep order IDs (all sweeps in orders_before)
+        all_sweep_orderids = du.get_sweep_orderids(orders_before)
+
+        if len(all_sweep_orderids) == 0:
             return {
                 'partition_key': partition_key,
                 'status': 'skipped',
                 'reason': 'No sweep orders'
             }
-        
-        # Filter trades to sweep orders only
+
+        # Restrict to SURVIVORS — the population the simulator ran on.
+        # Without this, real metrics are computed on ~19k orders while
+        # simulated metrics are on ~17k, breaking comparison symmetry.
+        survivors_df = fu.load_last_execution_times(partition_dir)
+        sweep_orderids = _filter_to_survivors(all_sweep_orderids, survivors_df)
+
+        if len(sweep_orderids) == 0:
+            return {
+                'partition_key': partition_key,
+                'status': 'skipped',
+                'reason': 'No survivor sweep orders'
+            }
+
+        # Filter trades to survivor sweep orders only
         sweep_trades = trades_df[trades_df[col.common.orderid].isin(sweep_orderids)].copy()
-        
-        # Step 8: Calculate REAL trade metrics
+
+        # Step 8: Calculate REAL trade metrics (survivor population)
         real_metrics_result = calculate_trade_metrics(
             trades_df=sweep_trades,
             orders_df=orders_before,
