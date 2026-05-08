@@ -53,6 +53,28 @@ def get_sweep_orderids(orders_df, order_type_col='exchangeordertype', sweep_type
     return sweep_orders['orderid'].unique() if len(sweep_orders) > 0 else []
 
 
+def _filter_to_survivors(sweep_orderids, survivors_df):
+    """Intersect `sweep_orderids` with the survivor orderids in
+    `survivors_df` (loaded from last_execution_time.parquet).
+
+    The simulator runs only on survivors (sweeps that passed the three-level
+    filter in process.py). Real metrics must run on the same population for
+    a symmetric comparison.
+
+    If `survivors_df` is None (file missing), pass-through with a warning —
+    callers degrade to pre-fix behaviour rather than fail.
+    """
+    import numpy as np
+    if survivors_df is None or len(survivors_df) == 0:
+        print("  [WARN] last_execution_time.parquet missing; "
+              "real metrics will use all orders_before sweeps "
+              "(asymmetric vs simulator).")
+        return np.asarray(sweep_orderids, dtype='int64')
+    survivor_ids = set(survivors_df['orderid'].astype('int64').tolist())
+    sweep_set = set(int(x) for x in sweep_orderids)
+    return np.asarray(sorted(sweep_set & survivor_ids), dtype='int64')
+
+
 # ============================================================================
 # Section 3 - utils/io_backend.py
 # ============================================================================
@@ -250,6 +272,16 @@ def load_simulation_trades(partition_dir):
 def load_simulation_order_summary(partition_dir):
     """Load simulation_order_summary parquet from partition output directory."""
     filepath = Path(partition_dir) / "simulation_order_summary.parquet"
+    return safe_read_csv(filepath, required=False)
+
+
+def load_last_execution_times(partition_dir):
+    """Load last_execution_time parquet (the survivor list) from partition.
+
+    Returns a DataFrame with columns [orderid, first_execution_time,
+    last_execution_time], or None if the file is missing.
+    """
+    filepath = Path(partition_dir) / "last_execution_time.parquet"
     return safe_read_csv(filepath, required=False)
 
 # ============================================================================

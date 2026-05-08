@@ -18,9 +18,11 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+import numpy as np
 import pandas as pd
 import pytest
 
+import aggregate
 import process
 import config
 
@@ -88,3 +90,39 @@ def test_dark_at_submission_ignores_post_arrival_dark_fills():
         f"Expected leavesquantity=900 (1000 - 100 at submission only); "
         f"got {leaves}."
     )
+
+
+def test_filter_to_survivors_intersects_orderids():
+    """Given a list of all sweep orderids and a survivors DataFrame from
+    last_execution_time.parquet, the helper returns only the intersection."""
+    all_sweeps = np.array([10, 20, 30, 40, 50], dtype='int64')
+    survivors_df = pd.DataFrame({
+        'orderid': [10, 30, 50, 99],   # 99 is junk; should be ignored
+        'first_execution_time': [1, 1, 1, 1],
+        'last_execution_time': [2, 2, 2, 2],
+    })
+
+    result = aggregate._filter_to_survivors(all_sweeps, survivors_df)
+
+    assert sorted(result) == [10, 30, 50], (
+        f"Expected intersection [10, 30, 50]; got {sorted(result)}."
+    )
+
+
+def test_filter_to_survivors_returns_empty_when_no_overlap():
+    all_sweeps = np.array([1, 2, 3], dtype='int64')
+    survivors_df = pd.DataFrame({
+        'orderid': [4, 5, 6],
+        'first_execution_time': [0, 0, 0],
+        'last_execution_time': [0, 0, 0],
+    })
+    result = aggregate._filter_to_survivors(all_sweeps, survivors_df)
+    assert list(result) == []
+
+
+def test_filter_to_survivors_handles_none_survivors_df():
+    """If last_execution_time.parquet is missing, return all_sweeps unchanged
+    AND emit a warning (caller-visible). Behaviour: pass-through."""
+    all_sweeps = np.array([10, 20], dtype='int64')
+    result = aggregate._filter_to_survivors(all_sweeps, None)
+    assert sorted(result) == [10, 20]
