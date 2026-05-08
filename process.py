@@ -530,23 +530,6 @@ def _compute_rest_on_lit_qty(order_df):
     return int(same_ts_sorted[col.common.leavesquantity].iloc[-1])
 
 
-def _compute_dark_at_submission_qty(order_df, trades_df):
-    """Quantity of a sweep that real-life filled in dark at submission.
-
-    Sums real trades with dealsource=47 (Centre Point) whose tradetime equals
-    the order's NEW_ORDER timestamp. This is the chunk that already matched
-    in dark on arrival — it is NOT a counterfactual candidate. The dark
-    counterfactual asks about the LIT-executed remainder.
-    """
-    new_order_events = order_df[order_df[col.common.changereason] == 6]
-    if len(new_order_events) == 0:
-        return 0
-    new_ts = int(new_order_events[col.common.timestamp].iloc[0])
-    mask = (trades_df[col.trades.dealsource] == 47) & \
-           (trades_df[col.common.tradetime] == new_ts)
-    return int(trades_df.loc[mask, col.common.quantity].sum())
-
-
 def _extract_execution_time_dict(order_id, order_df, trades_df):
     """Extract the eligibility window for one survivor.
 
