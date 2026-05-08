@@ -45,14 +45,17 @@ SWEEP_ORDER_TYPE = 2048
 ELIGIBLE_MATCHING_ORDER_TYPES = {64, 256, 2048, 4096, 4098}   # ALL CP types, including sweep-to-sweep
 CENTRE_POINT_ORDER_TYPES = [64, 256, 2048, 4096, 4098]
 
-# Dealsources that represent a Centre-Point-mediated fill at order arrival.
-# Used to compute `dark_at_submission` quantity that must NOT be passed to the
-# counterfactual simulator (the sim only asks about the lit-bound remainder).
-# Per dd.txt §3.3.x: 46=Preference, 47=CentrePoint, 49=Preference Only,
+# Dealsources that classify a trade as a CP-mediated dark match.
+# Used in any context where the simulator needs to recognise dark fills:
+#   1. `_synthesize_orders_after` — deducting dark-at-submission from the
+#      sweep's lit-bound remainder.
+#   2. `_build_contra_non_survivor_dark` — subtracting non-survivor dark
+#      consumption from contra inventory to avoid phantom liquidity.
+# Per dd.txt §3.3: 46=Preference, 47=CentrePoint, 49=Preference Only,
 # 50=APB, 51=Preference APB, 52=Preference Only APB. 48 (BookTradeCentrePoint)
 # is intentionally excluded — it is a book-trade mechanism, not a continuous
 # dark match.
-DARK_AT_SUBMISSION_DEALSOURCES = frozenset({46, 47, 49, 50, 51, 52})
+DARK_FILL_DEALSOURCES = frozenset({46, 47, 49, 50, 51, 52})
 
 # NBBO sentinel: indicates unavailable national_bid / national_offer
 INT64_SENTINEL = -9223372036854775808

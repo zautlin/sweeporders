@@ -285,7 +285,7 @@ Handles all data extraction, partitioning, and preprocessing operations:
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from config import SWEEP_ORDER_TYPE, DARK_AT_SUBMISSION_DEALSOURCES
+from config import SWEEP_ORDER_TYPE, DARK_FILL_DEALSOURCES
 import config as _cfg
 from config import col
 # (consolidated) from utils.normalization import normalize_column_names
@@ -592,7 +592,7 @@ def _synthesize_orders_after(orders_before, trades_df):
     `leavesquantity` overridden to (quantity − dark_at_submission_qty).
 
     `dark_at_submission_qty` for an order is the sum of trade quantities
-    whose dealsource is in DARK_AT_SUBMISSION_DEALSOURCES AND whose
+    whose dealsource is in DARK_FILL_DEALSOURCES AND whose
     tradetime equals the order's NEW_ORDER timestamp. These represent the
     portion that already filled in dark on arrival — the simulator's
     counterfactual question is about the LIT-bound remainder only.
@@ -612,7 +612,7 @@ def _synthesize_orders_after(orders_before, trades_df):
 
     new_ts_per_oid = orders_before[[oid_col, ts_col]].rename(columns={ts_col: '_new_ts'})
     dark = trades_df[
-        trades_df[ds_col].isin(DARK_AT_SUBMISSION_DEALSOURCES)
+        trades_df[ds_col].isin(DARK_FILL_DEALSOURCES)
     ][[oid_col, tt_col, qty_col]]
     dark = dark.merge(new_ts_per_oid, on=oid_col, how='inner')
     dark_at_new = dark[dark[tt_col] == dark['_new_ts']]
@@ -638,9 +638,9 @@ def _build_contra_non_survivor_dark(trades_df, survivor_orderids):
     Their real-life dark fills already consumed contra inventory that the sim
     would otherwise treat as still available — phantom liquidity.
 
-    Method: self-join trades on matchgroupid to pair each passive DS=47 leg
-    with its aggressor leg. Filter to aggressors NOT in survivor_orderids.
-    Sum quantity per passive orderid.
+    Method: self-join trades on matchgroupid to pair each passive dark leg
+    (dealsource in DARK_FILL_DEALSOURCES) with its aggressor leg. Filter to
+    aggressors NOT in survivor_orderids. Sum quantity per passive orderid.
 
     Returns DataFrame[orderid, non_survivor_dark_quantity] keyed on contra orderid.
     """
@@ -660,14 +660,14 @@ def _build_contra_non_survivor_dark(trades_df, survivor_orderids):
     if not needed.issubset(trades_df.columns):
         return empty
 
-    # Passive side of DS=47 trades (contra getting consumed in dark)
+    # Passive side of dark trades (contra getting consumed in dark)
     passive = trades_df[
-        (trades_df[ds_col] == 47) & (trades_df[pa_col] == 0)
+        (trades_df[ds_col].isin(DARK_FILL_DEALSOURCES)) & (trades_df[pa_col] == 0)
     ][[mgi_col, oid_col, qty_col]].rename(columns={oid_col: 'contra_orderid'})
 
     # Aggressor side (one row per match, regardless of dealsource — but we
-    # only join the passive=47 rows so the aggressor here is necessarily the
-    # dark-aggressor).
+    # only join the passive dark rows so the aggressor here is necessarily
+    # the dark-aggressor).
     aggressor = trades_df[trades_df[pa_col] == 1][[mgi_col, oid_col]].rename(
         columns={oid_col: 'aggressor_orderid'}
     )
@@ -1096,7 +1096,7 @@ def get_orders_state(orders_by_partition, processed_dir, trades_by_partition=Non
     `before` = original NEW_ORDER snapshot (leaves = quantity).
     `after`  = synthesized post-dark, pre-lit snapshot. Same columns as `before`,
                but `leavesquantity` is overridden to (quantity − dark_at_submit),
-               where dark_at_submit = sum of DARK_AT_SUBMISSION_DEALSOURCES
+               where dark_at_submit = sum of DARK_FILL_DEALSOURCES
                trades at the order's NEW_ORDER timestamp. That `leavesquantity`
                IS the chunk about to head for lit — what the dark counterfactual
                asks about.
