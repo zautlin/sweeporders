@@ -423,6 +423,43 @@ def main():
     )
     print("[report] by_session_phase.csv: stub (session_phase not in current metrics — deferred)")
 
+    # ── Comparison rollups (real vs sim, the research-question outputs)
+    cmp_df = _read_comparison_partitions(dates_filter)
+    if cmp_df.is_empty():
+        print("[report] no trade_level_comparison.parquet files found — skipping comparison rollups.")
+    else:
+        print(f"[report] comparison rollups: {len(cmp_df)} comparison rows loaded")
+
+        by_day_cmp = _comparison_rollup(cmp_df, ["date"])
+        by_day_cmp.write_csv(reports_dir / "by_day_comparison.csv")
+        print(f"[report] by_day_comparison.csv: {by_day_cmp.shape[0]} row(s)")
+
+        by_ticker_cmp = _comparison_rollup(cmp_df, ["date", "ticker"])
+        by_ticker_cmp.write_csv(reports_dir / "by_ticker_comparison.csv")
+        print(f"[report] by_ticker_comparison.csv: {by_ticker_cmp.shape[0]} row(s)")
+
+        if "order_quantity" in cmp_df.columns:
+            cmp_quartiles = cmp_df.select(
+                pl.col("order_quantity").quantile(0.25).alias("q1"),
+                pl.col("order_quantity").quantile(0.50).alias("q2"),
+                pl.col("order_quantity").quantile(0.75).alias("q3"),
+            ).to_dicts()[0]
+            cq1, cq2, cq3 = cmp_quartiles["q1"], cmp_quartiles["q2"], cmp_quartiles["q3"]
+
+            def _cmp_bucket(x):
+                return (
+                    pl.when(x < cq1).then(pl.lit("Q1"))
+                    .when(x < cq2).then(pl.lit("Q2"))
+                    .when(x < cq3).then(pl.lit("Q3"))
+                    .otherwise(pl.lit("Q4"))
+                )
+            cmp_with_bucket = cmp_df.with_columns(
+                _cmp_bucket(pl.col("order_quantity")).alias("volume_bucket")
+            )
+            by_volume_cmp = _comparison_rollup(cmp_with_bucket, ["date", "volume_bucket"])
+            by_volume_cmp.write_csv(reports_dir / "by_volume_bucket_comparison.csv")
+            print(f"[report] by_volume_bucket_comparison.csv: {by_volume_cmp.shape[0]} row(s)")
+
     print(f"\n[report] done → {reports_dir}/")
 
 
