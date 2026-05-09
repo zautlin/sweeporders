@@ -268,7 +268,8 @@ COLUMN_NORMALIZATION_MAP: Dict[str, Dict[str, str]] = {
     },
     'session': {
         'OrderBookId':          'orderbookid',
-        'TradeDate':            'timestamp',
+        'Timestamp':            'timestamp',     # actual transition time (was incorrectly mapped from TradeDate, which is start-of-day)
+        'Name':                 'session_state', # what the simulator looks up in _build_session_arrays
     },
     'reference': {
         'Id':                   'orderbookid',

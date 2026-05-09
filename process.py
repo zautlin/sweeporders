@@ -1238,6 +1238,38 @@ def build_contra_non_survivor_dark_files(execution_times_by_partition, trades_by
     return out_by_partition
 
 
+def _synthesize_default_session(date_str, orderbookid):
+    """Standard ASX continuous-trading session schedule for a given trade date.
+
+    Per bi.txt §9, ASX continuous matching runs PRE_OPEN 07:00 → OSPA 09:59:45
+    → OPEN 10:00:00 → PRE_CSPA 16:00 → CSPA 16:10 → POST_CLOSE 16:11. Used as
+    a fallback when raw session.parquet is missing for this trade date or has
+    no rows for this orderbookid. The synthesized schedule omits halts /
+    intraday exceptions; for those we'd need real session data.
+
+    `date_str` is "YYYY-MM-DD". Timestamps are emitted in UTC ns since epoch.
+    """
+    import datetime, zoneinfo
+    aest = zoneinfo.ZoneInfo('Australia/Sydney')
+    yyyy, mm, dd = (int(p) for p in date_str.split('-'))
+    def _at(h, m=0, s=0):
+        dt = datetime.datetime(yyyy, mm, dd, h, m, s, tzinfo=aest)
+        return int(dt.timestamp() * 1_000_000_000)
+    rows = [
+        ('PRE_OPEN',    _at(7,  0,  0)),
+        ('OSPA',        _at(9,  59, 45)),
+        ('OPEN',        _at(10, 0,  0)),
+        ('PRE_CSPA',    _at(16, 0,  0)),
+        ('CSPA',        _at(16, 10, 0)),
+        ('POST_CLOSE',  _at(16, 11, 0)),
+    ]
+    return pd.DataFrame({
+        'orderbookid':   [int(orderbookid)] * len(rows),
+        'session_state': [r[0] for r in rows],
+        'timestamp':     [r[1] for r in rows],
+    })
+
+
 def load_partition_data(partition_key, processed_dir):
     """Load all necessary data for a partition including reference data."""
     date, security_code = partition_key.split('/')
@@ -1290,12 +1322,31 @@ def load_partition_data(partition_key, processed_dir):
     else:
         partition_data['nbbo'] = pd.DataFrame()
 
-    # Load session data (date-level)
+    # Load session data (date-level), filtered to this partition's orderbookid.
+    # Session timing is per-orderbookid (staggered openings, per-security halts);
+    # the date file holds rows for many orderbookids and the simulator needs only
+    # this partition's transitions. Stored under 'session_states' to match the
+    # simulator's expected key. If no rows exist for this orderbookid (file
+    # missing or filter empty), fall back to the standard ASX continuous-trading
+    # schedule (PRE_OPEN 07:00 → OPEN 10:00 → PRE_CSPA 16:00 → CSPA 16:10 →
+    # POST_CLOSE 16:11) per bi.txt §9.
     session_file = date_dir / "session.parquet"
+    sess = pd.DataFrame()
     if session_file.exists():
-        partition_data['session'] = safe_read_csv(session_file)
-    else:
-        partition_data['session'] = pd.DataFrame()
+        sess = safe_read_csv(session_file)
+        if 'orderbookid' in sess.columns:
+            try:
+                obid_int = int(security_code)
+                sess = sess[sess['orderbookid'].astype('int64') == obid_int].copy()
+            except ValueError:
+                pass
+    if sess is None or len(sess) == 0:
+        try:
+            obid_int = int(security_code)
+        except ValueError:
+            obid_int = 0
+        sess = _synthesize_default_session(date, obid_int)
+    partition_data['session_states'] = sess
 
     # Load reference data (date-level)
     reference_file = date_dir / "reference.parquet"
