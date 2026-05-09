@@ -1148,6 +1148,24 @@ def get_orders_state(orders_by_partition, processed_dir, trades_by_partition=Non
                 subset=[col.common.orderid], keep='first'
             ).reset_index(drop=True)
 
+        # Override `quantity` with the terminal-event quantity per orderid (the
+        # last row in (timestamp, sequence) order — for survivors this is the
+        # cr=3 leaves=0 trade event, with `quantity` reflecting any amendments).
+        # All other columns stay at their NEW_ORDER values. Without this, an
+        # amended sweep that arrived as 5 shares and traded 5,154 post-amendment
+        # would compute fill_rate_pct = 5154/5 = 103,080%. The simulator's
+        # leavesquantity (= quantity − dark_at_submission) and the metric's
+        # `order_quantity` both pick up the corrected value automatically.
+        terminal_qty = (
+            orders_sorted.drop_duplicates(subset=[col.common.orderid], keep='last')
+            .set_index(col.common.orderid)[col.common.quantity]
+        )
+        orders_before[col.common.quantity] = (
+            orders_before[col.common.orderid].map(terminal_qty)
+            .fillna(orders_before[col.common.quantity])
+            .astype('int64')
+        )
+
         # AFTER state: synthesize "post-dark, pre-lit" — see
         # `_synthesize_orders_after` for semantics.
         trades_df = (trades_by_partition or {}).get(partition_key)
