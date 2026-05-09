@@ -1660,12 +1660,16 @@ def _aggregate_simulated_trades_per_order(simulated_trades, order_summary, order
     
     # Calculate metrics using unified calculator
     # Note: Simulated trades execute at midpoint (see sweep_simulator.py line 444)
+    # role_filter='aggressor': the simulator emits two legs per match (pa=0 + pa=1).
+    # A survivor's pa=0 rows are when it was a CONTRA in another survivor's
+    # counterfactual — not its own fill. Phase 2 (resting leg, where a sweep would
+    # be pa=0) was removed; the only correct measurement now is the pa=1 leg.
     metrics = calculate_trade_metrics(
         trades_df=simulated_trades,
         orders_df=order_context,
         nbbo_df=None,
         filter_orderids=sweep_orderids,
-        role_filter=None,  # Include both Phase 1 (PA=1) and Phase 2 resting (PA=0) fills
+        role_filter='aggressor',
         prefix='sim_',
         is_simulated=True,
     )
