@@ -57,6 +57,15 @@ CENTRE_POINT_ORDER_TYPES = [64, 256, 2048, 4096, 4098]
 # dark match.
 DARK_FILL_DEALSOURCES = frozenset({46, 47, 49, 50, 51, 52})
 
+# Dealsources that indicate an auction match — opening (OSPA) or closing (CSPA).
+# Per dd.txt §3.3: 20 = "Two orders match in an (opening) auction", 45 = "Book
+# Trade Auction". Sweeps that filled via auction are dropped from the survivor
+# population: the simulator's continuous-matching counterfactual ("would dark
+# resting have filled this?") does not apply to batch auction fills, and
+# including them inflates POOR_MATCH for orders that the question can't be
+# asked of.
+AUCTION_DEALSOURCES = frozenset({20, 45})
+
 # NBBO sentinel: indicates unavailable national_bid / national_offer
 INT64_SENTINEL = -9223372036854775808
 

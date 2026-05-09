@@ -285,7 +285,7 @@ Handles all data extraction, partitioning, and preprocessing operations:
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from config import SWEEP_ORDER_TYPE, DARK_FILL_DEALSOURCES
+from config import SWEEP_ORDER_TYPE, DARK_FILL_DEALSOURCES, AUCTION_DEALSOURCES
 import config as _cfg
 from config import col
 # (consolidated) from utils.normalization import normalize_column_names
@@ -483,22 +483,34 @@ def _filter_sweep_orders_by_execution(orders_df):
 
 
 def _filter_orders_with_valid_trades(order_ids, trades_df):
-    """Keep orders that have at least one real trade.
+    """Keep orders that have at least one real trade AND no auction fills.
 
     Previously filtered out orders that had any non-lit (dealsource != 1)
     trades. That filter has been removed — we now keep BOTH lit-only and
     mixed (dark + lit) fully-filled sweeps. The simulator's question for
     mixed sweeps is "what if the order had stayed entirely in dark?"
     against the original contra book.
+
+    Auction-fill exclusion: orders with ANY trade in AUCTION_DEALSOURCES
+    (opening / closing auctions) are dropped. The simulator only models
+    continuous matching; auction fills are batch-cleared events the dark
+    counterfactual cannot replicate. Sweeps that filled via auction would
+    otherwise pollute the comparison as false POOR_MATCH cases.
     """
     qualifying_trades = trades_df[trades_df[col.common.orderid].isin(order_ids)].copy()
 
     orders_with_valid_trades = {}
+    n_dropped_auction = 0
     for order_id in order_ids:
         order_trades = qualifying_trades[qualifying_trades[col.common.orderid] == order_id]
         if len(order_trades) == 0:
             continue                              # no real fills → nothing to compare against
+        if order_trades[col.trades.dealsource].isin(AUCTION_DEALSOURCES).any():
+            n_dropped_auction += 1
+            continue
         orders_with_valid_trades[order_id] = order_trades
+    if n_dropped_auction > 0:
+        print(f"    Dropped {n_dropped_auction:,} sweeps with auction fills (DS in {sorted(AUCTION_DEALSOURCES)})")
     return orders_with_valid_trades
 
 
