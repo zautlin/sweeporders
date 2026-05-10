@@ -126,3 +126,70 @@ def test_filter_to_survivors_handles_none_survivors_df():
     all_sweeps = np.array([10, 20], dtype='int64')
     result = aggregate._filter_to_survivors(all_sweeps, None)
     assert sorted(result) == [10, 20]
+
+
+# ─── _derive_passive_aggressive (server-trades pa derivation) ────────────────
+
+def test_derive_pa_no_op_when_already_present():
+    """Local raw trades carry pa already — derivation must not modify them.
+    Idempotent guard preserves parity for non-server runs."""
+    trades = pd.DataFrame({
+        'orderid':           [1],
+        'matchgroupid':      [10],
+        'passiveaggressive': [1],
+    })
+    out = process._derive_passive_aggressive(trades, pd.DataFrame())
+    assert list(out['passiveaggressive']) == [1]
+
+
+def test_derive_pa_aggressor_is_later_arriving():
+    """Within a matchgroupid pair, the leg whose orderid has the LATER
+    NEW_ORDER (cr=6) timestamp is the aggressor (pa=1). The earlier-arriving
+    leg is passive (pa=0)."""
+    orders = pd.DataFrame({
+        'orderid':      [1, 2],
+        'changereason': [6, 6],
+        'timestamp':    [100, 200],   # order 2 arrived after order 1
+    })
+    trades = pd.DataFrame({
+        'orderid':      [1, 2],
+        'matchgroupid': [10, 10],
+    })
+    out = process._derive_passive_aggressive(trades, orders)
+    pa_by_oid = dict(zip(out['orderid'], out['passiveaggressive']))
+    assert pa_by_oid[1] == 0   # earlier arrival → passive
+    assert pa_by_oid[2] == 1   # later arrival → aggressor
+
+
+def test_derive_pa_missing_order_yields_neither():
+    """If one leg's orderid isn't in the orders frame for this partition,
+    pa for both legs of that match falls back to 2 (Neither). Conservative —
+    excludes the match from the phantom-liquidity guard rather than
+    guessing wrong."""
+    orders = pd.DataFrame({
+        'orderid':      [1],
+        'changereason': [6],
+        'timestamp':    [100],
+    })
+    trades = pd.DataFrame({
+        'orderid':      [1, 999],          # 999 not in orders frame
+        'matchgroupid': [10, 10],
+    })
+    out = process._derive_passive_aggressive(trades, orders)
+    assert (out['passiveaggressive'] == 2).all()
+
+
+def test_derive_pa_equal_timestamps_yields_neither():
+    """Both legs sharing the exact same NEW_ORDER timestamp is rare but
+    possible. Without a cleaner tie-break than equality, mark both pa=2."""
+    orders = pd.DataFrame({
+        'orderid':      [1, 2],
+        'changereason': [6, 6],
+        'timestamp':    [100, 100],
+    })
+    trades = pd.DataFrame({
+        'orderid':      [1, 2],
+        'matchgroupid': [10, 10],
+    })
+    out = process._derive_passive_aggressive(trades, orders)
+    assert (out['passiveaggressive'] == 2).all()

@@ -643,6 +643,52 @@ def _synthesize_orders_after(orders_before, trades_df):
     return orders_after
 
 
+def _derive_passive_aggressive(trades_df, orders_df):
+    """Derive `passiveaggressive` for trades whose source schema doesn't
+    carry it (e.g., server TRADES view). Within each matchgroupid pair, the
+    aggressor is the leg whose orderid has the LATER NEW_ORDER (cr=6)
+    timestamp — it arrived after the other party was already resting.
+
+    Idempotent: returns trades_df unchanged if `passiveaggressive` already
+    exists, so local raw runs (which carry pa from the source) are unaffected
+    and parity is preserved.
+
+    Per dd.txt §3.3 passiveAggressive enum: 1=Aggressive, 0=Passive,
+    2=Neither. Defaults to 2 for ambiguous matches (one leg's order missing
+    from the partition's orders, equal timestamps, single-leg matches),
+    which conservatively excludes them from the phantom-liquidity guard
+    rather than guessing wrong.
+    """
+    if 'passiveaggressive' in trades_df.columns:
+        return trades_df
+
+    out = trades_df.copy()
+    if (orders_df is None or len(orders_df) == 0 or len(out) == 0
+            or 'matchgroupid' not in out.columns
+            or col.common.orderid not in out.columns):
+        out['passiveaggressive'] = np.int64(2)
+        return out
+
+    cr_col = col.common.changereason
+    new_orders = orders_df[orders_df[cr_col] == 6] if cr_col in orders_df.columns else orders_df
+    new_ts_map = (
+        new_orders.drop_duplicates(col.common.orderid, keep='first')
+                  .set_index(col.common.orderid)[col.common.timestamp]
+    )
+
+    out['_new_ts'] = out[col.common.orderid].map(new_ts_map)
+    out['_max_ts'] = out.groupby('matchgroupid')['_new_ts'].transform('max')
+    out['_min_ts'] = out.groupby('matchgroupid')['_new_ts'].transform('min')
+
+    out['passiveaggressive'] = 2  # default Neither for any ambiguous case
+    has_arrival_split = out['_new_ts'].notna() & (out['_max_ts'] != out['_min_ts'])
+    out.loc[has_arrival_split & (out['_new_ts'] == out['_max_ts']), 'passiveaggressive'] = 1
+    out.loc[has_arrival_split & (out['_new_ts'] == out['_min_ts']), 'passiveaggressive'] = 0
+    out['passiveaggressive'] = out['passiveaggressive'].astype('int64')
+
+    return out.drop(columns=['_new_ts', '_max_ts', '_min_ts'])
+
+
 def _build_contra_non_survivor_dark(trades_df, survivor_orderids):
     """Compute per-contra real-life dark consumption by NON-survivors.
 
@@ -828,7 +874,15 @@ def extract_trades(input_file, orders_by_partition, processed_dir, chunk_size):
         if len(partition_trades) > 0:
             # Normalize column names to standard before saving
             partition_trades_normalized = normalize_column_names(partition_trades, 'trades')
-            
+
+            # Derive `passiveaggressive` from order arrival order if the source
+            # schema didn't carry it (server TRADES view drops it). Idempotent
+            # no-op when pa is already present (local raw runs).
+            partition_trades_normalized = _derive_passive_aggressive(
+                partition_trades_normalized,
+                orders_by_partition.get(partition_key),
+            )
+
             # Store normalized version for downstream use
             trades_by_partition[partition_key] = partition_trades_normalized
 
