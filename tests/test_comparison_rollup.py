@@ -168,3 +168,62 @@ def test_comparison_rollup_groups_by_group_cols():
     assert out.shape[0] == 2
     tickers = sorted(out['ticker'].to_list())
     assert tickers == ['aaa', 'bbb']
+
+
+# ─── Conditional rollup dimensions: time-of-day + spread regime ──────────────
+
+def test_compute_time_of_day_buckets_arrivals_into_aest_hours():
+    """Each comparison row's `order_timestamp` (UTC ns) should bucket into one
+    of: pre_open (<10 AEST), HH:00-HH:59 for hours 10–15, post_close (>=16)."""
+    # 2024-09-05 in UTC ns at specific AEST clock times (UTC+10):
+    #   07:30 AEST = 2024-09-04 21:30 UTC
+    #   10:30 AEST = 2024-09-05 00:30 UTC
+    #   12:00 AEST = 2024-09-05 02:00 UTC
+    #   16:30 AEST = 2024-09-05 06:30 UTC
+    import datetime, zoneinfo
+    aest = zoneinfo.ZoneInfo('Australia/Sydney')
+    def _ns(y, mo, d, h, mi=0):
+        return int(datetime.datetime(y, mo, d, h, mi, tzinfo=aest).timestamp() * 1_000_000_000)
+
+    df = pl.DataFrame({
+        'order_timestamp': [
+            _ns(2024, 9, 5, 7, 30),    # → pre_open
+            _ns(2024, 9, 5, 10, 30),   # → 10:00-10:59
+            _ns(2024, 9, 5, 12, 0),    # → 12:00-12:59
+            _ns(2024, 9, 5, 15, 59),   # → 15:00-15:59
+            _ns(2024, 9, 5, 16, 30),   # → post_close
+        ],
+    })
+    out = report._compute_time_of_day(df, 'order_timestamp')
+    labels = out['time_of_day'].to_list()
+    assert labels[0] == 'pre_open'
+    assert labels[1] == '10:00-10:59'
+    assert labels[2] == '12:00-12:59'
+    assert labels[3] == '15:00-15:59'
+    assert labels[4] == 'post_close'
+
+
+def test_compute_spread_regime_assigns_quintiles():
+    """Given known quintile cuts, values bucket into Q1..Q5 correctly."""
+    # Crafted distribution: 5, 10, 15, 20, 25 (N=5, easy to reason about)
+    df = pl.DataFrame({'arrival_spread_bps': [5.0, 10.0, 15.0, 20.0, 25.0]})
+    out = report._compute_spread_regime(df, 'arrival_spread_bps')
+    regimes = out['spread_regime'].to_list()
+    # Quintile bounds for [5, 10, 15, 20, 25]:
+    #   q20 = 9.0, q40 = 13.0, q60 = 17.0, q80 = 21.0
+    # Bucket assignment uses < cut for boundaries:
+    #   5  < 9   → Q1
+    #   10 in [9,13)  → Q2
+    #   15 in [13,17) → Q3
+    #   20 in [17,21) → Q4
+    #   25 >= 21      → Q5
+    assert regimes == ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
+
+
+def test_compute_spread_regime_handles_nulls():
+    """Rows with NULL arrival_spread_bps should bucket as 'unknown' so they
+    surface separately rather than silently joining Q5 (the catch-all)."""
+    df = pl.DataFrame({'arrival_spread_bps': [10.0, None, 20.0]})
+    out = report._compute_spread_regime(df, 'arrival_spread_bps')
+    regimes = out['spread_regime'].to_list()
+    assert regimes[1] == 'unknown'

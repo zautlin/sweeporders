@@ -276,6 +276,61 @@ def _comparison_rollup(df, group_cols):
     return rollup
 
 
+def _compute_time_of_day(df, ts_col):
+    """Add a `time_of_day` string column derived from a UTC-ns timestamp,
+    bucketed into AEST hour-of-day labels:
+
+      pre_open      < 10 AEST
+      10:00-10:59 … 15:00-15:59
+      post_close    >= 16 AEST
+
+    Used to slice comparison rollups by when the sweep arrived at market —
+    surfaces whether dark-routing payoff is concentrated at certain hours.
+    """
+    aest_hour = (
+        pl.col(ts_col)
+          .cast(pl.Datetime("ns"))
+          .dt.replace_time_zone("UTC")
+          .dt.convert_time_zone("Australia/Sydney")
+          .dt.hour()
+    )
+    label = (
+        pl.when(aest_hour < 10).then(pl.lit("pre_open"))
+          .when(aest_hour >= 16).then(pl.lit("post_close"))
+          .otherwise(
+              aest_hour.cast(pl.Utf8).str.zfill(2) + pl.lit(":00-")
+              + aest_hour.cast(pl.Utf8).str.zfill(2) + pl.lit(":59")
+          )
+    )
+    return df.with_columns(label.alias("time_of_day"))
+
+
+def _compute_spread_regime(df, col_name):
+    """Add a `spread_regime` string column bucketing rows into quintiles
+    (Q1–Q5) of the named column. NULL values bucket as 'unknown' so they
+    surface separately rather than silently joining Q5.
+
+    Quintile cuts are computed across the full input frame — for the report
+    pipeline this means GLOBAL quintiles (all dates × tickers in the loaded
+    comparison data), so wide-spread-vs-tight-spread is a cross-ticker cut.
+    """
+    cuts = df.select([
+        pl.col(col_name).quantile(q, interpolation="linear").alias(f"q{int(q*100)}")
+        for q in (0.20, 0.40, 0.60, 0.80)
+    ]).to_dicts()[0]
+
+    val = pl.col(col_name)
+    label = (
+        pl.when(val.is_null()).then(pl.lit("unknown"))
+          .when(val < cuts["q20"]).then(pl.lit("Q1"))
+          .when(val < cuts["q40"]).then(pl.lit("Q2"))
+          .when(val < cuts["q60"]).then(pl.lit("Q3"))
+          .when(val < cuts["q80"]).then(pl.lit("Q4"))
+          .otherwise(pl.lit("Q5"))
+    )
+    return df.with_columns(label.alias("spread_regime"))
+
+
 def _discover_comparison_partitions(dates_filter):
     """Yield (date_dir, orderbookid_dir, comparison_path) for every
     trade_level_comparison.parquet under data/outputs/."""
@@ -459,6 +514,22 @@ def main():
             by_volume_cmp = _comparison_rollup(cmp_with_bucket, ["date", "volume_bucket"])
             by_volume_cmp.write_csv(reports_dir / "by_volume_bucket_comparison.csv")
             print(f"[report] by_volume_bucket_comparison.csv: {by_volume_cmp.shape[0]} row(s)")
+
+        # Time-of-day rollup — surfaces when dark routing pays off (open vs
+        # mid-day vs close).
+        if "order_timestamp" in cmp_df.columns:
+            cmp_with_tod = _compute_time_of_day(cmp_df, "order_timestamp")
+            by_tod_cmp = _comparison_rollup(cmp_with_tod, ["date", "time_of_day"])
+            by_tod_cmp.write_csv(reports_dir / "by_time_of_day_comparison.csv")
+            print(f"[report] by_time_of_day_comparison.csv: {by_tod_cmp.shape[0]} row(s)")
+
+        # Spread regime rollup — surfaces wide-spread vs tight-spread payoff.
+        # Quintiles computed globally across all loaded comparison rows.
+        if "arrival_spread_bps" in cmp_df.columns:
+            cmp_with_spread = _compute_spread_regime(cmp_df, "arrival_spread_bps")
+            by_spread_cmp = _comparison_rollup(cmp_with_spread, ["date", "spread_regime"])
+            by_spread_cmp.write_csv(reports_dir / "by_spread_regime_comparison.csv")
+            print(f"[report] by_spread_regime_comparison.csv: {by_spread_cmp.shape[0]} row(s)")
 
     print(f"\n[report] done → {reports_dir}/")
 
