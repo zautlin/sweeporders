@@ -276,9 +276,17 @@ COLUMN_NORMALIZATION_MAP: Dict[str, Dict[str, str]] = {
         'Sequence':             'sequence',
     },
     'session': {
+        # Server-raw + local-raw both use PascalCase for SESSION CHANGE:
+        #   Partition, Sequence, TradeDate, Id, Level, MatchingType, Name,
+        #   OrderBookId, Timestamp, Type, isEndOfTrading
+        # Lowercase aliases included as a defensive belt — any tooling that
+        # downcases on the way through is still understood.
         'OrderBookId':          'orderbookid',
-        'Timestamp':            'timestamp',     # actual transition time (was incorrectly mapped from TradeDate, which is start-of-day)
+        'orderbookid':          'orderbookid',
+        'Timestamp':            'timestamp',     # actual transition time (NOT TradeDate, which is start-of-day)
+        'timestamp':            'timestamp',
         'Name':                 'session_state', # what the simulator looks up in _build_session_arrays
+        'name':                 'session_state',
     },
     'reference': {
         'Id':                   'orderbookid',
